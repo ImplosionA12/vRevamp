@@ -210,8 +210,6 @@ chrome.webRequest.onBeforeRequest.addListener(
       record.params = params;
     }
     chrome.storage.local.set({ vrevamp_detail_request: record });
-    // TEMP DIAGNOSTIC (remove after hardcoding endpoint):
-    console.log("vRevamp captured detail request >>>", JSON.stringify(record));
   },
   { urls: VTOP_URLS },
   ["requestBody"]

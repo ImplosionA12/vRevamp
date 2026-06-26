@@ -627,43 +627,6 @@
   const doRun = async () => {
     const tableWrap = document.querySelector(".table-responsive");
     if (!tableWrap) return;
-    // TEMP DIAGNOSTIC (remove after hardcoding endpoint): pull the VTOP
-    // function definition so we can read its real endpoint + field names.
-    try {
-      const _findFnDef = async (name) => {
-        for (const s of document.querySelectorAll("script:not([src])")) {
-          const t = s.textContent || "";
-          const i = t.indexOf("function " + name);
-          if (i !== -1) return "[inline] " + t.slice(i, i + 700);
-        }
-        for (const s of document.querySelectorAll("script[src]")) {
-          try {
-            const abs = new URL(s.getAttribute("src") || "", location.href);
-            if (abs.origin !== location.origin) continue;
-            const t = await (await fetch(abs.href)).text();
-            const i = t.indexOf("function " + name);
-            if (i !== -1)
-              return "[" + abs.pathname + "] " + t.slice(i, i + 700);
-          } catch (_) {
-            /* skip */
-          }
-        }
-        return "(definition of " + name + " not found in same-origin scripts)";
-      };
-      const _def = await _findFnDef("callStudentAttendanceDetailDisplay");
-      let _diag = document.getElementById("vrevamp-diag");
-      if (!_diag) {
-        _diag = document.createElement("div");
-        _diag.id = "vrevamp-diag";
-        tableWrap.insertAdjacentElement("beforebegin", _diag);
-      }
-      _diag.style.cssText =
-        "margin:10px 0;padding:10px;border:2px solid #0a0;background:#efffef;color:#000;font-size:13px;font-family:monospace;white-space:pre-wrap;word-break:break-all;";
-      _diag.textContent =
-        "vRevamp DIAGNOSTIC 2 — send this to Claude:\n" + _def;
-    } catch (_e) {
-      /* diagnostic only */
-    }
     const subjects = Array.from(tableWrap.querySelectorAll("tbody tr"))
       .map((row) => ({ row, call: extractDetailCall(row) }))
       .filter((s) => s.call);

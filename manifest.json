@@ -30,8 +30,6 @@
         "js/marks_page.js",
         "js/course_page.js",
         "js/da_upload.js",
-        "js/captcha/bitmaps.js",
-        "js/captcha/captchaparser.js",
         "js/exam_schedule.js",
         "js/navbarcc.js",
         "js/navbarap.js",
@@ -45,6 +43,21 @@
         "*://vtopcc.vit.ac.in/vtop/*",
         "*://vtop.vitap.ac.in/*",
         "*://vtop.vitap.ac.in/vtop/*"
+      ]
+    },
+    {
+      "js": [
+        "js/captcha/bitmaps.js",
+        "js/captcha/captchaparser.js"
+      ],
+      "matches": [
+        "*://vtopcc.vit.ac.in/vtop/initialProcess*",
+        "*://vtop.vit.ac.in/vtop/login*",
+        "*://vtop.vit.ac.in/vtop/initialProcess*",
+        "*://vtop.vitap.ac.in/vtop/login*",
+        "*://vtop.vitap.ac.in/vtop/initialProcess*",
+        "*://web.vitap.ac.in/vtop/login*",
+        "*://web.vitap.ac.in/vtop/initialProcess*"
       ]
     },
     {
