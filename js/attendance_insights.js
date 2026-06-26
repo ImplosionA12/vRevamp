@@ -442,10 +442,12 @@
 
   /* ---------------- real schedule from the saved timetable ---------------- */
 
-  const DAY_TO_NUM = {
-    sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
-    thursday: 4, friday: 5, saturday: 6,
-  };
+  // Saved timetable day cells are 3-letter codes ("MON"); also tolerate full
+  // names. Returns 0=Sun..6=Sat, or undefined.
+  const dayToNum = (name) =>
+    ({ SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 })[
+      String(name || "").trim().toUpperCase().slice(0, 3)
+    ];
   const COURSE_CODE_RE = /[A-Z]{2,4}\d{3,4}/;
 
   // getTimeTable (defined in js/store/saveTimeTableDetails.js, shared content
@@ -470,9 +472,9 @@
     const map = {};
     if (!timetable || !Array.isArray(timetable.data)) return map;
     timetable.data.forEach((row) => {
-      const wd = DAY_TO_NUM[String(row.day || "").trim().toLowerCase()];
+      const wd = dayToNum(row.day);
       if (wd === undefined) return;
-      ["Theory", "Lab"].forEach((kind) => {
+      ["theory", "lab"].forEach((kind) => {
         const cells = Array.isArray(row[kind]) ? row[kind] : [];
         cells.forEach((cell) => {
           const m = COURSE_CODE_RE.exec(String(cell).replace(/\s+/g, ""));

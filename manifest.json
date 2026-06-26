@@ -27,6 +27,7 @@
         "js/attendance.js",
         "js/attendance_insights.js",
         "js/home_notices.js",
+        "js/next_class.js",
         "js/marks_page.js",
         "js/course_page.js",
         "js/da_upload.js",
