@@ -512,6 +512,14 @@
       Math.floor(attended + remaining - ATTENDANCE_MIN * (total + remaining))
     );
 
+  // Consecutive classes that must be attended to climb back to 75%:
+  // (A + x) / (T + x) >= 0.75  ->  x >= (0.75*T - A) / 0.25
+  const attendToTarget = (attended, total) =>
+    Math.max(
+      0,
+      Math.ceil((ATTENDANCE_MIN * total - attended) / (1 - ATTENDANCE_MIN))
+    );
+
   // All internal math is in history entries (hours for labs); size/unit
   // convert the displayed numbers to whole sessions
   const bunkCell = (calendar, examIso, attended, total, meetings, history, size, unit) => {
@@ -575,6 +583,72 @@
   const clearStatus = () => {
     const box = document.getElementById("vrevamp-insights-status");
     if (box) box.remove();
+  };
+
+  /* ---------------- forecast banner ---------------- */
+
+  // A compact at-a-glance summary above the table: which subjects are below
+  // 75% (and how many classes to attend to recover), which have no margin
+  // before the next exam, and otherwise the tightest safe subject.
+  const renderForecastBanner = (rowsData) => {
+    const old = document.getElementById("vrevamp-forecast-banner");
+    if (old) old.remove();
+    const anchor = document.querySelector(".table-responsive");
+    if (!anchor) return;
+
+    const below = rowsData
+      .filter((r) => r.pct !== null && r.pct < 75)
+      .sort((a, b) => a.pct - b.pct);
+    const tight = rowsData.filter(
+      (r) => r.pct >= 75 && typeof r.nextBunkable === "number" && r.nextBunkable <= 0
+    );
+    const accent = below.length ? "#c0392b" : tight.length ? "#b8860b" : "#2e7d32";
+
+    const banner = document.createElement("div");
+    banner.id = "vrevamp-forecast-banner";
+    banner.style.cssText =
+      `margin:12px 0;padding:10px 14px;background:#fff;border:1px solid #ddd;` +
+      `border-left:4px solid ${accent};border-radius:4px;font-size:13px;` +
+      "box-shadow:0 1px 3px rgba(0,0,0,0.08);";
+
+    const head = document.createElement("p");
+    head.style.cssText = `font-weight:bold;margin:0 0 6px 0;color:${accent};`;
+    head.textContent = below.length
+      ? `Attendance forecast — ${below.length} subject(s) below 75%`
+      : "Attendance forecast — all subjects ≥ 75%";
+    banner.appendChild(head);
+
+    const addLine = (text, color) => {
+      const p = document.createElement("p");
+      p.textContent = text;
+      p.style.cssText = `margin:2px 0;color:${color || "#333"};`;
+      banner.appendChild(p);
+    };
+
+    below.forEach((r) =>
+      addLine(
+        `\u{1F534} ${r.name}: ${r.pct}% — attend the next ${r.recover} ${r.unit} to reach 75%`,
+        "#c0392b"
+      )
+    );
+    tight.forEach((r) =>
+      addLine(
+        `\u{1F7E0} ${r.name}: ${r.pct}% — no class to spare before ${r.nextExamLabel || "the next exam"}`,
+        "#b8860b"
+      )
+    );
+    if (!below.length && !tight.length) {
+      const withBuf = rowsData
+        .filter((r) => typeof r.nextBunkable === "number")
+        .sort((a, b) => a.nextBunkable - b.nextBunkable);
+      if (withBuf[0])
+        addLine(
+          `\u{1F7E2} Lowest margin: ${withBuf[0].name} — ${withBuf[0].nextBunkable} ${withBuf[0].unit} skippable before ${withBuf[0].nextExamLabel || "the next exam"}`,
+          "#2e7d32"
+        );
+    }
+
+    anchor.insertAdjacentElement("beforebegin", banner);
   };
 
   /* ---------------- bunk table rendering ---------------- */
@@ -754,16 +828,17 @@
           : weekdayMeetings(history);
       const size = sessionSize(history);
       const unit = size > 1 ? " lab(s)" : "";
-      // numeric bunkable before the next upcoming exam, for the home-page
-      // notices card
-      const upcoming =
+      // next upcoming exam (label + date), for the forecast banner and the
+      // home-page notices card
+      const nextExam =
         [
-          calendar && calendar.cat1,
-          calendar && calendar.cat2,
-          calendar && calendar.fat,
+          ["CAT-1", calendar && calendar.cat1],
+          ["CAT-2", calendar && calendar.cat2],
+          ["FAT", calendar && calendar.fat],
         ]
-          .filter((iso) => iso && iso > todayIso)
-          .sort()[0] || null;
+          .filter(([, iso]) => iso && iso > todayIso)
+          .sort((a, b) => (a[1] < b[1] ? -1 : 1))[0] || null;
+      const upcoming = nextExam ? nextExam[1] : null;
       const nextBunkable =
         calendar && upcoming
           ? Math.floor(
@@ -774,9 +849,13 @@
               ) / size
             )
           : null;
+      const pct = total ? Math.round((attended / total) * 100) : null;
       return {
         name: subjectName(liveRowFor(s) || s.row),
         nextBunkable,
+        nextExamLabel: nextExam ? nextExam[0] : null,
+        pct,
+        recover: pct !== null && pct < 75 ? attendToTarget(attended, total) : 0,
         unit: size > 1 ? "lab(s)" : "class(es)",
         held: total,
         remaining: calendar
@@ -788,6 +867,7 @@
       };
     });
 
+    renderForecastBanner(rowsData);
     renderBunkTable(rowsData);
 
     // snapshot for the home-page notices card
