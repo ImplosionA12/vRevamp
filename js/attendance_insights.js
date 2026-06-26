@@ -440,6 +440,57 @@
     return meetings;
   };
 
+  /* ---------------- real schedule from the saved timetable ---------------- */
+
+  const DAY_TO_NUM = {
+    sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+    thursday: 4, friday: 5, saturday: 6,
+  };
+  const COURSE_CODE_RE = /[A-Z]{2,4}\d{3,4}/;
+
+  // getTimeTable (defined in js/store/saveTimeTableDetails.js, shared content
+  // world) is callback-based; wrap it and never reject.
+  const getSavedTimetable = () =>
+    new Promise((resolve) => {
+      try {
+        if (typeof getTimeTable !== "function") return resolve(null);
+        getTimeTable((data) => resolve(data || null));
+      } catch (error) {
+        resolve(null);
+      }
+    });
+
+  // courseCode -> { weekdayNum: sessions } built from the actual timetable the
+  // student has viewed. This is the real weekly pattern; weekdayMeetings()
+  // below only *infers* it from attendance history (and so misses subjects
+  // that share a weekday or whose history is short). Each filled cell counts
+  // as one hour, matching how history entries are counted, so labs (2 cells)
+  // line up with their 2 history entries per session.
+  const scheduleFromTimetable = (timetable) => {
+    const map = {};
+    if (!timetable || !Array.isArray(timetable.data)) return map;
+    timetable.data.forEach((row) => {
+      const wd = DAY_TO_NUM[String(row.day || "").trim().toLowerCase()];
+      if (wd === undefined) return;
+      ["Theory", "Lab"].forEach((kind) => {
+        const cells = Array.isArray(row[kind]) ? row[kind] : [];
+        cells.forEach((cell) => {
+          const m = COURSE_CODE_RE.exec(String(cell).replace(/\s+/g, ""));
+          if (!m) return;
+          map[m[0]] = map[m[0]] || {};
+          map[m[0]][wd] = (map[m[0]][wd] || 0) + 1;
+        });
+      });
+    });
+    return map;
+  };
+
+  const courseCodeOf = (row) => {
+    const text = (row && (row.innerText || row.textContent)) || "";
+    const m = COURSE_CODE_RE.exec(text.replace(/\s+/g, ""));
+    return m ? m[0] : null;
+  };
+
   // Classes this subject still has on instructional days after today and
   // before untilIso (exclusive); untilIso null = through the last
   // instructional day
@@ -584,10 +635,12 @@
 
     const note = document.createElement("p");
     note.textContent =
-      "*Estimates from your detected class pattern and the academic calendar. " +
-      'Past exams show what you could have bunked back then; "--" means the ' +
-      "calendar could not be read. Lab numbers are whole lab sessions, not " +
-      "hours. Day-order swaps and unposted attendance are not visible here.";
+      "*Based on your timetable (open the Timetable page once for the exact " +
+      "schedule; otherwise it's inferred from attendance history) and the " +
+      'academic calendar. Past exams show what you could have bunked back then; ' +
+      '"--" means the calendar could not be read. Lab numbers are whole lab ' +
+      "sessions, not hours. One-off day-order swaps and unposted attendance " +
+      "are not visible here.";
     note.style.cssText = "color:#666;font-size:12px;margin-top:5px;";
     container.appendChild(note);
 
@@ -685,11 +738,20 @@
       ? await getAcademicCalendar(semesterName)
       : null;
 
+    // The student's actual timetable (if they've opened the timetable page)
+    // gives the true weekly schedule; fall back to inferring it from history.
+    const schedule = scheduleFromTimetable(await getSavedTimetable());
+
     const todayIso = isoOf(new Date());
     const rowsData = collected.map(({ s, history }) => {
       const attended = history.filter((h) => h.attended).length;
       const total = history.length;
-      const meetings = weekdayMeetings(history);
+      const code = courseCodeOf(liveRowFor(s) || s.row);
+      const scheduled = code ? schedule[code] : null;
+      const meetings =
+        scheduled && Object.keys(scheduled).length
+          ? scheduled
+          : weekdayMeetings(history);
       const size = sessionSize(history);
       const unit = size > 1 ? " lab(s)" : "";
       // numeric bunkable before the next upcoming exam, for the home-page
