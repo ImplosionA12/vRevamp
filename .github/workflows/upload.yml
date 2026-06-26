@@ -1,0 +1,27 @@
+name: Upload to Web Store
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  upload-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pack extension
+        run: zip -r extension.zip . -x ".git/*" -x ".github/*" -x "testing/*"
+        shell: bash
+
+      - name: Upload to webstore
+        uses: ExtensionNinja/extension-publish@main
+        with:
+          action: upload
+          extensionID: jfmlhhjlkbliphgkmeingeacbijcilcl
+          clientID: ${{ secrets.CI_GOOGLE_CLIENT_ID }}
+          clientSecret: ${{ secrets.CI_GOOGLE_CLIENT_SECRET }}
+          clientRefreshToken: ${{ secrets.CI_GOOGLE_REFRESH_TOKEN }}
+          extensionFile: extension.zip

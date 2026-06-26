@@ -1,0 +1,94 @@
+{
+  "action": {
+    "default_popup": "html/popup.html"
+  },
+  "author": "sanjay7178.github.io",
+  "background": {
+    "service_worker": "service_worker/background.js"
+  },
+  "content_scripts": [
+    {
+      "css": ["css/table.css", "css/nav-custom-div.css"],
+      "js": [
+        "js/modules/dom-to-image.js",
+        "js/utils/chooseCurrentSem.js",
+        "js/utils/filterRepeated.js",
+
+        "js/store/store.js",
+        "js/store/saveTimeTableDetails.js",
+        "js/store/saveMarksPage.js",
+        "js/store/saveExamSchedulePage.js",
+        "js/store/saveAttendancePage.js",
+
+        "js/showOfflineIcon.js",
+        "js/timetable/createTimeTable.js",
+        "js/timetable/parsersTimeTable.js",
+        "js/timetable/timetable.js",
+        "js/attendance.js",
+        "js/attendance_insights.js",
+        "js/home_notices.js",
+        "js/marks_page.js",
+        "js/course_page.js",
+        "js/da_upload.js",
+        "js/captcha/bitmaps.js",
+        "js/captcha/captchaparser.js",
+        "js/exam_schedule.js",
+        "js/navbarcc.js",
+        "js/navbarap.js",
+        "js/grade_pages.js",
+        "js/faculty.js",
+        "js/weekend_outing.js"
+      ],
+      "matches": [
+        "*://web.vitap.ac.in/*",
+        "*://vtop.vitap.ac.in/*",
+        "*://vtopcc.vit.ac.in/vtop/*",
+        "*://vtop.vitap.ac.in/*",
+        "*://vtop.vitap.ac.in/vtop/*"
+      ]
+    },
+    {
+      "js": [
+        "js/captcha/refreshTillCaptcha.js"
+      ],
+      "matches": [
+        "https://vtop.vitap.ac.in/vtop/login"
+      ]
+    }
+  ],
+  "description": "Enhancing the better way to use VTOP",
+  "host_permissions": [
+    "*://vtop.vit.ac.in/*",
+    "*://vtopcc.vit.ac.in/vtop/*",
+    "*://vtop.vitap.ac.in/*",
+    "*://vtop.vitap.ac.in/vtop/*"
+  ],
+  "icons": {
+    "128": "assets/icons/img_128.png",
+    "16": "assets/icons/img_16.png",
+    "48": "assets/icons/img_48.png"
+  },
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtUqfcUainUb9QtZS8BkGTBmWd0sf4nsbtGDawiMHklU/dXPWDjEi+CIEStITNxgU7df1i9OWfjE9s7mASUZMePH0OSrQYQT7936TBYu/f6vi5zjFTCymLlg7UgdBhqymhDHii6RVvzAaYJZ/pGAHH99FD3ilLPqtVX0R6BOPsHQJ27uYkL7r5N2cAaoPwELF33VvRwn/InPQcUbdTebsvgMjcIFNPdZFgzciJo4mmKfmjdQ3mEhMCRGlZlJP7jHEFGt0FCd9aBg5fB0cnGXaEZ3/0DBneXW+IWONpXk6URHDUYDZC6fbWjuhHWsMfvcKMGk8l9i1ZUzCetmI8kR/GwIDAQAB",
+  "name": "vRevamp",
+  "oauth2": {
+    "client_id": "102739538495-lqud9ruvqs4a6jug1fada5h9uu9acpmk.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/calendar"]
+  },
+  "permissions": [
+    "webRequest",
+    "downloads",
+    "storage",
+    "tabs",
+    "identity"
+  ],
+  "update_url": "https://clients2.google.com/service/update2/crx",
+
+  "version": "4.5.20",
+  "web_accessible_resources": [
+    {
+      "matches": ["*://*.vit.ac.in/*", "*://*.vitap.ac.in/*"],
+      "resources": ["js/captcha/weights.json", "js/outing/store.js"]
+    }
+  ]
+}

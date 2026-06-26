@@ -1,0 +1,12 @@
+{
+  "name": "vrevamp",
+  "private": true,
+  "description": "Chrome extension enhancing VIT-AP's VTOP portal",
+  "scripts": {
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0"
+  }
+}

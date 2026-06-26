@@ -1,0 +1,24 @@
+name: Build Chrome extension
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pack extension
+        run: zip -r extension-${{ github.sha }}.zip . -x ".git/*" -x ".github/*" -x "testing/*"
+        shell: bash
+
+      - name: Upload extension archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ github.sha }}
+          path: extension-${{ github.sha }}.zip

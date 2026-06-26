@@ -1,0 +1,87 @@
+
+.table-div{
+    width: 100%;
+    /* background-color: white; */
+    background: transparent;
+    overflow-x: scroll;
+}
+
+.styled-table {
+    border-collapse: collapse;
+    margin: 25px 0;
+    font-size: 0.9em;
+    font-family: sans-serif;
+    min-width: 400px;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.15);
+    --table-alt-color: rgb(1, 144, 216);
+    --table-alt-color-light: rgba(1, 144, 216, 0.2);
+
+    --table-color: rgb(0, 152, 121);
+    --table-color-light: rgba(0, 152, 121, 0.2);
+}
+
+.styled-table > * {
+    cursor: default;
+}
+
+.styled-table thead tr {
+    background-color: var(--table-color);
+    color: #ffffff;
+    text-align: left;
+}
+
+.styled-table th,
+.styled-table td {
+    padding: 12px 15px !important;
+}
+
+.styled-table tbody tr {
+    border-bottom: 1px solid #dddddd;
+}
+
+.styled-table tbody tr:nth-of-type(even) {
+    background-color: rgba(120, 180, 150, 0.05);
+}
+
+.styled-table tbody tr:last-of-type {
+    border-bottom: 2px solid var(--table-color);
+}
+
+.styled-table tbody tr.active-row {
+    font-weight: bold;
+    color: var(--table-color);
+}
+
+.styled-table tbody tr.current-day td:nth-child(1){
+  font-weight: bold;
+  color: var(--table-color);
+  text-decoration: underline;
+}
+
+.theory-block{
+    border: 2px solid var(--table-alt-color);
+    background-color: var(--table-alt-color-light);
+}
+
+.styled-table .lab-block{
+    border: 2px solid var(--table-color);
+    background-color: var(--table-color-light);
+}
+
+a.download-timetable{
+    padding: 0.5rem;
+    font-weight: bold;
+    cursor: pointer;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+
+    transition: .5s;
+}
+
+a.download-timetable:hover{
+    text-decoration: none;
+    color: var(--table-color);
+}
