@@ -24,6 +24,7 @@
         "js/timetable/createTimeTable.js",
         "js/timetable/parsersTimeTable.js",
         "js/timetable/timetable.js",
+        "js/timetable_ics.js",
         "js/attendance.js",
         "js/attendance_insights.js",
         "js/home_notices.js",
