@@ -35,6 +35,7 @@
         "js/navbarcc.js",
         "js/navbarap.js",
         "js/grade_pages.js",
+        "js/cgpa_simulator.js",
         "js/faculty.js",
         "js/weekend_outing.js"
       ],
