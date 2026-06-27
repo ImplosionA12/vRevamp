@@ -1,39 +1,76 @@
+/*
+ * Appends a "Your Semester Wise GPA" row under the grade-view table.
+ *
+ * VTOP shifted the grade-view columns (credits no longer sit in the table at
+ * all), so this detects columns by content and pulls credits by course code
+ * from the grade-history table on the same page. If credits can't be resolved
+ * it stays silent instead of printing NaN.
+ */
 const GRADE_POINTS = { S: 10, A: 9, B: 8, C: 7, D: 6, E: 5, F: 0 };
 
+const _txt = (el) => (el ? el.textContent : "").replace(/\s+/g, " ").trim();
+const _num = (s) => {
+  const m = /-?\d+(\.\d+)?/.exec(String(s));
+  return m ? parseFloat(m[0]) : NaN;
+};
+const _isCode = (s) => /^[A-Z]{2,4}\d{3,4}[A-Z]?$/.test(s.trim());
+const _isGrade = (s) => /^[SABCDEF]$/.test(s.trim());
+const _isCredit = (s) => /^\d{1,2}\.\d+$/.test(s.trim());
+const _hasMonth = (s) => /\b[A-Z][a-z]{2}-\d{4}\b/.test(s);
+
+// credits by course code from the grade-history table (rows carry Mon-YYYY)
+let creditsByCode = () => {
+  const map = {};
+  Array.from(document.querySelectorAll("table tr")).forEach((tr) => {
+    const texts = Array.from(tr.children).map(_txt);
+    if (!texts.some(_hasMonth)) return;
+    const code = texts.find(_isCode);
+    const credit = texts.find(_isCredit);
+    if (code && credit && !(code in map)) map[code] = _num(credit);
+  });
+  return map;
+};
+
 let modify_grade_page = () => {
-    let subject_header = Array.from(document.querySelectorAll("#studentGradeView > div > div > div.row > div > div > div > table > tbody > tr"));
-    let sum = 0;
-    let gpa = 0;
-    // iterate through the table rows, skipping the header
-    for (let i = 1; i < subject_header.length; i++) {
-        let sub_header_row = subject_header[i].getElementsByTagName("td");
-        let credits_col;
-        let grade_col;
-        try {
-            credits_col = sub_header_row[4].innerHTML;
-            grade_col = sub_header_row[9].innerHTML;
-        } catch (error) {
-            continue;
-        }
-        let credits = parseFloat(credits_col.replace(/[^0-9.]+/g, ""));
-        let grade = grade_col.replace(/[^A-Z.]+/g, "");
-        if (!(grade in GRADE_POINTS) || isNaN(credits)) {
-            continue;
-        }
-        gpa += GRADE_POINTS[grade] * credits;
-        sum += credits;
-    }
-    document.querySelector("#studentGradeView > div > div > div.row > div > div > div > table > tbody").innerHTML += `<tr class="tableContent-level1" style='background: rgb(170, 255, 0,0.6);'>
-                    <td colspan="11" style="text-align:center">Your Semester Wise GPA : ${(gpa / sum).toFixed(2)}</td>
-                </tr>`;
+  if (document.getElementById("vrevamp-sem-gpa-row")) return; // already added
+  const root = document.querySelector("#studentGradeView");
+  if (!root) return;
+  const credits = creditsByCode();
+
+  let points = 0;
+  let sum = 0;
+  let tbody = null;
+  let colspan = 11;
+  Array.from(root.querySelectorAll("table tr")).forEach((tr) => {
+    const texts = Array.from(tr.children).map(_txt);
+    const code = texts.find(_isCode);
+    const gradeI = texts.findIndex(_isGrade);
+    if (!code || gradeI < 0) return;
+    const credit = credits[code];
+    const grade = texts[gradeI];
+    if (!credit || !(grade in GRADE_POINTS)) return;
+    points += GRADE_POINTS[grade] * credit;
+    sum += credit;
+    tbody = tr.parentElement;
+    colspan = Math.max(colspan, tr.children.length);
+  });
+
+  if (!tbody || sum <= 0) return; // couldn't resolve credits — stay silent
+  const gpa = (points / sum).toFixed(2);
+  const row = document.createElement("tr");
+  row.id = "vrevamp-sem-gpa-row";
+  row.className = "tableContent-level1";
+  row.style.background = "rgb(170, 255, 0, 0.6)";
+  row.innerHTML = `<td colspan="${colspan}" style="text-align:center">Your Semester Wise GPA : ${gpa}</td>`;
+  tbody.appendChild(row);
 };
 
 chrome.runtime.onMessage.addListener((request) => {
-    if (request.message === "exam_grade") {
-        try {
-            modify_grade_page();
-        } catch (error) {
-            console.log(error);
-        }
+  if (request.message === "exam_grade") {
+    try {
+      modify_grade_page();
+    } catch (error) {
+      console.log(error);
     }
+  }
 });

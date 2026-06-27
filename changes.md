@@ -1,5 +1,27 @@
 These are the changes made to the project: 
 
+## What-if GPA/CGPA simulator + grade-view fix (2026-06-27)
+- VTOP shifted the grade-view table columns (credits left the table entirely),
+  which broke the "Your Semester Wise GPA" calc (showed `NaN`) and left the
+  CGPA simulator empty. Both now detect columns by **content** instead of fixed
+  indices, and pull **credits by course code** from the grade-history table on
+  the same page.
+- `js/grade_pages.js`: robust column detection + credit join; stays silent
+  instead of printing `NaN` when credits can't be resolved.
+- `js/cgpa_simulator.js`: rebuilt as a two-mode what-if tool on the grade page —
+  **Semester GPA** (fixed credits, editable grades, live projected GPA) and
+  **Cumulative CGPA** (folds the change into the real CGPA read from the page's
+  "CGPA Details" box and shows the delta). Also shows **marks-to-next-grade**
+  per subject using that subject's own relative cutoffs (VIT-AP grades
+  relatively) — populated when a course's "+" detail is expanded. Edited grades
+  persist across rebuilds; reset button included.
+- Robustness pass: the grade table is now found by scanning all tables for
+  grade-shaped rows (no fixed selector), the panel is (re)built by a DOM
+  MutationObserver instead of relying solely on the grade message (the SPA
+  doesn't always fire it), and the panel always renders — with a one-click
+  "Copy debug info" button that dumps the detected table structure to the
+  clipboard so any mis-detection is fixable without DevTools.
+
 ## Home Notices (2026-06)
 - A "vRevamp — heads up" card on the VTOP landing page after login: days
   until CAT-1 / CAT-2 / FAT (red when ≤ 7 days away), the next holiday, and

@@ -1,256 +1,506 @@
 /*
- * CGPA what-if simulator on the grade-view page. Reads the graded courses
- * already on the page (credits + grade), then lets the student change any
- * grade, add hypothetical/registered courses, and optionally fold in a prior
- * CGPA + credits to see a live projected semester GPA and cumulative CGPA.
- * Pure client-side; nothing is fetched or saved.
+ * CGPA / GPA what-if simulator on the grade-view page.
+ *
+ * The grade-view page holds three things we join by course code:
+ *   1. the current-semester grade table — course code, scored mark and awarded
+ *      grade, plus a "+" that expands a per-subject "Range of Grades" table
+ *      (VIT-AP grades relatively, so every subject has its own cutoffs);
+ *   2. the grade-history table — the only place credits live (4.0/3.0/…), its
+ *      rows carry a Mon-YYYY token;
+ *   3. the "CGPA Details" box — current CGPA and total credits earned.
+ *
+ * Modes:
+ *   GPA  — fixed credits, editable grades, live projected semester GPA, and
+ *          (for any expanded course) marks short of the next grade.
+ *   CGPA — folds the change into the real CGPA read from the page, with the
+ *          difference.
+ *
+ * Robustness: VTOP shuffles columns between layouts and the SPA may not always
+ * fire the grade message, so the table is found by scanning all tables for
+ * grade-shaped rows, the build is driven by a DOM observer (not just the
+ * message), and the panel always renders with a "copy debug info" button so a
+ * mis-detection still yields the exact structure to fix.
  */
 (() => {
   const GRADE_POINTS = { S: 10, A: 9, B: 8, C: 7, D: 6, E: 5, F: 0 };
   const GRADES = ["S", "A", "B", "C", "D", "E", "F"];
   const PANEL_ID = "vrevamp-cgpa-sim";
 
-  const num = (s) => parseFloat(String(s).replace(/[^0-9.]+/g, ""));
+  const txt = (el) => (el ? el.textContent : "").replace(/\s+/g, " ").trim();
+  const num = (s) => {
+    const m = /-?\d+(\.\d+)?/.exec(String(s));
+    return m ? parseFloat(m[0]) : NaN;
+  };
+  const isCode = (s) => /^[A-Z]{2,4}\d{3,4}[A-Z]?$/.test(s.trim());
+  const isGrade = (s) => /^[SABCDEF]$/.test(s.trim());
+  const isCredit = (s) => /^\d{1,2}\.\d+$/.test(s.trim()); // 4.0, 3.0 …
+  const isMark = (s) => /^\d{1,3}(\.\d+)?$/.test(s.trim()) && +num(s) >= 0 && +num(s) <= 100;
+  const hasMonth = (s) => /\b[A-Z][a-z]{2}-\d{4}\b/.test(s);
 
-  // The same columns grade_pages.js reads: credits = td[4], grade = td[9].
-  const parseCourses = () => {
-    const rows = Array.from(
-      document.querySelectorAll("#studentGradeView table tbody tr")
-    );
-    const courses = [];
-    rows.forEach((tr) => {
-      const tds = tr.getElementsByTagName("td");
-      if (tds.length < 10) return; // skips header and the appended GPA row
-      const credits = num(tds[4].innerHTML);
-      const grade = (tds[9].textContent || "").replace(/[^A-Z]+/g, "");
-      if (isNaN(credits) || credits <= 0 || !(grade in GRADE_POINTS)) return;
+  const overrides = {}; // code -> hypothetical grade, survives rebuilds
+  let mode = "gpa";
+
+  // ---- table discovery -----------------------------------------------------
+
+  const rowsOf = (t) => Array.from(t.querySelectorAll("tr"));
+  const cellTexts = (tr) => Array.from(tr.children).map(txt);
+
+  const isHistoryTable = (t) =>
+    rowsOf(t).filter((r) => hasMonth(txt(r))).length >= 2;
+
+  // the current-semester grade table = most "code + grade" rows, excluding the
+  // history table (which also has codes/grades but carries Mon-YYYY)
+  const findGradeTable = () => {
+    let best = null;
+    let bestScore = 0;
+    Array.from(document.querySelectorAll("table")).forEach((t) => {
+      if (isHistoryTable(t)) return;
+      let score = 0;
+      rowsOf(t).forEach((tr) => {
+        const c = cellTexts(tr);
+        if (c.some(isCode) && c.some(isGrade)) score++;
+      });
+      if (score > bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    });
+    return bestScore >= 1 ? best : null;
+  };
+
+  // ---- parsing -------------------------------------------------------------
+
+  const parseCurrentSem = (table) => {
+    const out = [];
+    rowsOf(table).forEach((tr) => {
+      const texts = cellTexts(tr);
+      const codeI = texts.findIndex(isCode);
+      const gradeI = texts.findIndex(isGrade);
+      if (codeI < 0 || gradeI < 0) return;
+      let markI = gradeI - 1;
+      if (!(markI > codeI && isMark(texts[markI])))
+        markI = texts.findIndex((t, i) => i > codeI && i !== gradeI && isMark(t));
       const title =
-        (tds[2] && tds[2].textContent.trim()) ||
-        (tds[3] && tds[3].textContent.trim()) ||
-        "Course";
-      courses.push({ title: title.slice(0, 40), credits, grade, editable: false });
+        texts.slice(codeI + 1).find((t) => t.length > 6 && !/^\d/.test(t)) || "";
+      out.push({
+        code: texts[codeI],
+        title: title.slice(0, 40),
+        mark: markI >= 0 ? num(texts[markI]) : NaN,
+        grade: texts[gradeI],
+        rowEl: tr,
+      });
     });
-    return courses;
+    const seen = new Set();
+    return out.filter((c) => !seen.has(c.code) && seen.add(c.code));
   };
 
-  let entries = [];
-
-  const tally = () => {
-    let points = 0;
-    let credits = 0;
-    entries.forEach((e) => {
-      const c = parseFloat(e.credits) || 0;
-      if (c <= 0) return;
-      points += GRADE_POINTS[e.grade] * c;
-      credits += c;
+  const parseCredits = () => {
+    const map = {};
+    Array.from(document.querySelectorAll("table tr")).forEach((tr) => {
+      const texts = cellTexts(tr);
+      if (!texts.some(hasMonth)) return;
+      const code = texts.find(isCode);
+      const credit = texts.find(isCredit);
+      if (code && credit && !(code in map)) map[code] = num(credit);
     });
-    return { points, credits, gpa: credits ? points / credits : null };
+    return map;
   };
 
-  const recompute = () => {
-    const { points, credits, gpa } = tally();
-    const gpaEl = document.getElementById("vrevamp-sim-gpa");
-    if (gpaEl)
-      gpaEl.textContent =
-        gpa != null ? `${gpa.toFixed(2)} over ${credits} credit(s)` : "—";
-
-    const priorCgpa = parseFloat(
-      (document.getElementById("vrevamp-sim-prior-cgpa") || {}).value
-    );
-    const priorCr = parseFloat(
-      (document.getElementById("vrevamp-sim-prior-cr") || {}).value
-    );
-    const cgpaEl = document.getElementById("vrevamp-sim-cgpa");
-    if (!cgpaEl) return;
-    if (!isNaN(priorCgpa) && !isNaN(priorCr) && priorCr + credits > 0) {
-      const cgpa = (priorCgpa * priorCr + points) / (priorCr + credits);
-      cgpaEl.textContent = `${cgpa.toFixed(2)} over ${priorCr + credits} credit(s)`;
-    } else {
-      cgpaEl.textContent = "enter prior CGPA & credits earned";
-    }
+  const parseCgpaDetails = () => {
+    let result = { cgpa: NaN, creditsEarned: NaN };
+    Array.from(document.querySelectorAll("table")).forEach((t) => {
+      if (!/CGPA/i.test(t.textContent) || !/Credits Earned/i.test(t.textContent))
+        return;
+      const rows = rowsOf(t);
+      if (rows.length < 2) return;
+      const head = cellTexts(rows[0]).map((h) => h.toLowerCase());
+      const vals = cellTexts(rows[1]);
+      const at = (label) => {
+        const i = head.findIndex((h) => h === label);
+        return i >= 0 ? num(vals[i]) : NaN;
+      };
+      const cgpa = at("cgpa");
+      if (!isNaN(cgpa)) result = { cgpa, creditsEarned: at("credits earned") };
+    });
+    return result;
   };
 
-  const gradeSelect = (value, onChange) => {
+  const parseRanges = (list) => {
+    Array.from(document.querySelectorAll("table"))
+      .filter((t) => /Range of Grades/i.test(t.textContent))
+      .forEach((t) => {
+        let cutoffs = null;
+        rowsOf(t).forEach((tr) => {
+          const vals = cellTexts(tr).filter((s) => /[<>]=?\s*\d/.test(s));
+          if (vals.length >= 5) {
+            cutoffs = {};
+            GRADES.forEach((g, i) => {
+              cutoffs[g] =
+                vals[i] !== undefined ? num(vals[i].replace(/<\d.*/, "")) : NaN;
+            });
+          }
+        });
+        if (!cutoffs) return;
+        let owner = null;
+        list.forEach((c) => {
+          if (
+            c.rowEl &&
+            c.rowEl.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING
+          )
+            owner = c;
+        });
+        if (owner && !owner.cutoffs) owner.cutoffs = cutoffs;
+      });
+  };
+
+  // ---- computation ---------------------------------------------------------
+
+  let courses = [];
+  let credits = {};
+  let details = { cgpa: NaN, creditsEarned: NaN };
+
+  const gradeOf = (c) => overrides[c.code] || c.grade;
+  const creditOf = (c) => credits[c.code];
+
+  const semTotals = (useOverrides) => {
+    let pts = 0;
+    let cr = 0;
+    courses.forEach((c) => {
+      const credit = creditOf(c);
+      const g = useOverrides ? gradeOf(c) : c.grade;
+      if (!credit || !(g in GRADE_POINTS)) return;
+      pts += GRADE_POINTS[g] * credit;
+      cr += credit;
+    });
+    return { pts, cr, gpa: cr ? pts / cr : NaN };
+  };
+
+  const marksToNext = (c) => {
+    if (!c.cutoffs || isNaN(c.mark)) return null;
+    const idx = GRADES.indexOf(gradeOf(c));
+    if (idx <= 0) return { top: true };
+    const need = c.cutoffs[GRADES[idx - 1]];
+    if (isNaN(need)) return null;
+    return { nextGrade: GRADES[idx - 1], gap: Math.max(0, +(need - c.mark).toFixed(1)) };
+  };
+
+  // ---- rendering -----------------------------------------------------------
+
+  const CELL = "border:1px solid #ccc;padding:4px 8px;";
+  const HEAD = CELL + "background:rgba(60,141,188,0.85);color:#fff;font-weight:bold;";
+
+  const cell = (content, extra) => {
+    const td = document.createElement("td");
+    td.style.cssText = CELL + (extra || "");
+    if (content instanceof Node) td.appendChild(content);
+    else td.textContent = content;
+    return td;
+  };
+
+  const gradeSelect = (c) => {
     const sel = document.createElement("select");
     sel.style.cssText = "padding:2px 6px;";
     GRADES.forEach((g) => {
       const o = document.createElement("option");
       o.value = g;
       o.textContent = g;
-      if (g === value) o.selected = true;
+      if (g === gradeOf(c)) o.selected = true;
       sel.appendChild(o);
     });
-    sel.addEventListener("change", () => onChange(sel.value));
+    sel.addEventListener("change", () => {
+      if (sel.value === c.grade) delete overrides[c.code];
+      else overrides[c.code] = sel.value;
+      renderBody();
+    });
     return sel;
   };
 
-  const CELL = "border:1px solid #ccc;padding:4px 8px;";
+  const stat = (label, value, color) => {
+    const p = document.createElement("p");
+    p.style.cssText = "margin:4px 0;font-size:13px;";
+    const b = document.createElement("b");
+    b.textContent = value;
+    if (color) b.style.color = color;
+    p.appendChild(document.createTextNode(label + " "));
+    p.appendChild(b);
+    return p;
+  };
 
-  const buildRows = (tbody) => {
-    tbody.textContent = "";
-    entries.forEach((e, idx) => {
-      const tr = document.createElement("tr");
-
-      const tdName = document.createElement("td");
-      tdName.style.cssText = CELL;
-      if (e.editable) {
-        const inp = document.createElement("input");
-        inp.value = e.title;
-        inp.style.cssText = "width:140px;";
-        inp.addEventListener("input", () => (e.title = inp.value));
-        tdName.appendChild(inp);
-      } else {
-        tdName.textContent = e.title;
-      }
-      tr.appendChild(tdName);
-
-      const tdCr = document.createElement("td");
-      tdCr.style.cssText = CELL + "text-align:center;";
-      if (e.editable) {
-        const inp = document.createElement("input");
-        inp.type = "number";
-        inp.min = "0";
-        inp.step = "1";
-        inp.value = e.credits;
-        inp.style.cssText = "width:50px;text-align:center;";
-        inp.addEventListener("input", () => {
-          e.credits = inp.value;
-          recompute();
-        });
-        tdCr.appendChild(inp);
-      } else {
-        tdCr.textContent = e.credits;
-      }
-      tr.appendChild(tdCr);
-
-      const tdGrade = document.createElement("td");
-      tdGrade.style.cssText = CELL + "text-align:center;";
-      tdGrade.appendChild(
-        gradeSelect(e.grade, (v) => {
-          e.grade = v;
-          recompute();
-        })
-      );
-      tr.appendChild(tdGrade);
-
-      const tdDel = document.createElement("td");
-      tdDel.style.cssText = CELL + "text-align:center;";
-      if (e.editable) {
-        const btn = document.createElement("button");
-        btn.textContent = "✕";
-        btn.title = "Remove";
-        btn.style.cssText = "cursor:pointer;border:0;background:none;color:#c0392b;";
-        btn.addEventListener("click", () => {
-          entries.splice(idx, 1);
-          buildRows(tbody);
-          recompute();
-        });
-        tdDel.appendChild(btn);
-      }
-      tr.appendChild(tdDel);
-
-      tbody.appendChild(tr);
+  const courseTable = () => {
+    const table = document.createElement("table");
+    table.style.cssText = "border-collapse:collapse;margin:8px 0;font-size:13px;";
+    const head = document.createElement("tr");
+    ["Course", "Credits", "Mark", "Grade", "→ Next grade"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      th.style.cssText = HEAD;
+      head.appendChild(th);
     });
+    table.appendChild(head);
+
+    courses.forEach((c) => {
+      const credit = creditOf(c);
+      const tr = document.createElement("tr");
+      if (c.code in overrides) tr.style.background = "rgba(255,235,150,0.5)";
+      tr.appendChild(cell(`${c.code} ${c.title}`.trim()));
+      tr.appendChild(
+        cell(credit != null ? String(credit) : "—", "text-align:center;color:#777;")
+      );
+      tr.appendChild(cell(isNaN(c.mark) ? "—" : String(c.mark), "text-align:center;"));
+      tr.appendChild(cell(gradeSelect(c), "text-align:center;"));
+      const mtn = marksToNext(c);
+      let nextText = "—";
+      if (mtn && mtn.top) nextText = "top grade ✓";
+      else if (mtn)
+        nextText =
+          mtn.gap === 0 ? `at ${mtn.nextGrade} cutoff` : `${mtn.gap} mark(s) → ${mtn.nextGrade}`;
+      else if (!isNaN(c.mark)) nextText = "expand course ↑";
+      tr.appendChild(cell(nextText, "text-align:center;color:#555;font-size:12px;"));
+      table.appendChild(tr);
+    });
+    return table;
+  };
+
+  const fmtDelta = (d) => (d > 0 ? "+" : "") + d.toFixed(2);
+
+  const renderBody = () => {
+    const body = document.getElementById("vrevamp-sim-body");
+    if (!body) return;
+    body.textContent = "";
+
+    if (!courses.length) {
+      const p = document.createElement("p");
+      p.style.cssText = "margin:6px 0;color:#c0392b;font-size:13px;";
+      p.textContent =
+        "Couldn't read the grade table on this page yet. If you're on the Grade View page, click \"Copy debug info\" below and paste it to the developer.";
+      body.appendChild(p);
+      return;
+    }
+
+    const tabs = document.createElement("div");
+    tabs.style.cssText = "margin-bottom:8px;";
+    [["gpa", "Semester GPA"], ["cgpa", "Cumulative CGPA"]].forEach(([m, label]) => {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      const active = mode === m;
+      btn.style.cssText =
+        "cursor:pointer;padding:5px 12px;margin-right:6px;border:1px solid #aaa;" +
+        "border-radius:3px;font-size:13px;" +
+        (active
+          ? "background:rgb(60,141,188);color:#fff;border-color:rgb(60,141,188);"
+          : "background:#f4f4f4;color:#333;");
+      btn.addEventListener("click", () => {
+        mode = m;
+        renderBody();
+      });
+      tabs.appendChild(btn);
+    });
+    body.appendChild(tabs);
+    body.appendChild(courseTable());
+
+    const orig = semTotals(false);
+    const proj = semTotals(true);
+
+    if (mode === "gpa") {
+      body.appendChild(
+        stat("Current semester GPA:", isNaN(orig.gpa) ? "—" : orig.gpa.toFixed(2))
+      );
+      const delta = proj.gpa - orig.gpa;
+      body.appendChild(
+        stat(
+          "Projected semester GPA:",
+          isNaN(proj.gpa) ? "—" : proj.gpa.toFixed(2),
+          delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333"
+        )
+      );
+      if (!isNaN(delta) && delta !== 0)
+        body.appendChild(stat("Change:", fmtDelta(delta), delta > 0 ? "#2e7d32" : "#c0392b"));
+      if (courses.some((c) => creditOf(c) == null)) {
+        const w = document.createElement("p");
+        w.style.cssText = "margin:6px 0;color:#999;font-size:12px;";
+        w.textContent =
+          "Some courses have no credits on this page — open the Grade History view once so credits load.";
+        body.appendChild(w);
+      }
+    } else {
+      const { cgpa, creditsEarned } = details;
+      if (isNaN(cgpa) || isNaN(creditsEarned)) {
+        body.appendChild(
+          stat("CGPA:", "couldn't read the CGPA Details box — scroll it into view and reopen.", "#c0392b")
+        );
+      } else {
+        const projCgpa = (cgpa * creditsEarned - orig.pts + proj.pts) / creditsEarned;
+        const delta = projCgpa - cgpa;
+        body.appendChild(stat("Current CGPA:", cgpa.toFixed(2)));
+        body.appendChild(
+          stat("Projected CGPA:", projCgpa.toFixed(2), delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333")
+        );
+        body.appendChild(
+          stat("Change:", isNaN(delta) ? "—" : fmtDelta(delta), delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333")
+        );
+        const note = document.createElement("p");
+        note.style.cssText = "margin:6px 0;color:#999;font-size:12px;";
+        note.textContent = `Based on ${creditsEarned} credits earned at ${cgpa.toFixed(2)} CGPA. Assumes credits earned stay the same.`;
+        body.appendChild(note);
+      }
+    }
+
+    if (Object.keys(overrides).length) {
+      const reset = document.createElement("button");
+      reset.textContent = "↺ Reset changes";
+      reset.style.cssText =
+        "cursor:pointer;margin-top:8px;padding:4px 10px;border:1px solid #aaa;" +
+        "border-radius:3px;background:#f4f4f4;font-size:12px;";
+      reset.addEventListener("click", () => {
+        Object.keys(overrides).forEach((k) => delete overrides[k]);
+        renderBody();
+      });
+      body.appendChild(reset);
+    }
+  };
+
+  // one-click structure dump so a mis-detection is debuggable without DevTools
+  const debugInfo = () => {
+    const lines = [];
+    lines.push(`courses found: ${courses.length}`);
+    lines.push(`credits map: ${JSON.stringify(credits)}`);
+    lines.push(`cgpa details: ${JSON.stringify(details)}`);
+    const gt = findGradeTable();
+    lines.push("--- grade table (first 4 rows) ---");
+    if (gt)
+      rowsOf(gt)
+        .slice(0, 4)
+        .forEach((r, ri) =>
+          lines.push(
+            `R${ri}: ` +
+              cellTexts(r).map((t, i) => `${i}=[${t.slice(0, 26)}]`).join(" ")
+          )
+        );
+    else lines.push("NONE");
+    lines.push("--- tables with Credits/Mon-YYYY (first 3 rows each) ---");
+    Array.from(document.querySelectorAll("table"))
+      .filter((t) => isHistoryTable(t) || /CGPA/i.test(t.textContent))
+      .slice(0, 3)
+      .forEach((t, ti) => {
+        lines.push(`T${ti}:`);
+        rowsOf(t)
+          .slice(0, 3)
+          .forEach((r, ri) =>
+            lines.push(
+              ` R${ri}: ` +
+                cellTexts(r).map((c, i) => `${i}=[${c.slice(0, 22)}]`).join(" ")
+            )
+          );
+      });
+    return lines.join("\n");
   };
 
   const buildPanel = () => {
-    const existing = document.getElementById(PANEL_ID);
-    if (existing) existing.remove();
+    const gradeTable = findGradeTable();
+    const detailsBox = document.querySelector("table") &&
+      Array.from(document.querySelectorAll("table")).find((t) => /CGPA/i.test(t.textContent));
+    // only act on the grade page: needs either a grade table or the CGPA box
+    if (!gradeTable && !detailsBox) return;
 
-    const anchor = document.querySelector("#studentGradeView");
-    if (!anchor) return;
+    courses = gradeTable ? parseCurrentSem(gradeTable) : [];
+    credits = parseCredits();
+    details = parseCgpaDetails();
+    if (courses.length) parseRanges(courses);
 
-    entries = parseCourses();
+    const anchor =
+      gradeTable.closest("#studentGradeView") ||
+      gradeTable.closest(".row") ||
+      gradeTable;
 
-    const panel = document.createElement("div");
-    panel.id = PANEL_ID;
-    panel.style.cssText =
-      "margin:16px;padding:12px 16px;background:#fff;border:1px solid #ccc;" +
-      "border-left:4px solid rgb(60,141,188);border-radius:4px;font-size:13px;";
+    let panel = document.getElementById(PANEL_ID);
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = PANEL_ID;
+      panel.style.cssText =
+        "margin:16px;padding:12px 16px;background:#fff;border:1px solid #ccc;" +
+        "border-left:4px solid rgb(60,141,188);border-radius:4px;";
 
-    const title = document.createElement("p");
-    title.textContent = "vRevamp — CGPA what-if simulator";
-    title.style.cssText =
-      "font-weight:bold;margin:0 0 8px 0;font-size:14px;color:rgb(60,141,188);";
-    panel.appendChild(title);
+      const title = document.createElement("p");
+      title.textContent = "vRevamp — what-if simulator";
+      title.style.cssText =
+        "font-weight:bold;margin:0 0 4px 0;font-size:15px;color:rgb(60,141,188);";
+      panel.appendChild(title);
 
-    const hint = document.createElement("p");
-    hint.textContent =
-      "Change any grade, or add courses you're registered for, to see your " +
-      "projected GPA. Enter your current CGPA and total credits earned to " +
-      "project your cumulative CGPA.";
-    hint.style.cssText = "margin:0 0 8px 0;color:#666;";
-    panel.appendChild(hint);
+      const hint = document.createElement("p");
+      hint.style.cssText = "margin:0 0 6px 0;color:#666;font-size:12px;";
+      hint.textContent =
+        "Change any grade to see your projected GPA / CGPA — credits come from your grade history, no guessing. Expand a course (the + button) to see marks short of the next grade.";
+      panel.appendChild(hint);
 
-    const table = document.createElement("table");
-    table.style.cssText = "border-collapse:collapse;margin-bottom:8px;";
-    const thead = document.createElement("tr");
-    ["Course", "Credits", "Grade", ""].forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      th.style.cssText = CELL + "background:rgb(60,141,188,0.8);color:#fff;";
-      thead.appendChild(th);
-    });
-    table.appendChild(thead);
-    const tbody = document.createElement("tbody");
-    table.appendChild(tbody);
-    panel.appendChild(table);
-    buildRows(tbody);
+      const bodyWrap = document.createElement("div");
+      bodyWrap.id = "vrevamp-sim-body";
+      panel.appendChild(bodyWrap);
 
-    const addBtn = document.createElement("button");
-    addBtn.textContent = "+ Add a course";
-    addBtn.style.cssText =
-      "cursor:pointer;padding:4px 10px;margin-bottom:10px;border:1px solid #aaa;" +
-      "border-radius:3px;background:#f4f4f4;";
-    addBtn.addEventListener("click", () => {
-      entries.push({ title: "New course", credits: 3, grade: "S", editable: true });
-      buildRows(tbody);
-      recompute();
-    });
-    panel.appendChild(addBtn);
+      const dbgBar = document.createElement("div");
+      dbgBar.style.cssText = "margin-top:8px;";
+      const dbg = document.createElement("button");
+      dbg.textContent = "Copy debug info";
+      dbg.style.cssText =
+        "cursor:pointer;padding:3px 9px;border:1px solid #bbb;border-radius:3px;" +
+        "background:#fafafa;color:#666;font-size:11px;";
+      const dbgMsg = document.createElement("span");
+      dbgMsg.style.cssText = "margin-left:8px;color:#2e7d32;font-size:11px;";
+      dbg.addEventListener("click", async () => {
+        const text = debugInfo();
+        try {
+          await navigator.clipboard.writeText(text);
+          dbgMsg.textContent = "copied ✔ — paste it to the developer";
+        } catch (e) {
+          console.log("[vRevamp what-if debug]\n" + text);
+          dbgMsg.textContent = "see console (F12) and copy from there";
+        }
+      });
+      dbgBar.appendChild(dbg);
+      dbgBar.appendChild(dbgMsg);
+      panel.appendChild(dbgBar);
 
-    const priorWrap = document.createElement("div");
-    priorWrap.style.cssText = "margin:6px 0;";
-    const mkInput = (id, ph, w) => {
-      const i = document.createElement("input");
-      i.id = id;
-      i.type = "number";
-      i.min = "0";
-      i.placeholder = ph;
-      i.style.cssText = `width:${w}px;margin-right:8px;padding:3px 6px;`;
-      i.addEventListener("input", recompute);
-      return i;
-    };
-    priorWrap.appendChild(mkInput("vrevamp-sim-prior-cgpa", "Prior CGPA", 90));
-    priorWrap.appendChild(mkInput("vrevamp-sim-prior-cr", "Credits earned", 110));
-    panel.appendChild(priorWrap);
+      anchor.insertAdjacentElement("afterend", panel);
+    }
+    renderBody();
+  };
 
-    const result = (label, id) => {
-      const p = document.createElement("p");
-      p.style.cssText = "margin:4px 0;font-weight:bold;";
-      const span = document.createElement("span");
-      span.id = id;
-      p.appendChild(document.createTextNode(label + " "));
-      p.appendChild(span);
-      return p;
-    };
-    panel.appendChild(result("Projected semester GPA:", "vrevamp-sim-gpa"));
-    panel.appendChild(result("Projected CGPA:", "vrevamp-sim-cgpa"));
+  // ---- triggers ------------------------------------------------------------
 
-    anchor.insertAdjacentElement("afterend", panel);
-    recompute();
+  let timer = null;
+  let lastSig = "";
+  const scheduleBuild = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      // skip rebuilds when nothing relevant changed (observer can be chatty)
+      const gt = findGradeTable();
+      const sig =
+        (gt ? rowsOf(gt).length : 0) +
+        ":" +
+        document.querySelectorAll("table").length +
+        ":" +
+        (document.getElementById(PANEL_ID) ? 1 : 0);
+      if (sig === lastSig && document.getElementById(PANEL_ID)) return;
+      lastSig = sig;
+      try {
+        buildPanel();
+      } catch (error) {
+        console.warn("vRevamp what-if simulator:", error);
+      }
+    }, 400);
   };
 
   chrome.runtime.onMessage.addListener((request) => {
-    if (request.message === "exam_grade") {
-      // let grade_pages.js finish appending its GPA row first
-      setTimeout(() => {
-        try {
-          buildPanel();
-        } catch (error) {
-          console.warn("vRevamp CGPA simulator:", error);
-        }
-      }, 300);
-    }
+    if (request.message === "exam_grade" || request.message === "nav_bar_change")
+      scheduleBuild();
   });
+
+  // the SPA swaps the grade table in without always firing our message, so
+  // watch the DOM and (re)build whenever tables appear or expand
+  const observer = new MutationObserver(scheduleBuild);
+  const startObserving = () => {
+    if (document.body) observer.observe(document.body, { childList: true, subtree: true });
+    else setTimeout(startObserving, 300);
+  };
+  startObserving();
+  scheduleBuild();
 })();
