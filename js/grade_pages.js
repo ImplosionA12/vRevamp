@@ -41,14 +41,19 @@ let modify_grade_page = () => {
   let sum = 0;
   let tbody = null;
   let colspan = 11;
+  const seen = new Set();
   Array.from(root.querySelectorAll("table tr")).forEach((tr) => {
     const texts = Array.from(tr.children).map(_txt);
+    // skip grade-history rows (Mon-YYYY) so past semesters don't get folded
+    // into the current-semester GPA, and never count a course code twice
+    if (texts.some(_hasMonth)) return;
     const code = texts.find(_isCode);
     const gradeI = texts.findIndex(_isGrade);
-    if (!code || gradeI < 0) return;
+    if (!code || gradeI < 0 || seen.has(code)) return;
     const credit = credits[code];
     const grade = texts[gradeI];
     if (!credit || !(grade in GRADE_POINTS)) return;
+    seen.add(code);
     points += GRADE_POINTS[grade] * credit;
     sum += credit;
     tbody = tr.parentElement;

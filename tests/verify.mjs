@@ -209,6 +209,40 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* =========== grade_pages.js: "Semester Wise GPA" row ============= */
+  // History table lives INSIDE #studentGradeView along with the current-sem
+  // table. Current sem = CSE1005 A(9,4cr) + MAT2001 B(8,3cr) -> 60/7 = 8.57.
+  // History also lists an older PHY1001 S(10,4cr). The semester GPA must be
+  // 8.57 (current sem only), NOT polluted by history rows.
+  console.log("\n=== grade_pages.js semester GPA row ===");
+  {
+    const gradeTable = `<table>
+      <tr><th>Sl</th><th>Code</th><th>Title</th><th>Type</th><th>Mark</th><th>Grade</th></tr>
+      <tr><td>1</td><td>CSE1005</td><td>Problem Solving</td><td>ETH</td><td>88</td><td>A</td></tr>
+      <tr><td>2</td><td>MAT2001</td><td>Statistics</td><td>ETH</td><td>76</td><td>B</td></tr>
+    </table>`;
+    const historyTable = `<table>
+      <tr><th>Sem</th><th>Code</th><th>Title</th><th>Credits</th><th>Grade</th></tr>
+      <tr><td>May-2024</td><td>PHY1001</td><td>Physics</td><td>4.0</td><td>S</td></tr>
+      <tr><td>Jul-2025</td><td>CSE1005</td><td>Problem Solving</td><td>4.0</td><td>A</td></tr>
+      <tr><td>Jul-2025</td><td>MAT2001</td><td>Statistics</td><td>3.0</td><td>B</td></tr>
+    </table>`;
+    const page = await newPage(browser);
+    await page.setContent(`<body><div id="studentGradeView">${gradeTable}${historyTable}</div></body>`);
+    await shim(page);
+    await inject(page, ["js/grade_pages.js"]);
+    await page.evaluate(() => window.__dispatch("exam_grade"));
+    await delay(400);
+    const gpaRow = await page.evaluate(() => {
+      const el = document.getElementById("vrevamp-sem-gpa-row");
+      return el ? el.textContent : null;
+    });
+    ok("GPA row appended", !!gpaRow, gpaRow || "none");
+    ok("semester GPA = 8.57 (current sem only, history not double-counted)",
+      !!gpaRow && /8\.57/.test(gpaRow) && !/9\.0|8\.8|8\.7\b/.test(gpaRow), gpaRow || "none");
+    await page.close();
+  }
+
   /* =================== Feature 4: timetable .ics export =================== */
   console.log("\n=== full timetable .ics export ===");
   {
