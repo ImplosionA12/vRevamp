@@ -127,54 +127,85 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
-  /* =================== Feature 3: CGPA simulator =================== */
+  /* =================== Feature 3: CGPA what-if simulator =================== */
+  // Current design joins three tables by course code: the current-sem grade
+  // table (code+mark+grade), the grade-history table (credits, Mon-YYYY rows),
+  // and the CGPA Details box (cgpa + credits earned).
   console.log("\n=== CGPA what-if simulator (grade page) ===");
   {
-    // two courses: 4cr A(9), 3cr B(8) -> GPA = (36+24)/7 = 8.571
-    const td = (n) => `<td>${n}</td>`;
-    const row = (code, cr, grade) =>
-      `<tr>${td("")}${td(code)}${td("Course " + code)}${td("")}${td(cr)}${td("")}${td("")}${td("")}${td("")}${td(grade)}${td("")}</tr>`;
-    const html = `<body><div id="studentGradeView"><div><div><div class="row"><div><div><div>
-      <table><tbody>
-        <tr><th>h</th></tr>
-        ${row("CSE1005", 4, "A")}
-        ${row("MAT2001", 3, "B")}
-      </tbody></table></div></div></div></div></div></div></body>`;
+    const bodyText = (page) =>
+      page.evaluate(() => {
+        const el = document.getElementById("vrevamp-sim-body");
+        return el ? el.textContent.replace(/\s+/g, " ") : null;
+      });
+
+    // CSE1005: 88 -> A(9), 4cr ; MAT2001: 76 -> B(8), 3cr -> GPA (36+24)/7 = 8.57
+    const gradeTable = `<table>
+      <tr><th>Sl</th><th>Code</th><th>Title</th><th>Type</th><th>Mark</th><th>Grade</th></tr>
+      <tr><td>1</td><td>CSE1005</td><td>Problem Solving</td><td>ETH</td><td>88</td><td>A</td></tr>
+      <tr><td>2</td><td>MAT2001</td><td>Statistics</td><td>ETH</td><td>76</td><td>B</td></tr>
+    </table>`;
+    // grade history (the only place credits live), rows carry a Mon-YYYY token
+    const historyTable = `<table>
+      <tr><th>Sem</th><th>Code</th><th>Title</th><th>Credits</th><th>Grade</th></tr>
+      <tr><td>Jul-2025</td><td>CSE1005</td><td>Problem Solving</td><td>4.0</td><td>A</td></tr>
+      <tr><td>Jul-2025</td><td>MAT2001</td><td>Statistics</td><td>3.0</td><td>B</td></tr>
+    </table>`;
+    const cgpaBox = `<table>
+      <tr><td>CGPA</td><td>Credits Earned</td><td>Credits Registered</td></tr>
+      <tr><td>8.20</td><td>60</td><td>64</td></tr>
+    </table>`;
+    const html = `<body><div id="studentGradeView">${gradeTable}${historyTable}${cgpaBox}</div></body>`;
+
     const page = await newPage(browser);
     await page.setContent(html);
     await shim(page);
     await inject(page, ["js/cgpa_simulator.js"]);
     await page.evaluate(() => window.__dispatch("exam_grade"));
-    await delay(500);
-    const gpa = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-sim-gpa");
-      return el ? el.textContent : null;
-    });
-    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vrevamp-cgpa-sim")));
-    ok("semester GPA = 8.57 over 7 credits", gpa === "8.57 over 7 credit(s)", gpa || "none");
+    await delay(900);
 
-    // change first course grade A->S (10): (40+24)/7 = 9.142
+    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vrevamp-cgpa-sim")));
+    let t = await bodyText(page);
+    ok("reads credits from history (4 & 3) + current GPA 8.57", !!t && /Current semester GPA: 8\.57/.test(t), t ? t.slice(0, 90) : "none");
+    ok("debug button present", await page.evaluate(() => [...document.querySelectorAll("#vrevamp-cgpa-sim button")].some((b) => /debug/i.test(b.textContent))));
+
+    // change CSE1005 A->S(10): (40+24)/7 = 9.14
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("#vrevamp-cgpa-sim tbody select")[0];
+      const sel = [...document.querySelectorAll("#vrevamp-cgpa-sim select")][0];
       sel.value = "S";
       sel.dispatchEvent(new Event("change"));
     });
-    const gpa2 = await page.evaluate(() => document.getElementById("vrevamp-sim-gpa").textContent);
-    ok("recompute after grade change -> 9.14", gpa2 === "9.14 over 7 credit(s)", gpa2);
+    t = await bodyText(page);
+    ok("recompute after grade change -> projected 9.14", !!t && /Projected semester GPA: 9\.14/.test(t), t ? t.match(/Projected[^.]*\d\.\d\d/)?.[0] : "none");
 
-    // prior CGPA 8.0 over 20 credits + this 8.57*7 -> (160 + 64)/27 ... use S-changed (64? no). Recompute with current entries (S): points=64, cr=7. prior 8*20=160 -> (160+64)/27 = 8.296
+    // switch to CGPA mode: (8.20*60 - 60 + 64)/60 = 496/60 = 8.27
     await page.evaluate(() => {
-      const set = (id, v) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event("input")); };
-      set("vrevamp-sim-prior-cgpa", "8");
-      set("vrevamp-sim-prior-cr", "20");
+      const btn = [...document.querySelectorAll("#vrevamp-cgpa-sim button")].find((b) => /Cumulative CGPA/.test(b.textContent));
+      btn.click();
     });
-    const cgpa = await page.evaluate(() => document.getElementById("vrevamp-sim-cgpa").textContent);
-    ok("projected CGPA = 8.30 over 27 credits", cgpa === "8.30 over 27 credit(s)", cgpa);
+    t = await bodyText(page);
+    ok("CGPA mode reads real CGPA 8.20", !!t && /Current CGPA: 8\.20/.test(t), t ? t.match(/Current CGPA: [\d.]+/)?.[0] : "none");
+    ok("projected CGPA folds the change -> 8.27", !!t && /Projected CGPA: 8\.27/.test(t), t ? t.match(/Projected CGPA: [\d.]+/)?.[0] : "none");
+    await page.close();
+  }
 
-    // add a course -> entry count grows
-    await page.evaluate(() => document.querySelector("#vrevamp-cgpa-sim button").click());
-    const rows = await page.evaluate(() => document.querySelectorAll("#vrevamp-cgpa-sim tbody tr").length);
-    ok("add-course adds a row (3 total)", rows === 3, "rows=" + rows);
+  /* sub-test: CGPA box but no detectable grade table must not crash (bug fix) */
+  console.log("\n=== CGPA simulator: graceful when no grade table ===");
+  {
+    const page = await newPage(browser);
+    let crashed = false;
+    page.on("pageerror", () => (crashed = true));
+    await page.setContent(`<body><div id="studentGradeView"><table>
+      <tr><td>CGPA</td><td>Credits Earned</td></tr><tr><td>8.20</td><td>60</td></tr>
+    </table></div></body>`);
+    await shim(page);
+    await inject(page, ["js/cgpa_simulator.js"]);
+    await page.evaluate(() => window.__dispatch("exam_grade"));
+    await delay(900);
+    ok("no exception thrown", !crashed);
+    ok("panel still renders with debug button", await page.evaluate(() =>
+      !!document.getElementById("vrevamp-cgpa-sim") &&
+      [...document.querySelectorAll("#vrevamp-cgpa-sim button")].some((b) => /debug/i.test(b.textContent))));
     await page.close();
   }
 

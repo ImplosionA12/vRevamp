@@ -407,10 +407,16 @@
     details = parseCgpaDetails();
     if (courses.length) parseRanges(courses);
 
+    // gradeTable may be null when only the CGPA box was found — still render
+    // the panel (with the debug button) rather than crashing on .closest
     const anchor =
-      gradeTable.closest("#studentGradeView") ||
-      gradeTable.closest(".row") ||
-      gradeTable;
+      (gradeTable &&
+        (gradeTable.closest("#studentGradeView") ||
+          gradeTable.closest(".row") ||
+          gradeTable)) ||
+      detailsBox.closest("#studentGradeView") ||
+      detailsBox ||
+      document.body;
 
     let panel = document.getElementById(PANEL_ID);
     if (!panel) {
