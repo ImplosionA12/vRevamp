@@ -163,7 +163,9 @@
   let details = { cgpa: NaN, creditsEarned: NaN };
 
   const gradeOf = (c) => (c.custom ? c.grade : overrides[c.code] || c.grade);
-  const creditOf = (c) => (c.custom ? c.credit : credits[c.code]);
+  // custom courses keep credits as the raw typed string (parsed lazily) so a
+  // mid-edit empty/partial field doesn't get coerced back to "0" on rebuild
+  const creditOf = (c) => (c.custom ? num(c.creditStr) : credits[c.code]);
 
   // "current" totals reflect the real transcript only; hypothetical added
   // courses only ever show up in the projected ("useOverrides") totals
@@ -179,9 +181,9 @@
     });
     if (useOverrides) {
       customCourses.forEach((c) => {
-        const credit = c.credit;
+        const credit = creditOf(c);
         const g = c.grade;
-        if (!credit || !(g in GRADE_POINTS)) return;
+        if (!credit || isNaN(credit) || !(g in GRADE_POINTS)) return;
         pts += GRADE_POINTS[g] * credit;
         cr += credit;
       });
@@ -295,13 +297,19 @@
 
       const crInp = document.createElement("input");
       crInp.id = `vrevamp-custom-credit-${idx}`;
-      crInp.type = "number";
-      crInp.min = "0";
-      crInp.step = "1";
-      crInp.value = c.credit;
+      // type="text" + inputmode, not type="number": renderBody() rebuilds this
+      // input on every keystroke, and a number input's .value collapses to ""
+      // on an in-progress invalid value (e.g. a trailing "."), silently
+      // reverting mid-typing — a plain text field just keeps what was typed
+      crInp.type = "text";
+      crInp.inputMode = "decimal";
+      crInp.value = c.creditStr;
       crInp.style.cssText = "width:50px;text-align:center;";
       crInp.addEventListener("input", () => {
-        c.credit = parseFloat(crInp.value) || 0;
+        // store the raw text, not a coerced number — coercing here (e.g. via
+        // `|| 0`) would echo "0" back into the field the moment it's cleared,
+        // stomping whatever the user is about to type next
+        c.creditStr = crInp.value;
         renderBody();
       });
       tr.appendChild(cell(crInp, "text-align:center;"));
@@ -333,7 +341,7 @@
       "cursor:pointer;padding:4px 10px;margin:2px 0 4px;border:1px solid #aaa;" +
       "border-radius:3px;background:#f4f4f4;font-size:12px;";
     addBtn.addEventListener("click", () => {
-      customCourses.push({ title: "New course", credit: 3, grade: "S", custom: true, mark: NaN, cutoffs: null });
+      customCourses.push({ title: "New course", creditStr: "3", grade: "S", custom: true, mark: NaN, cutoffs: null });
       renderBody();
     });
     wrap.appendChild(addBtn);
@@ -432,8 +440,10 @@
       const mkPrior = (id, value, ph, width, onInput) => {
         const i = document.createElement("input");
         i.id = id;
-        i.type = "number";
-        i.min = "0";
+        // see the crInp comment above: text+inputmode avoids a number input's
+        // .value silently reverting to "" while a decimal is mid-typing
+        i.type = "text";
+        i.inputMode = "decimal";
         i.placeholder = ph;
         i.value = value;
         i.style.cssText = `width:${width}px;margin-right:8px;padding:3px 6px;`;
