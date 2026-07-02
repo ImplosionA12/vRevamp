@@ -1,5 +1,18 @@
 These are the changes made to the project: 
 
+## What-if simulator regression fix (2026-07-02)
+- The 2026-06-27 rewrite below dropped several working pieces while adding its
+  robustness pass: the `vrevamp-sim-gpa` element the projected GPA rendered
+  into lost its id, the "add a hypothetical course" feature was removed
+  entirely, the manual prior-CGPA/credits fallback inputs were dropped in
+  favor of only auto-reading the page's CGPA Details box (silently useless
+  when that box isn't present), and the course table lost its `<tbody>`. The
+  end-to-end test suite (`npm test`) caught 3 of these; restored all of them —
+  add-course is back (editable title/credits/grade, removable), the CGPA tab
+  auto-fills from the page but stays editable/usable as a manual fallback, and
+  typing in a number input no longer loses focus on every keystroke (the
+  rebuild-driven render now restores focus + cursor position).
+
 ## What-if GPA/CGPA simulator + grade-view fix (2026-06-27)
 - VTOP shifted the grade-view table columns (credits left the table entirely),
   which broke the "Your Semester Wise GPA" calc (showed `NaN`) and left the

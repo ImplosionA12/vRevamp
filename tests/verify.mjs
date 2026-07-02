@@ -131,14 +131,22 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   console.log("\n=== CGPA what-if simulator (grade page) ===");
   {
     // two courses: 4cr A(9), 3cr B(8) -> GPA = (36+24)/7 = 8.571
+    // credits live only in the grade-history table (Mon-YYYY rows), matching
+    // the current VTOP layout — the grade table itself no longer has them
     const td = (n) => `<td>${n}</td>`;
-    const row = (code, cr, grade) =>
-      `<tr>${td("")}${td(code)}${td("Course " + code)}${td("")}${td(cr)}${td("")}${td("")}${td("")}${td("")}${td(grade)}${td("")}</tr>`;
+    const row = (code, grade) =>
+      `<tr>${td("")}${td(code)}${td("Course " + code)}${td("")}${td("")}${td("")}${td("")}${td("")}${td("")}${td(grade)}${td("")}</tr>`;
+    const histRow = (code, cr) => `<tr>${td(code)}${td("Jan-2026")}${td(cr.toFixed(1))}</tr>`;
     const html = `<body><div id="studentGradeView"><div><div><div class="row"><div><div><div>
       <table><tbody>
         <tr><th>h</th></tr>
-        ${row("CSE1005", 4, "A")}
-        ${row("MAT2001", 3, "B")}
+        ${row("CSE1005", "A")}
+        ${row("MAT2001", "B")}
+      </tbody></table>
+      <table><tbody>
+        <tr><th>history</th></tr>
+        ${histRow("CSE1005", 4)}
+        ${histRow("MAT2001", 3)}
       </tbody></table></div></div></div></div></div></div></body>`;
     const page = await newPage(browser);
     await page.setContent(html);
@@ -155,14 +163,19 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     // change first course grade A->S (10): (40+24)/7 = 9.142
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("#vrevamp-cgpa-sim tbody select")[0];
+      const sel = document.querySelectorAll("#vrevamp-cgpa-sim select")[0];
       sel.value = "S";
       sel.dispatchEvent(new Event("change"));
     });
     const gpa2 = await page.evaluate(() => document.getElementById("vrevamp-sim-gpa").textContent);
     ok("recompute after grade change -> 9.14", gpa2 === "9.14 over 7 credit(s)", gpa2);
 
-    // prior CGPA 8.0 over 20 credits + this 8.57*7 -> (160 + 64)/27 ... use S-changed (64? no). Recompute with current entries (S): points=64, cr=7. prior 8*20=160 -> (160+64)/27 = 8.296
+    // switch to the Cumulative CGPA tab, then enter prior CGPA 8.0 over 20 credits
+    // current entries (S override): points=64, cr=7 -> (8*20 + 64)/27 = 8.296
+    await page.evaluate(() => {
+      const tabs = Array.from(document.querySelectorAll("#vrevamp-cgpa-sim button"));
+      tabs.find((b) => b.textContent.includes("Cumulative CGPA")).click();
+    });
     await page.evaluate(() => {
       const set = (id, v) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event("input")); };
       set("vrevamp-sim-prior-cgpa", "8");
@@ -171,8 +184,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const cgpa = await page.evaluate(() => document.getElementById("vrevamp-sim-cgpa").textContent);
     ok("projected CGPA = 8.30 over 27 credits", cgpa === "8.30 over 27 credit(s)", cgpa);
 
-    // add a course -> entry count grows
-    await page.evaluate(() => document.querySelector("#vrevamp-cgpa-sim button").click());
+    // add a course -> entry count grows (existing 2 courses + 1 added = 3 body rows)
+    await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll("#vrevamp-cgpa-sim button"));
+      buttons.find((b) => b.textContent.includes("Add a course")).click();
+    });
     const rows = await page.evaluate(() => document.querySelectorAll("#vrevamp-cgpa-sim tbody tr").length);
     ok("add-course adds a row (3 total)", rows === 3, "rows=" + rows);
     await page.close();

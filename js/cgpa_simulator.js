@@ -38,6 +38,9 @@
   const hasMonth = (s) => /\b[A-Z][a-z]{2}-\d{4}\b/.test(s);
 
   const overrides = {}; // code -> hypothetical grade, survives rebuilds
+  const customCourses = []; // user-added hypothetical courses, survive rebuilds
+  let manualPriorCgpa = null; // string; null = fall back to auto-read value
+  let manualPriorCr = null;
   let mode = "gpa";
 
   // ---- table discovery -----------------------------------------------------
@@ -159,9 +162,11 @@
   let credits = {};
   let details = { cgpa: NaN, creditsEarned: NaN };
 
-  const gradeOf = (c) => overrides[c.code] || c.grade;
-  const creditOf = (c) => credits[c.code];
+  const gradeOf = (c) => (c.custom ? c.grade : overrides[c.code] || c.grade);
+  const creditOf = (c) => (c.custom ? c.credit : credits[c.code]);
 
+  // "current" totals reflect the real transcript only; hypothetical added
+  // courses only ever show up in the projected ("useOverrides") totals
   const semTotals = (useOverrides) => {
     let pts = 0;
     let cr = 0;
@@ -172,6 +177,15 @@
       pts += GRADE_POINTS[g] * credit;
       cr += credit;
     });
+    if (useOverrides) {
+      customCourses.forEach((c) => {
+        const credit = c.credit;
+        const g = c.grade;
+        if (!credit || !(g in GRADE_POINTS)) return;
+        pts += GRADE_POINTS[g] * credit;
+        cr += credit;
+      });
+    }
     return { pts, cr, gpa: cr ? pts / cr : NaN };
   };
 
@@ -208,17 +222,19 @@
       sel.appendChild(o);
     });
     sel.addEventListener("change", () => {
-      if (sel.value === c.grade) delete overrides[c.code];
+      if (c.custom) c.grade = sel.value;
+      else if (sel.value === c.grade) delete overrides[c.code];
       else overrides[c.code] = sel.value;
       renderBody();
     });
     return sel;
   };
 
-  const stat = (label, value, color) => {
+  const stat = (label, value, color, id) => {
     const p = document.createElement("p");
     p.style.cssText = "margin:4px 0;font-size:13px;";
     const b = document.createElement("b");
+    if (id) b.id = id;
     b.textContent = value;
     if (color) b.style.color = color;
     p.appendChild(document.createTextNode(label + " "));
@@ -227,17 +243,21 @@
   };
 
   const courseTable = () => {
+    const wrap = document.createElement("div");
     const table = document.createElement("table");
     table.style.cssText = "border-collapse:collapse;margin:8px 0;font-size:13px;";
+    const thead = document.createElement("thead");
     const head = document.createElement("tr");
-    ["Course", "Credits", "Mark", "Grade", "→ Next grade"].forEach((h) => {
+    ["Course", "Credits", "Mark", "Grade", "→ Next grade", ""].forEach((h) => {
       const th = document.createElement("th");
       th.textContent = h;
       th.style.cssText = HEAD;
       head.appendChild(th);
     });
-    table.appendChild(head);
+    thead.appendChild(head);
+    table.appendChild(thead);
 
+    const tbody = document.createElement("tbody");
     courses.forEach((c) => {
       const credit = creditOf(c);
       const tr = document.createElement("tr");
@@ -256,9 +276,69 @@
           mtn.gap === 0 ? `at ${mtn.nextGrade} cutoff` : `${mtn.gap} mark(s) → ${mtn.nextGrade}`;
       else if (!isNaN(c.mark)) nextText = "expand course ↑";
       tr.appendChild(cell(nextText, "text-align:center;color:#555;font-size:12px;"));
-      table.appendChild(tr);
+      tr.appendChild(cell(""));
+      tbody.appendChild(tr);
     });
-    return table;
+
+    customCourses.forEach((c, idx) => {
+      const tr = document.createElement("tr");
+      tr.style.background = "rgba(200,230,255,0.4)";
+
+      const titleInp = document.createElement("input");
+      titleInp.id = `vrevamp-custom-title-${idx}`;
+      titleInp.value = c.title;
+      titleInp.style.cssText = "width:130px;padding:2px 4px;";
+      titleInp.addEventListener("input", () => {
+        c.title = titleInp.value;
+      });
+      tr.appendChild(cell(titleInp));
+
+      const crInp = document.createElement("input");
+      crInp.id = `vrevamp-custom-credit-${idx}`;
+      crInp.type = "number";
+      crInp.min = "0";
+      crInp.step = "1";
+      crInp.value = c.credit;
+      crInp.style.cssText = "width:50px;text-align:center;";
+      crInp.addEventListener("input", () => {
+        c.credit = parseFloat(crInp.value) || 0;
+        renderBody();
+      });
+      tr.appendChild(cell(crInp, "text-align:center;"));
+
+      tr.appendChild(cell("—", "text-align:center;color:#999;"));
+      tr.appendChild(cell(gradeSelect(c), "text-align:center;"));
+      tr.appendChild(cell("—", "text-align:center;color:#999;font-size:12px;"));
+
+      const rm = document.createElement("button");
+      rm.textContent = "✕";
+      rm.title = "Remove";
+      rm.style.cssText = "cursor:pointer;border:0;background:none;color:#c0392b;";
+      rm.addEventListener("click", () => {
+        const i = customCourses.indexOf(c);
+        if (i >= 0) customCourses.splice(i, 1);
+        renderBody();
+      });
+      tr.appendChild(cell(rm, "text-align:center;"));
+
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "+ Add a course";
+    addBtn.style.cssText =
+      "cursor:pointer;padding:4px 10px;margin:2px 0 4px;border:1px solid #aaa;" +
+      "border-radius:3px;background:#f4f4f4;font-size:12px;";
+    addBtn.addEventListener("click", () => {
+      customCourses.push({ title: "New course", credit: 3, grade: "S", custom: true, mark: NaN, cutoffs: null });
+      renderBody();
+    });
+    wrap.appendChild(addBtn);
+
+    return wrap;
   };
 
   const fmtDelta = (d) => (d > 0 ? "+" : "") + d.toFixed(2);
@@ -266,9 +346,15 @@
   const renderBody = () => {
     const body = document.getElementById("vrevamp-sim-body");
     if (!body) return;
+    // rebuilding the DOM on every keystroke would otherwise steal focus from
+    // whatever input the user is typing in — restore it after re-rendering
+    const active = document.activeElement;
+    const activeId = active && active.id;
+    const selStart = active && "selectionStart" in active ? active.selectionStart : null;
+
     body.textContent = "";
 
-    if (!courses.length) {
+    if (!courses.length && !customCourses.length) {
       const p = document.createElement("p");
       p.style.cssText = "margin:6px 0;color:#c0392b;font-size:13px;";
       p.textContent =
@@ -303,14 +389,18 @@
 
     if (mode === "gpa") {
       body.appendChild(
-        stat("Current semester GPA:", isNaN(orig.gpa) ? "—" : orig.gpa.toFixed(2))
+        stat(
+          "Current semester GPA:",
+          isNaN(orig.gpa) ? "—" : `${orig.gpa.toFixed(2)} over ${orig.cr} credit(s)`
+        )
       );
       const delta = proj.gpa - orig.gpa;
       body.appendChild(
         stat(
           "Projected semester GPA:",
-          isNaN(proj.gpa) ? "—" : proj.gpa.toFixed(2),
-          delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333"
+          isNaN(proj.gpa) ? "—" : `${proj.gpa.toFixed(2)} over ${proj.cr} credit(s)`,
+          delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333",
+          "vrevamp-sim-gpa"
         )
       );
       if (!isNaN(delta) && delta !== 0)
@@ -323,29 +413,67 @@
         body.appendChild(w);
       }
     } else {
-      const { cgpa, creditsEarned } = details;
-      if (isNaN(cgpa) || isNaN(creditsEarned)) {
+      // prefer the CGPA/credits read straight off the page; fall back to
+      // (and let the user override with) manual entry when that fails
+      const autoCgpa = details.cgpa;
+      const autoCr = details.creditsEarned;
+      if (!isNaN(autoCgpa) && !isNaN(autoCr) && manualPriorCgpa === null && manualPriorCr === null) {
+        const note = document.createElement("p");
+        note.style.cssText = "margin:4px 0;color:#999;font-size:12px;";
+        note.textContent = `Auto-read from this page: ${autoCgpa.toFixed(2)} CGPA over ${autoCr} credit(s). Edit below if it's wrong.`;
+        body.appendChild(note);
+      }
+
+      const cgpaStr = manualPriorCgpa !== null ? manualPriorCgpa : !isNaN(autoCgpa) ? String(autoCgpa) : "";
+      const crStr = manualPriorCr !== null ? manualPriorCr : !isNaN(autoCr) ? String(autoCr) : "";
+
+      const priorWrap = document.createElement("div");
+      priorWrap.style.cssText = "margin:6px 0;";
+      const mkPrior = (id, value, ph, width, onInput) => {
+        const i = document.createElement("input");
+        i.id = id;
+        i.type = "number";
+        i.min = "0";
+        i.placeholder = ph;
+        i.value = value;
+        i.style.cssText = `width:${width}px;margin-right:8px;padding:3px 6px;`;
+        i.addEventListener("input", () => {
+          onInput(i.value);
+          renderBody();
+        });
+        return i;
+      };
+      priorWrap.appendChild(
+        mkPrior("vrevamp-sim-prior-cgpa", cgpaStr, "Prior CGPA", 90, (v) => (manualPriorCgpa = v))
+      );
+      priorWrap.appendChild(
+        mkPrior("vrevamp-sim-prior-cr", crStr, "Credits earned", 110, (v) => (manualPriorCr = v))
+      );
+      body.appendChild(priorWrap);
+
+      const priorCgpa = num(cgpaStr);
+      const priorCr = num(crStr);
+      if (!isNaN(priorCgpa) && !isNaN(priorCr) && priorCr + proj.cr > 0) {
+        const totalCr = priorCr + proj.cr;
+        const projCgpa = (priorCgpa * priorCr + proj.pts) / totalCr;
+        const delta = projCgpa - priorCgpa;
         body.appendChild(
-          stat("CGPA:", "couldn't read the CGPA Details box — scroll it into view and reopen.", "#c0392b")
-        );
-      } else {
-        const projCgpa = (cgpa * creditsEarned - orig.pts + proj.pts) / creditsEarned;
-        const delta = projCgpa - cgpa;
-        body.appendChild(stat("Current CGPA:", cgpa.toFixed(2)));
-        body.appendChild(
-          stat("Projected CGPA:", projCgpa.toFixed(2), delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333")
+          stat(
+            "Projected CGPA:",
+            `${projCgpa.toFixed(2)} over ${totalCr} credit(s)`,
+            delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333",
+            "vrevamp-sim-cgpa"
+          )
         );
         body.appendChild(
           stat("Change:", isNaN(delta) ? "—" : fmtDelta(delta), delta > 0 ? "#2e7d32" : delta < 0 ? "#c0392b" : "#333")
         );
-        const note = document.createElement("p");
-        note.style.cssText = "margin:6px 0;color:#999;font-size:12px;";
-        note.textContent = `Based on ${creditsEarned} credits earned at ${cgpa.toFixed(2)} CGPA. Assumes credits earned stay the same.`;
-        body.appendChild(note);
+      } else {
+        body.appendChild(stat("Projected CGPA:", "enter prior CGPA & credits earned", "#c0392b", "vrevamp-sim-cgpa"));
       }
     }
 
-    if (Object.keys(overrides).length) {
+    if (Object.keys(overrides).length || customCourses.length) {
       const reset = document.createElement("button");
       reset.textContent = "↺ Reset changes";
       reset.style.cssText =
@@ -353,9 +481,24 @@
         "border-radius:3px;background:#f4f4f4;font-size:12px;";
       reset.addEventListener("click", () => {
         Object.keys(overrides).forEach((k) => delete overrides[k]);
+        customCourses.length = 0;
         renderBody();
       });
       body.appendChild(reset);
+    }
+
+    if (activeId) {
+      const el = document.getElementById(activeId);
+      if (el) {
+        el.focus();
+        if (selStart != null && "setSelectionRange" in el) {
+          try {
+            el.setSelectionRange(selStart, selStart);
+          } catch (e) {
+            /* not all input types support selection ranges */
+          }
+        }
+      }
     }
   };
 
