@@ -290,6 +290,35 @@
     return { events, untilIso };
   };
 
+  // upcoming CAT/FAT exams from the schedule cached by the Exam Schedule
+  // page — one single (non-recurring) event per exam, at the exam's own
+  // window. Returns null when that page has never been opened.
+  const examEvents = async () => {
+    const r = await chrome.storage.local.get(["vrevamp_exam_schedule"]);
+    const cache = (r || {}).vrevamp_exam_schedule;
+    if (!cache || !Array.isArray(cache.exams)) return null;
+    const today = isoOf(new Date());
+    const hm = (t) => `${t.slice(0, 2)}:${t.slice(2)}:00`; // "1000" -> "10:00:00"
+    return cache.exams
+      .filter((e) => e && e.dateIso && e.dateIso >= today && e.start && e.end)
+      .map((e) => ({
+        summary: `${e.type} exam: ${e.code}${e.title ? ` — ${e.title}` : ""}`,
+        location: e.venue || undefined,
+        description: [
+          e.slot ? `Slot: ${e.slot}` : "",
+          e.session ? `Session: ${e.session}` : "",
+          e.reporting ? `Reporting: ${e.reporting}` : "",
+          e.seatLoc || e.seatNo ? `Seat: ${e.seatLoc || "-"} · No. ${e.seatNo || "-"}` : "",
+          "vRevamp timetable import",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        start: { dateTime: `${e.dateIso}T${hm(e.start)}`, timeZone: "Asia/Kolkata" },
+        end: { dateTime: `${e.dateIso}T${hm(e.end)}`, timeZone: "Asia/Kolkata" },
+        extendedProperties: { private: { vrevamp: "timetable" } },
+      }));
+  };
+
   // a re-import replaces the previously imported series (found by our tag)
   // instead of stacking duplicates in the user's calendar
   const deleteOldImports = async (token) => {
@@ -326,7 +355,9 @@
       const cal = await getLatestCalendar();
       const titles = await courseTitles();
       const { events, untilIso } = buildGcalEvents(timetable, cal, titles);
-      if (!events.length) {
+      const exams = await examEvents(); // null = Exam Schedule page never opened
+      const all = events.concat(exams || []);
+      if (!all.length) {
         tt_status(btn, "couldn't read any classes from the timetable", false);
         return;
       }
@@ -342,11 +373,11 @@
       const removed = await deleteOldImports(token);
       let done = 0;
       let refreshed = false;
-      for (let i = 0; i < events.length; i++) {
+      for (let i = 0; i < all.length; i++) {
         const r = await fetch(GCAL_API, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify(events[i]),
+          body: JSON.stringify(all[i]),
         });
         if (r.status === 401 && !refreshed) {
           // token died mid-flight — invalidate it, mint a fresh one, retry
@@ -363,15 +394,19 @@
           return;
         }
         if (r.ok) done++;
-        tt_status(btn, `importing… ${done}/${events.length}`, true);
+        tt_status(btn, `importing… ${done}/${all.length}`, true);
         await tt_sleep(300);
       }
       btn.disabled = false;
       tt_status(
         btn,
         done > 0
-          ? `✓ ${done} weekly class(es) in Google Calendar until ${untilIso}` +
-              (removed ? ` (replaced ${removed} old)` : "")
+          ? `✓ ${done} event(s) in Google Calendar — ${events.length} weekly class(es)` +
+              (exams === null
+                ? " (open the Exam Schedule page once to include CAT/FAT exams)"
+                : ` + ${exams.length} exam(s)`) +
+              `, classes until ${untilIso}` +
+              (removed ? `, replaced ${removed} old` : "")
           : "couldn't create the events — try again",
         done > 0
       );

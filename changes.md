@@ -1,5 +1,21 @@
 These are the changes made to the project: 
 
+## Timetable import now includes the CAT/FAT exams (2026-07-07)
+- User follow-up: during exam weeks the class series is EXDATE'd out, so the
+  calendar should show the exams instead. The Exam Schedule page now caches
+  its parsed table to `chrome.storage.local` (`vrevamp_exam_schedule`,
+  ISO date + 24h window per exam) whenever it's viewed, and the 📅 import
+  adds one single event per **upcoming** exam at its own window — venue in
+  location, slot/session/reporting time/seat in the description. Past exams
+  and rows without a published time are skipped; exams land even after the
+  last instructional day (FATs are). Same replace-tag as the class series.
+- If the Exam Schedule page was never opened, the import still works and the
+  confirmation says how to include exams. Note shows both counts:
+  "✓ N event(s) — X weekly class(es) + Y exam(s), classes until <date>".
+- Harness: cache-harvest checks on the exam fixture (4 rows normalized,
+  no-time row null) + import checks (upcoming-only, window/venue/seat,
+  counts in the note). 117 checks green.
+
 ## Timetable → Google Calendar import (2026-07-07)
 - User request: import the weekly timetable into Google Calendar until the
   FAT exams, instructional days only, with subject name and venue. New

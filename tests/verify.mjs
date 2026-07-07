@@ -426,6 +426,23 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       vrevamp_attendance_summary: {
         subjects: [{ name: "CSE1005 - Data Structures - Theory Only", code: "CSE1005" }],
       },
+      // cached by the Exam Schedule page: one upcoming FAT (after the last
+      // instructional day), one past CAT2, one CAT1 without a published time
+      vrevamp_exam_schedule: {
+        fetchedAt: fixed,
+        semester: "Fall Semester 2025-26",
+        exams: [
+          { type: "FAT", code: "CSE1005", title: "Data Structures", slot: "A1", session: "FN1",
+            reporting: "09:30 AM", venue: "CB-324", seatLoc: "R3C1", seatNo: "5",
+            dateIso: "2025-11-24", start: "1000", end: "1300" },
+          { type: "CAT2", code: "CSE1005", title: "Data Structures", slot: "A1", session: "FN1",
+            reporting: "09:30 AM", venue: "CB-101", seatLoc: "R1C1", seatNo: "9",
+            dateIso: "2025-09-15", start: "1000", end: "1130" },
+          { type: "CAT1", code: "BCSE204P", title: "No Time Yet", slot: "L31", session: "",
+            reporting: "", venue: "", seatLoc: "", seatNo: "",
+            dateIso: "2025-10-10", start: null, end: null },
+        ],
+      },
       token: "tok123",
     };
     const gcal = [];
@@ -458,9 +475,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const posts = gcal.filter((g) => g.method === "POST");
     const dels = gcal.filter((g) => g.method === "DELETE");
     ok("previous import replaced (old series deleted)", dels.length === 1 && /\/events\/old1$/.test(dels[0].url), JSON.stringify(dels.map((d) => d.url)));
-    ok("2 weekly series created (theory + merged lab)", posts.length === 2, `posts=${posts.length}`);
-    const theory = posts.map((p) => p.body).find((b) => b && /CSE1005/.test(b.summary));
-    const lab = posts.map((p) => p.body).find((b) => b && /BCSE204P/.test(b.summary));
+    const series = posts.map((p) => p.body).filter((b) => b && b.recurrence);
+    const singles = posts.map((p) => p.body).filter((b) => b && !b.recurrence);
+    ok("2 weekly series created (theory + merged lab)", series.length === 2, `series=${series.length}`);
+    const theory = series.find((b) => /CSE1005/.test(b.summary));
+    const lab = series.find((b) => /BCSE204P/.test(b.summary));
     ok(
       "subject title from the attendance snapshot + slot in the summary",
       !!theory && theory.summary === "CSE1005 — Data Structures (TA1)",
@@ -489,13 +508,39 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         lab.recurrence[1] === "EXDATE;TZID=Asia/Kolkata:20251020T140000",
       lab && JSON.stringify({ s: lab.summary, l: lab.location, st: lab.start, en: lab.end, r: lab.recurrence })
     );
+    ok(
+      "ONE exam event added — upcoming FAT only (past + no-time skipped)",
+      singles.length === 1 && singles[0].summary === "FAT exam: CSE1005 — Data Structures",
+      JSON.stringify(singles.map((s) => s.summary))
+    );
+    ok(
+      "exam event sits on the exam's own window, after the classes end",
+      singles.length === 1 &&
+        singles[0].start.dateTime === "2025-11-24T10:00:00" &&
+        singles[0].end.dateTime === "2025-11-24T13:00:00" &&
+        singles[0].location === "CB-324",
+      singles[0] && JSON.stringify({ st: singles[0].start, en: singles[0].end, l: singles[0].location })
+    );
+    ok(
+      "exam description carries slot/session/reporting/seat",
+      singles.length === 1 &&
+        /Slot: A1/.test(singles[0].description) &&
+        /Session: FN1/.test(singles[0].description) &&
+        /Reporting: 09:30 AM/.test(singles[0].description) &&
+        /Seat: R3C1 · No\. 5/.test(singles[0].description),
+      singles[0] && JSON.stringify(singles[0].description)
+    );
     const note = await page.evaluate(() => document.querySelector(".vrevamp-tt-note")?.textContent);
     ok(
-      "inline confirmation with the end date + replaced count",
-      note === "✓ 2 weekly class(es) in Google Calendar until 2025-11-20 (replaced 1 old)",
+      "inline confirmation with class/exam counts, end date + replaced count",
+      note === "✓ 3 event(s) in Google Calendar — 2 weekly class(es) + 1 exam(s), classes until 2025-11-20, replaced 1 old",
       note
     );
-    ok("events tagged for future replacement", !!theory && theory.extendedProperties?.private?.vrevamp === "timetable");
+    ok(
+      "events tagged for future replacement",
+      !!theory && theory.extendedProperties?.private?.vrevamp === "timetable" &&
+        singles.length === 1 && singles[0].extendedProperties?.private?.vrevamp === "timetable"
+    );
     await page.close();
   }
 
@@ -1285,6 +1330,26 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       [...document.querySelectorAll("button")].filter((b) => /email me/.test(b.textContent)).length
     );
     ok("one 🔔 button per exam group", bells === 2, `bells=${bells}`);
+
+    const examCache = await page.evaluate(() => window.__storage.vrevamp_exam_schedule);
+    const cachedFat = examCache && examCache.exams && examCache.exams.find((e) => e.type === "FAT" && e.code === "ECE2015");
+    const cachedNoTime = examCache && examCache.exams && examCache.exams.find((e) => e.code === "PHY0000");
+    ok(
+      "schedule cached for the timetable import (all 4 rows, semester name)",
+      !!examCache && examCache.exams.length === 4 && examCache.semester === "Winter Semester 2025-26",
+      examCache && JSON.stringify({ n: examCache.exams.length, sem: examCache.semester })
+    );
+    ok(
+      "cached exam normalized (ISO date + 24h window + venue/seat)",
+      !!cachedFat && cachedFat.dateIso === "2026-05-04" && cachedFat.start === "1000" &&
+        cachedFat.end === "1300" && cachedFat.venue === "CB-324" && cachedFat.seatNo === "5",
+      JSON.stringify(cachedFat)
+    );
+    ok(
+      "no-time exam cached with null window (import will skip it)",
+      !!cachedNoTime && cachedNoTime.start === null && cachedNoTime.end === null,
+      JSON.stringify(cachedNoTime)
+    );
 
     await page.evaluate(() =>
       [...document.querySelectorAll("button")]

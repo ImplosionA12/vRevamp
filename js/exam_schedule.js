@@ -215,6 +215,47 @@ let exam_schedule_sync = () => {
   const { table, cols } = found;
   if (table.dataset.vrevampIcs === "1") return; // message re-fires on the SPA
   table.dataset.vrevampIcs = "1";
+
+  // cache the parsed schedule so the timetable → Google Calendar import can
+  // add exam events without needing this page open at the time
+  try {
+    const cached = [];
+    for (let i = 0; i < table.rows.length; i++) {
+      const head = table.rows[i].children[0];
+      if (!head || head.className !== "panelHead-secondary") continue;
+      const type = head.innerText.trim();
+      exam_rows_of_group(table, i, cols).forEach((exam) => {
+        const times = exam.time.split("-");
+        cached.push({
+          type,
+          code: exam.code,
+          title: exam.title,
+          slot: exam.slot,
+          session: exam.session,
+          reporting: exam.reporting,
+          venue: exam.venue,
+          seatLoc: exam.seatLoc,
+          seatNo: exam.seatNo,
+          dateIso: exam_date_iso(exam.date),
+          start: exam_time_to_24h(times[0] || ""),
+          end: exam_time_to_24h(times[1] || ""),
+        });
+      });
+    }
+    if (cached.length) {
+      const sem = document.querySelector("#semesterSubId");
+      chrome.storage.local.set({
+        vrevamp_exam_schedule: {
+          fetchedAt: Date.now(),
+          semester: sem ? sem.options[sem.selectedIndex].innerText.trim() : "",
+          exams: cached,
+        },
+      });
+    }
+  } catch (error) {
+    console.warn("vRevamp exam schedule: cache", error);
+  }
+
   for (let i = 0; i < table.rows.length; i++) {
     const head = table.rows[i].children[0];
     if (!head || head.className !== "panelHead-secondary") continue;
