@@ -1,5 +1,27 @@
 These are the changes made to the project: 
 
+## Timetable → Google Calendar import (2026-07-07)
+- User request: import the weekly timetable into Google Calendar until the
+  FAT exams, instructional days only, with subject name and venue. New
+  "📅 import timetable to Google Calendar" button on the Time Table page
+  (`js/timetable_ics.js`, next to the .ics export): one weekly recurring
+  event per class block (labs merged), anchored on the next future
+  occurrence, `RRULE … UNTIL` = last instructional day from the cached
+  academic calendar (+1d buffer; ~17 weeks fallback), and every weekly
+  occurrence the calendar does NOT list as instructional (holidays, exam
+  days) is `EXDATE`'d out of the series.
+- Event content: summary "CODE — Title (SLOT)" (title joined from the
+  attendance snapshot; falls back to the code until the attendance page has
+  been opened once), venue in location. Same click-time Google token flow
+  as the 🔔 reminders (silent → one consent window → 401 retry), inline
+  progress/status text, no alerts.
+- Re-import replaces: events are tagged (`extendedProperties.private
+  .vrevamp=timetable`); a click first deletes previously imported series,
+  so re-running after a timetable change never duplicates.
+- Harness: fixed-clock fixture with a holiday Monday — replace-then-insert
+  order, anchor date, UNTIL, EXDATE, title/venue, fallback naming, inline
+  note. 111 checks green.
+
 ## 🔔 no longer demands Google sign-in for all-past exam groups (2026-07-07, live)
 - Live follow-up: user's "huge loading" was VTOP's own server stalling its
   static assets (jquery/app.js pending for ~30 s; extension not even

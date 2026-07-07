@@ -398,6 +398,107 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ============ timetable → Google Calendar import (weekly, EXDATE) ============ */
+  console.log("\n=== timetable → Google Calendar import ===");
+  {
+    // Wed 1 Oct 2025; MON classes → series anchors on Mon 6 Oct. Mondays to
+    // the last instructional day (20 Nov): Oct 6/13/20/27, Nov 3/10/17 — all
+    // instructional EXCEPT Oct 20 (holiday), which must be EXDATE'd out.
+    const fixed = new Date("2025-10-01T10:00:00+05:30").getTime();
+    const header = ["Start - End", "08:00 - 08:50", "14:00 - 14:50", "15:00 - 15:50"];
+    const timetable = {
+      header,
+      data: [
+        { day: "MON",
+          theory: ["", "TA1-CSE1005-ETH-G14-CB-ALL", "", ""],
+          lab: ["", "", "L31-BCSE204P-ELA-AB1-CB-ALL", "L32-BCSE204P-ELA-AB1-CB-ALL"] },
+      ],
+    };
+    const mondays = ["2025-10-06", "2025-10-13", "2025-10-27", "2025-11-03", "2025-11-10", "2025-11-17"];
+    const storage = {
+      "timeTable-V1": timetable,
+      "vrevamp_calendar_fall semester 2025-26": {
+        lastInstructional: "2025-11-20",
+        instructionalDays: mondays,
+        holidays: ["2025-10-20"],
+        fetchedAt: fixed,
+      },
+      vrevamp_attendance_summary: {
+        subjects: [{ name: "CSE1005 - Data Structures - Theory Only", code: "CSE1005" }],
+      },
+      token: "tok123",
+    };
+    const gcal = [];
+    const page = await newPage(browser);
+    await page.route("https://www.googleapis.com/**", (route) => {
+      const req = route.request();
+      gcal.push({
+        method: req.method(),
+        url: req.url(),
+        body: req.postData() ? JSON.parse(req.postData()) : null,
+      });
+      // the list call finds one previously imported series to replace
+      if (req.method() === "GET")
+        return route.fulfill({ contentType: "application/json", body: JSON.stringify({ items: [{ id: "old1" }] }) });
+      return route.fulfill({ contentType: "application/json", body: "{}" });
+    });
+    await page.setContent("<body><div id='main-section'><div id='loadMyFragment'></div></div></body>");
+    await shim(page, { fixedMs: fixed, storage });
+    await inject(page, [
+      "js/store/store.js",
+      "js/store/saveTimeTableDetails.js",
+      "js/utils/filterRepeated.js",
+      "js/timetable_ics.js",
+    ]);
+    await page.evaluate(() => window.__dispatch("timetable_view_page"));
+    await delay(1200);
+    ok("import button rendered", await page.evaluate(() => !!document.getElementById("vrevamp-timetable-gcal")));
+    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await delay(2500);
+    const posts = gcal.filter((g) => g.method === "POST");
+    const dels = gcal.filter((g) => g.method === "DELETE");
+    ok("previous import replaced (old series deleted)", dels.length === 1 && /\/events\/old1$/.test(dels[0].url), JSON.stringify(dels.map((d) => d.url)));
+    ok("2 weekly series created (theory + merged lab)", posts.length === 2, `posts=${posts.length}`);
+    const theory = posts.map((p) => p.body).find((b) => b && /CSE1005/.test(b.summary));
+    const lab = posts.map((p) => p.body).find((b) => b && /BCSE204P/.test(b.summary));
+    ok(
+      "subject title from the attendance snapshot + slot in the summary",
+      !!theory && theory.summary === "CSE1005 — Data Structures (TA1)",
+      theory && theory.summary
+    );
+    ok("venue in location (G14)", !!theory && theory.location === "G14", theory && theory.location);
+    ok(
+      "series anchors on next Monday 08:00 IST",
+      !!theory && theory.start && theory.start.dateTime === "2025-10-06T08:00:00" && theory.start.timeZone === "Asia/Kolkata",
+      theory && JSON.stringify(theory.start)
+    );
+    ok(
+      "weekly until the last instructional day (+1d buffer)",
+      !!theory && theory.recurrence && theory.recurrence[0] === "RRULE:FREQ=WEEKLY;UNTIL=20251121T180000Z",
+      theory && JSON.stringify(theory.recurrence)
+    );
+    ok(
+      "holiday Monday EXDATE'd out of the series",
+      !!theory && theory.recurrence && theory.recurrence[1] === "EXDATE;TZID=Asia/Kolkata:20251020T080000",
+      theory && JSON.stringify(theory.recurrence)
+    );
+    ok(
+      "no-snapshot course falls back to its code; lab merged 14:00-15:50",
+      !!lab && lab.summary === "BCSE204P (L31)" && lab.location === "AB1" &&
+        lab.start.dateTime === "2025-10-06T14:00:00" && lab.end.dateTime === "2025-10-06T15:50:00" &&
+        lab.recurrence[1] === "EXDATE;TZID=Asia/Kolkata:20251020T140000",
+      lab && JSON.stringify({ s: lab.summary, l: lab.location, st: lab.start, en: lab.end, r: lab.recurrence })
+    );
+    const note = await page.evaluate(() => document.querySelector(".vrevamp-tt-note")?.textContent);
+    ok(
+      "inline confirmation with the end date + replaced count",
+      note === "✓ 2 weekly class(es) in Google Calendar until 2025-11-20 (replaced 1 old)",
+      note
+    );
+    ok("events tagged for future replacement", !!theory && theory.extendedProperties?.private?.vrevamp === "timetable");
+    await page.close();
+  }
+
   /* =================== Feature 1+accuracy: attendance insights =================== */
   console.log("\n=== attendance insights: forecaster banner + bunk table ===");
   {
