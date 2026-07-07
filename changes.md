@@ -1,5 +1,24 @@
 These are the changes made to the project: 
 
+## "Page Unresponsive" freeze: timetable observer storm fixed (2026-07-07, live)
+- User screenshot: Chrome's "Page Unresponsive" dialog on VTOP. Root cause
+  in the ORIGINAL upstream `js/timetable/timetable.js`: its MutationObserver
+  watches `#loadMyFragment` — VTOP's generic SPA container that EVERY page
+  load floods with mutations — and ran the full pipeline (table re-parse +
+  storage save + **domtoimage PNG render**) synchronously on EVERY mutation,
+  with `attributes:true` so even the loading spinner's style toggles fired
+  it. Worse, each re-fired `timetable_view_page` message attached ANOTHER
+  observer (they stack), multiplying the work each time until the renderer
+  froze. (My earlier "it's just VTOP's slow server" diagnosis was only half
+  the story — the asset stalls are real, but the freeze was ours.)
+- Fix: one observer per document (re-message disconnects the old one),
+  400 ms debounce, a textContent signature so identical table content is
+  never re-rendered, `attributes` dropped from the config, and crash guards
+  (missing `#loadMyFragment`, empty saved timetable).
+- Harness: stubbed-collaborator fixture counting renders — a 40-mutation
+  burst = 1 render, re-fired message doesn't stack, unchanged content = 0.
+  120 checks green.
+
 ## Timetable import now includes the CAT/FAT exams (2026-07-07)
 - User follow-up: during exam weeks the class series is EXDATE'd out, so the
   calendar should show the exams instead. The Exam Schedule page now caches

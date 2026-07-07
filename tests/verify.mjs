@@ -544,6 +544,54 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ============ timetable compactor: observer must not storm (freeze) ============ */
+  console.log("\n=== timetable compactor: no observer storm ===");
+  {
+    // #loadMyFragment is VTOP's SPA container — every page load floods it
+    // with mutations. Un-debounced + stacking observers re-rendered (and
+    // re-PNG'd) the timetable per mutation until the renderer froze
+    // ("Page Unresponsive", live 2026-07-07).
+    const page = await newPage(browser);
+    await page.setContent(`<body><div id='wrap'><div id='loadMyFragment'>
+      <table id='timeTableStyle'><tbody><tr><td id='cell'>seed</td></tr></tbody></table>
+    </div></div></body>`);
+    await shim(page, {});
+    // stub the compactor's collaborators so renders are countable
+    await page.addScriptTag({ content: `
+      window.__renders = 0;
+      window.getTimeTable = (cb) => cb(null);
+      window.extract_header = () => ["h0", "h1"];
+      window.extract_tbody_data = () => [];
+      window.filterRepeatedColumns = (h, c) => c;
+      window.filterRepeated = (x) => x;
+      window.saveTimeTable = () => { window.__renders++; };
+      window.createTableHead = () => document.createElement("thead");
+      window.createTr = () => document.createElement("tr");
+      window._create_td_element = () => document.createElement("td");
+      window.create_download_link = () => document.createElement("a");
+      window.domtoimage = { toPng: async () => "" };
+    `});
+    await inject(page, ["js/timetable/timetable.js"]);
+    await page.evaluate(() => window.__dispatch("timetable_view_page"));
+    // a fragment-load style burst: 40 rapid DOM mutations
+    await page.evaluate(() => { for (let i = 0; i < 40; i++) document.getElementById("cell").textContent = "burst1-" + i; });
+    await delay(900);
+    const first = await page.evaluate(() => window.__renders);
+    ok("40-mutation burst renders once (debounced + deduped)", first === 1, `renders=${first}`);
+    // message re-fires (SPA) — must not stack a second observer
+    await page.evaluate(() => window.__dispatch("timetable_view_page"));
+    await page.evaluate(() => { for (let i = 0; i < 40; i++) document.getElementById("cell").textContent = "burst2-" + i; });
+    await delay(900);
+    const second = await page.evaluate(() => window.__renders);
+    ok("re-fired message doesn't stack a second observer", second === 2, `renders=${second}`);
+    // mutations that settle back to the same content: no re-render
+    await page.evaluate(() => { const c = document.getElementById("cell"); const t = c.textContent; for (let i = 0; i < 10; i++) c.textContent = t; });
+    await delay(900);
+    const third = await page.evaluate(() => window.__renders);
+    ok("unchanged table content isn't re-rendered", third === 2, `renders=${third}`);
+    await page.close();
+  }
+
   /* =================== Feature 1+accuracy: attendance insights =================== */
   console.log("\n=== attendance insights: forecaster banner + bunk table ===");
   {

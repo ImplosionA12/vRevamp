@@ -65,6 +65,7 @@ function toIndex(day) {
 function insertTable(table_div) {
   // getting the actual div of the timetable
   const timeTableLoader = document.getElementById("loadMyFragment");
+  if (!timeTableLoader || !timeTableLoader.parentElement) return;
   const parent_div = timeTableLoader.parentElement;
   // remove the previous table and download link if it exists
   document.querySelectorAll(".table-div").forEach((div) => { div.remove() });
@@ -82,20 +83,47 @@ function insertTable(table_div) {
   parent_div.insertBefore(a, table_div);
 }
 
-const MutationObserverConfig = { attributes: true, childList: true, subtree: true };
+// #loadMyFragment is VTOP's generic SPA container: EVERY page load churns
+// thousands of mutations through it. The observer must therefore be cheap
+// per mutation (debounce), skip repeat renders of the same table content
+// (signature), and exist at most once per document (a stacked observer per
+// re-fired message multiplied the work until the renderer froze —
+// "Page Unresponsive", seen live 2026-07-07). attributes:true was pure
+// noise: the loading spinner's style toggles fired full re-renders.
+const MutationObserverConfig = { childList: true, subtree: true };
+
+let vr_tt_timer = null;
+let vr_tt_lastSig = null;
+let vr_tt_observer = null;
+
+const vr_tt_schedule = () => {
+  clearTimeout(vr_tt_timer);
+  vr_tt_timer = setTimeout(() => {
+    const parent_table = document.getElementById("timeTableStyle");
+    if (!parent_table) return;
+    const sig = parent_table.textContent;
+    if (sig === vr_tt_lastSig) return; // same table — nothing to re-render
+    vr_tt_lastSig = sig;
+    change_time_table();
+  }, 400);
+};
 
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "timetable_view_page") {
     try {
-      // try to display the timetable data if it exists 
+      // try to display the timetable data if it exists
       getTimeTable((d) => {
-        displayTableData(d.header, d.data)
+        if (d && d.header && d.data) displayTableData(d.header, d.data);
       });
 
-      // attaching the observer to the div
+      // attaching the observer to the div (once — re-fired messages must
+      // not stack a second one)
       const timeTableDiv = document.getElementById("loadMyFragment");
-      const timeTableDivObserver = new MutationObserver((mutationsList, observer) => change_time_table());
-      timeTableDivObserver.observe(timeTableDiv, MutationObserverConfig);
+      if (!timeTableDiv) return;
+      if (vr_tt_observer) vr_tt_observer.disconnect();
+      vr_tt_observer = new MutationObserver(vr_tt_schedule);
+      vr_tt_observer.observe(timeTableDiv, MutationObserverConfig);
+      vr_tt_schedule(); // the table may already be in the DOM
     } catch (error) {
       // console.log(error);
       console.error(error)
