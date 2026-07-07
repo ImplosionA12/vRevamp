@@ -20,6 +20,7 @@
         "js/store/saveExamSchedulePage.js",
         "js/store/saveAttendancePage.js",
 
+        "js/session_repair.js",
         "js/showOfflineIcon.js",
         "js/timetable/createTimeTable.js",
         "js/timetable/parsersTimeTable.js",
@@ -96,7 +97,8 @@
     "downloads",
     "storage",
     "tabs",
-    "identity"
+    "identity",
+    "cookies"
   ],
   "update_url": "https://clients2.google.com/service/update2/crx",
 

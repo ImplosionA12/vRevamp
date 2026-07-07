@@ -111,11 +111,19 @@ chrome.webRequest.onCompleted.addListener(
     } else if (link.indexOf("StudentTimeTable") !== -1) {
       returnMessage("timetable_view_page");
     } else if (
-      link.indexOf("processViewStudentAttendance") !== -1 ||
+      // NOT the per-subject detail endpoints (…AttendanceDetail /
+      // …DetailDisplay): those fire for every row the insights script
+      // fetches, and routing them here re-runs the page scripts in a loop
+      (link.indexOf("processViewStudentAttendance") !== -1 &&
+        link.indexOf("processViewStudentAttendanceDetail") === -1) ||
       link.indexOf("processBackAttendanceDetails") !== -1
     ) {
       returnMessage("view_attendance");
-    } else if (link.indexOf("StudentAttendance") !== -1) {
+    } else if (
+      link.indexOf("StudentAttendance") !== -1 &&
+      link.indexOf("Detail") === -1 &&
+      link.indexOf("Display") === -1
+    ) {
       returnMessage("view_attendance_page");
     } else if (link.indexOf("processViewStudentCourseDetail") !== -1) {
       returnMessage("course_page_change");
@@ -176,11 +184,51 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse(true);
       });
       return true; // keep the message channel open for the async response
+    // Access tokens expire after ~1 h, so the one stored at popup-login time
+    // is stale by the time a 🔔 is clicked. Content scripts ask here for a
+    // fresh one at click time — chrome.identity refreshes it silently once
+    // the user has consented. `stale` invalidates a token a 401 proved dead.
+    case "get_google_token": {
+      const mint = () =>
+        chrome.identity.getAuthToken(
+          { interactive: !!request.interactive },
+          (auth_token) => {
+            void chrome.runtime.lastError; // not signed in / consent closed
+            if (auth_token) chrome.storage.sync.set({ token: auth_token });
+            sendResponse(auth_token || null);
+          }
+        );
+      if (request.stale)
+        chrome.identity.removeCachedAuthToken({ token: request.stale }, mint);
+      else mint();
+      return true;
+    }
     case "logout":
       chrome.identity.clearAllCachedAuthTokens(() => {
         chrome.storage.sync.set({ token: null });
       });
       break;
+    // session_repair.js detected a poisoned session cookie (Tomcat 404 with
+    // cookies, 200 without): clear the requesting site's cookies so the next
+    // load starts a fresh session
+    case "clear_site_cookies":
+      (async () => {
+        try {
+          const url = sender && sender.url;
+          if (!url || !/^https:\/\/[^/]*(vitap|vit)\.ac\.in\//.test(url)) {
+            sendResponse(false);
+            return;
+          }
+          const cookies = await chrome.cookies.getAll({ url });
+          await Promise.all(
+            cookies.map((c) => chrome.cookies.remove({ url, name: c.name }))
+          );
+          sendResponse(cookies.length || true);
+        } catch {
+          sendResponse(false);
+        }
+      })();
+      return true; // async sendResponse
   }
 });
 

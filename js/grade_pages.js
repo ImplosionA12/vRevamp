@@ -35,8 +35,19 @@ let modify_grade_page = () => {
   if (document.getElementById("vrevamp-sem-gpa-row")) return; // already added
   const root = document.querySelector("#studentGradeView");
   if (!root) return;
-  const credits = creditsByCode();
+  // credits live on the Grade History page, cached there by the what-if
+  // simulator (vrevamp_grade_credits); same-page tables win if present
+  chrome.storage.local.get("vrevamp_grade_credits", (stored) => {
+    if (document.getElementById("vrevamp-sem-gpa-row")) return;
+    const credits = {
+      ...((stored && stored.vrevamp_grade_credits) || {}),
+      ...creditsByCode(),
+    };
+    addGpaRow(root, credits);
+  });
+};
 
+let addGpaRow = (root, credits) => {
   let points = 0;
   let sum = 0;
   let tbody = null;
@@ -67,6 +78,18 @@ let modify_grade_page = () => {
 
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "exam_grade") {
+    try {
+      modify_grade_page();
+    } catch (error) {
+      console.log(error);
+    }
+  }
+});
+
+// the simulator may finish its silent grade-history fetch after our message
+// fired — retry when the cached credits land
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.vrevamp_grade_credits) {
     try {
       modify_grade_page();
     } catch (error) {

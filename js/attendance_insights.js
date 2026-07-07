@@ -22,6 +22,7 @@
   };
   const VTOP_DATE_RE = /\b(\d{1,2})-([A-Za-z]{3,4})-(\d{4})\b/;
   const ISO_DATE_RE = /\b(\d{4})-(\d{2})-(\d{2})\b/;
+  const NUM_DATE_RE = /\b(\d{1,2})-(\d{1,2})-(\d{4})\b/; // dd-mm-yyyy (newer detail modal)
 
   const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,6 +35,13 @@
     }
     m = ISO_DATE_RE.exec(text);
     if (m) return new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
+    m = NUM_DATE_RE.exec(text);
+    if (m) {
+      // day-first (verified against the weekday VTOP prints alongside)
+      const month = parseInt(m[2]) - 1;
+      if (month < 0 || month > 11) return null;
+      return new Date(parseInt(m[3]), month, parseInt(m[1]));
+    }
     return null;
   };
 
@@ -102,7 +110,12 @@
     parseHtml(html)
       .querySelectorAll("tr")
       .forEach((tr) => {
-        const text = tr.textContent || "";
+        // join cells with a space: raw textContent glues adjacent cells
+        // ("1" + "01-01-2026" -> "101-01-2026") and breaks the \b in the
+        // date regexes
+        const text = Array.from(tr.children, (c) => c.textContent).join(" ");
+        // the per-course summary row carries a date AND "Present : n" counts
+        if (/total\s*class|percentage/i.test(text)) return;
         const date = parseAnyDate(text);
         if (!date) return;
         if (/absent/i.test(text)) history.push({ date, attended: false });
@@ -170,27 +183,49 @@
     "getStudentAttendanceDetail",
   ];
 
-  const CLASSID_RE = /^[A-Z]{2,4}\d{8,}$/;
+  // old "CSE100511111111" ids and new "AM_ECE2015_00100" course ids
+  const CLASSID_RE = /^([A-Z]{2,4}\d{8,}|[A-Z]{1,4}_[A-Z]{2,6}\d{3,4}[A-Z]?_\w+)$/;
   const AUTH_PARAMS = ["_csrf", "x", "authorizedID"];
 
-  // Build params from a captured VTOP request, swapping the captured class
-  // id for this subject's; vtopPost re-adds fresh auth params
+  // the argument that identifies the class: newer VTOP passes
+  // (semesterSubId, registerNumber, courseId, courseType), older (classId, slot)
+  const classArgOf = (call) =>
+    (call.args.length >= 4 ? call.args[2] : call.args[0]) || "";
+
+  // Build params from a captured VTOP request. Keys the current row itself
+  // provides (via its onclick args) always take the row's OWN values — a
+  // template captured from a Theory row must not force courseType=TH onto a
+  // Lab row, or VTOP silently returns the theory register for it. Other
+  // keys are kept, with anything class-id-shaped swapped for this row's.
   const paramsFromTemplate = (template, call) => {
     const out = {};
+    const own = defaultParams(call);
     Object.entries(template || {}).forEach(([key, value]) => {
       if (AUTH_PARAMS.includes(key)) return;
+      if (key in own) {
+        out[key] = own[key];
+        return;
+      }
       out[key] =
         value === "__CLASSID__" || CLASSID_RE.test(String(value))
-          ? call.args[0] || value
+          ? classArgOf(call) || value
           : value;
     });
     return Object.keys(out).length ? out : null;
   };
 
-  const defaultParams = (call) => ({
-    classId: call.args[0] || "",
-    slotName: call.args[1] || "ALL",
-  });
+  const defaultParams = (call) =>
+    call.args.length >= 4
+      ? {
+          semesterSubId: call.args[0],
+          registerNumber: call.args[1],
+          courseId: call.args[2],
+          courseType: call.args[3] || "TH",
+        }
+      : {
+          classId: call.args[0] || "",
+          slotName: call.args[1] || "ALL",
+        };
 
   let resolvedAttempt = null;
   let lastDetailResponseSample = null;
@@ -222,6 +257,7 @@
   const fetchDetailHistory = async (call) => {
     const tried = new Set();
     let lastError = null;
+    let sawResponse = false;
     for (const attempt of await buildAttempts(call)) {
       const key = attempt.path + "|" + JSON.stringify(attempt.params);
       if (tried.has(key)) continue;
@@ -233,12 +269,13 @@
         lastError = error;
         continue;
       }
+      sawResponse = true;
       const history = parseHistoryHtml(html);
       if (history.length > 0) {
         // remember what worked, with the class id templated out
         const template = {};
         Object.entries(attempt.params).forEach(([k, v]) => {
-          template[k] = v === call.args[0] ? "__CLASSID__" : v;
+          template[k] = v === classArgOf(call) ? "__CLASSID__" : v;
         });
         resolvedAttempt = { path: attempt.path, params: template };
         chrome.storage.local.set({
@@ -250,16 +287,19 @@
       // the on-page debug box and try the next candidate
       lastDetailResponseSample = html.slice(0, 2000);
     }
-    if (lastError) throw lastError;
+    // A 200 with no rows is a legitimate empty register (0/0 semester) —
+    // don't let a later dead legacy candidate's 404 turn it into an error
+    if (!sawResponse && lastError) throw lastError;
     return [];
   };
 
   /* ---------------- academic calendar ---------------- */
 
   const classifyDay = (text) => {
-    const cat2 = /CAT\s*-?\s*II/i.test(text);
+    // calendars write both Roman and digit forms ("CAT-II" / "CAT-2")
+    const cat2 = /CAT\s*-?\s*(II|2)\b/i.test(text);
     return {
-      cat1: !cat2 && /CAT\s*-?\s*I/i.test(text),
+      cat1: !cat2 && /CAT\s*-?\s*(I|1)\b/i.test(text),
       cat2,
       fat: /Final\s*Assessment\s*Test/i.test(text),
       holiday: /holiday/i.test(text),
@@ -308,10 +348,27 @@
   };
 
   const fetchCalendar = async (semesterName) => {
-    const menuUrl = findCalendarMenuUrl();
-    if (!menuUrl) throw new Error("calendar link not found in sidebar");
+    // Newer VTOP encrypts the sidebar data-urls, so try the known calendar
+    // endpoint first and only fall back to whatever the link carries.
+    const candidates = ["academics/common/CalendarPreview"];
+    const legacyUrl = findCalendarMenuUrl();
+    if (legacyUrl && /^[\w/-]+$/.test(legacyUrl)) candidates.push(legacyUrl);
 
-    const landing = parseHtml(await vtopPost(menuUrl, { verifyMenu: "true" }));
+    let landing = null;
+    let menuUrl = null;
+    for (const candidate of candidates) {
+      try {
+        const doc = parseHtml(await vtopPost(candidate, { verifyMenu: "true" }));
+        if (doc.querySelector("option")) {
+          landing = doc;
+          menuUrl = candidate;
+          break;
+        }
+      } catch (error) {
+        /* endpoint not on this deployment — try the next */
+      }
+    }
+    if (!landing) throw new Error("calendar page not reachable");
 
     // match the attendance page's semester against the calendar dropdown
     const options = Array.from(landing.querySelectorAll("option")).filter(
@@ -324,12 +381,23 @@
       options.find((o) => want.includes(normText(o.textContent)));
     if (!opt) throw new Error("semester not found in calendar dropdown");
     const semSubId = opt.value;
+    const cgOpt = landing.querySelector("#classGroupId option[value]");
+    const classGroupId = cgOpt ? cgOpt.value : "COMB";
 
-    const monthsPage = parseHtml(await vtopPost(menuUrl, { semSubId }));
-    const monthDates = new Set([
-      ...collectMonthDates(landing),
-      ...collectMonthDates(monthsPage),
-    ]);
+    // month buttons: the dedicated endpoint first, then the legacy shape
+    const monthDates = new Set(collectMonthDates(landing));
+    try {
+      const monthsPage = parseHtml(
+        await vtopPost("getDateForSemesterPreview", { semSubId, classGroupId })
+      );
+      collectMonthDates(monthsPage).forEach((d) => monthDates.add(d));
+    } catch (error) {
+      /* older deployment */
+    }
+    if (monthDates.size === 0) {
+      const monthsPage = parseHtml(await vtopPost(menuUrl, { semSubId }));
+      collectMonthDates(monthsPage).forEach((d) => monthDates.add(d));
+    }
     if (monthDates.size === 0)
       throw new Error("no month buttons found in calendar page");
 
@@ -337,13 +405,25 @@
     for (const dateStr of monthDates) {
       const monthDate = parseAnyDate(dateStr);
       if (!monthDate) continue;
+      const before = days.length;
       try {
+        // current VTOP: dedicated grid endpoint with calDate
         const grid = parseHtml(
-          await vtopPost(menuUrl, { semSubId, date: dateStr })
+          await vtopPost("processViewCalendar", { calDate: dateStr, semSubId, classGroupId })
         );
         parseMonthGrid(grid, monthDate, days);
       } catch (error) {
-        console.warn("vRevamp: calendar month failed", dateStr, error);
+        /* fall through to the legacy shape */
+      }
+      if (days.length === before) {
+        try {
+          const grid = parseHtml(
+            await vtopPost(menuUrl, { semSubId, date: dateStr })
+          );
+          parseMonthGrid(grid, monthDate, days);
+        } catch (error) {
+          console.warn("vRevamp: calendar month failed", dateStr, error);
+        }
       }
       await sleepMs(200);
     }
@@ -462,29 +542,50 @@
       }
     });
 
-  // courseCode -> { weekdayNum: sessions } built from the actual timetable the
-  // student has viewed. This is the real weekly pattern; weekdayMeetings()
-  // below only *infers* it from attendance history (and so misses subjects
-  // that share a weekday or whose history is short). Each filled cell counts
-  // as one hour, matching how history entries are counted, so labs (2 cells)
-  // line up with their 2 history entries per session.
+  // courseCode -> { theory: {weekdayNum: cells}, lab: {weekdayNum: cells} }
+  // built from the actual timetable the student has viewed. This is the real
+  // weekly pattern; weekdayMeetings() below only *infers* it from attendance
+  // history (and so misses subjects that share a weekday, or whose register
+  // is behind). Theory and lab are kept apart — an embedded course carries
+  // ONE course code across both its rows, and lumping them made the lab row
+  // count the theory's classes. The cell's own slot text is the authority
+  // ("L31-…-ELA-…" is lab) since some layouts mix the two arrays.
   const scheduleFromTimetable = (timetable) => {
     const map = {};
     if (!timetable || !Array.isArray(timetable.data)) return map;
     timetable.data.forEach((row) => {
       const wd = dayToNum(row.day);
       if (wd === undefined) return;
-      ["theory", "lab"].forEach((kind) => {
-        const cells = Array.isArray(row[kind]) ? row[kind] : [];
+      ["theory", "lab"].forEach((arrKind) => {
+        const cells = Array.isArray(row[arrKind]) ? row[arrKind] : [];
         cells.forEach((cell) => {
-          const m = COURSE_CODE_RE.exec(String(cell).replace(/\s+/g, ""));
+          const text = String(cell).replace(/\s+/g, "");
+          const m = COURSE_CODE_RE.exec(text);
           if (!m) return;
-          map[m[0]] = map[m[0]] || {};
-          map[m[0]][wd] = (map[m[0]][wd] || 0) + 1;
+          const kind =
+            /-(ELA|LO)-/.test(text) || /^L\d/.test(text) ? "lab" : "theory";
+          const entry = (map[m[0]] = map[m[0]] || { theory: {}, lab: {} });
+          entry[kind][wd] = (entry[kind][wd] || 0) + 1;
         });
       });
     });
     return map;
+  };
+
+  // The cached timetable can belong to a previous semester — same course
+  // code, different schedule (e.g. a course retaken in a summer term meets
+  // daily, not 3x/week). Trust it for a course only if the course's actual
+  // history doesn't contradict it: any weekday the subject met on 2+
+  // distinct dates must exist in the timetable pattern.
+  const timetableMatchesHistory = (scheduled, history) => {
+    const seen = {};
+    history.forEach((h) => {
+      const wd = h.date.getDay();
+      (seen[wd] = seen[wd] || new Set()).add(isoOf(h.date));
+    });
+    return Object.keys(seen).every(
+      (wd) => seen[wd].size < 2 || (scheduled[wd] || 0) > 0
+    );
   };
 
   const courseCodeOf = (row) => {
@@ -507,11 +608,46 @@
     return count;
   };
 
-  // Attend everything except b bunks: (A + R - b) / (T + R) >= 75%
+  // Expected class days for this subject after its last posted entry and
+  // before today. >= 2 means the faculty's register is lagging — flag the
+  // projections as stale instead of presenting them as current.
+  const missedPostings = (calendar, meetings, lastPosted) => {
+    if (!lastPosted) return 0;
+    const startIso = isoOf(lastPosted);
+    const todayIso = isoOf(new Date());
+    let count = 0;
+    const countDay = (iso) => {
+      if (meetings[new Date(iso).getDay()]) count += 1;
+    };
+    if (calendar) {
+      calendar.instructionalDays.forEach((iso) => {
+        if (iso > startIso && iso < todayIso) countDay(iso);
+      });
+    } else {
+      // no calendar: walk plain days on the subject's weekday pattern
+      // (holidays aren't visible here, hence the >= 2 threshold)
+      const d = new Date(lastPosted);
+      d.setDate(d.getDate() + 1);
+      while (isoOf(d) < todayIso) {
+        countDay(isoOf(d));
+        d.setDate(d.getDate() + 1);
+      }
+    }
+    return count;
+  };
+
+  const shortDate = (d) =>
+    d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+  // Attend everything except b bunks: (A + R - b) / (T + R) >= 75%.
+  // Capped at R — you can't skip more classes than remain.
   const bunkable = (attended, total, remaining) =>
     Math.max(
       0,
-      Math.floor(attended + remaining - ATTENDANCE_MIN * (total + remaining))
+      Math.min(
+        remaining,
+        Math.floor(attended + remaining - ATTENDANCE_MIN * (total + remaining))
+      )
     );
 
   // Consecutive classes that must be attended to climb back to 75%:
@@ -525,7 +661,10 @@
   // All internal math is in history entries (hours for labs); size/unit
   // convert the displayed numbers to whole sessions
   const bunkCell = (calendar, examIso, attended, total, meetings, history, size, unit) => {
-    if (!calendar || !examIso) return "--";
+    if (!calendar) return "--";
+    // calendar parsed fine but has no such exam day (short summers have no
+    // CATs) — say so instead of looking broken
+    if (!examIso) return "none this sem";
     if (examIso > isoOf(new Date())) {
       const b = bunkable(
         attended,
@@ -639,6 +778,14 @@
         "#b8860b"
       )
     );
+    rowsData
+      .filter((r) => r.staleSince)
+      .forEach((r) =>
+        addLine(
+          `⚠ ${r.name}: attendance not posted since ${r.staleSince} — its numbers are unreliable until it's updated`,
+          "#b8860b"
+        )
+      );
     if (!below.length && !tight.length) {
       const withBuf = rowsData
         .filter((r) => typeof r.nextBunkable === "number")
@@ -691,6 +838,7 @@
       "Subject",
       "Classes held",
       "Remaining till sem end",
+      "Safe to skip now (never <75%)",
       "Bunkable before CAT-1",
       "Bunkable before CAT-2",
       "Bunkable before FAT",
@@ -701,10 +849,83 @@
 
     rowsData.forEach((r) => {
       const tr = document.createElement("tr");
-      tr.appendChild(makeCell("td", r.name, "text-align:left;"));
-      [r.held, r.remaining, r.cat1, r.cat2, r.fat].forEach((v) =>
-        tr.appendChild(makeCell("td", String(v)))
-      );
+      const subjCell = makeCell("td", r.name, "text-align:left;");
+      if (r.staleSince) {
+        const warn = document.createElement("div");
+        warn.textContent = `⚠ not posted since ${r.staleSince} — unreliable, numbers are as of that date`;
+        warn.style.cssText = "color:#c0392b;font-size:11px;margin-top:2px;";
+        subjCell.appendChild(warn);
+      }
+      if (r.partialNote) {
+        const warn = document.createElement("div");
+        warn.textContent = `⚠ ${r.partialNote} — remaining/bunkable may be low; open the Time Table page once for the exact schedule`;
+        warn.style.cssText = "color:#b8860b;font-size:11px;margin-top:2px;";
+        subjCell.appendChild(warn);
+      }
+      // click-to-simulate: step +1 skip / +1 attend and watch the numbers
+      if (typeof r.attended === "number" && r.total) {
+        subjCell.style.cursor = "pointer";
+        subjCell.title = "Click to simulate skipping/attending";
+        const sim = document.createElement("div");
+        sim.className = "vrevamp-whatif";
+        sim.style.cssText = "display:none;margin-top:4px;font-size:12px;";
+        let sk = 0;
+        let at = 0;
+        const status = document.createElement("span");
+        const paint = () => {
+          const a = r.attended + at * r.size;
+          const t = r.total + (at + sk) * r.size;
+          const p = (a / t) * 100;
+          const safe = Math.max(
+            0,
+            Math.floor(Math.floor((4 * a - 3 * t) / 3) / r.size)
+          );
+          status.textContent =
+            ` ${sk} skipped, ${at} attended → ${a}/${t} = ${p.toFixed(1)}%` +
+            ` (safe now: ${safe} ${r.unit})`;
+          status.style.color = p < 75 ? "#c0392b" : "#2e7d32";
+        };
+        const btn = (label, fn) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.textContent = label;
+          b.style.cssText =
+            "margin-right:4px;font-size:11px;padding:1px 6px;cursor:pointer;";
+          b.addEventListener("click", (e) => {
+            e.stopPropagation();
+            fn();
+            paint();
+          });
+          return b;
+        };
+        sim.appendChild(btn("Skip +1", () => sk++));
+        sim.appendChild(btn("Attend +1", () => at++));
+        sim.appendChild(btn("Reset", () => { sk = 0; at = 0; }));
+        sim.appendChild(status);
+        paint();
+        subjCell.appendChild(sim);
+        subjCell.addEventListener("click", (e) => {
+          if (e.target.tagName === "BUTTON") return;
+          sim.style.display = sim.style.display === "none" ? "block" : "none";
+        });
+      }
+      tr.appendChild(subjCell);
+      const addCell = (v, sub) => {
+        const td = makeCell("td", String(v));
+        if (sub) {
+          const d = document.createElement("div");
+          d.textContent = sub;
+          d.style.cssText = "color:#777;font-size:11px;margin-top:2px;";
+          td.appendChild(d);
+        }
+        tr.appendChild(td);
+      };
+      addCell(r.held);
+      addCell(r.remaining, r.bestNote);
+      addCell(r.safeNow, r.debarNote);
+      addCell(r.cat1);
+      addCell(r.cat2);
+      addCell(r.fat);
       table.appendChild(tr);
     });
     container.appendChild(table);
@@ -713,10 +934,13 @@
     note.textContent =
       "*Based on your timetable (open the Timetable page once for the exact " +
       "schedule; otherwise it's inferred from attendance history) and the " +
-      'academic calendar. Past exams show what you could have bunked back then; ' +
-      '"--" means the calendar could not be read. Lab numbers are whole lab ' +
-      "sessions, not hours. One-off day-order swaps and unposted attendance " +
-      "are not visible here.";
+      'academic calendar. "Safe to skip now" never lets you dip below 75% at ' +
+      "any moment; the before-exam columns mean ≥75% on exam day IF you " +
+      "attend all the other remaining classes. Past exams show what you " +
+      'could have bunked back then; "none this sem" means the calendar has ' +
+      'no such exam; "--" means the calendar could not be ' +
+      "read. Lab numbers are whole lab sessions, not hours. One-off " +
+      "day-order swaps and unposted attendance are not visible here.";
     note.style.cssText = "color:#666;font-size:12px;margin-top:5px;";
     container.appendChild(note);
 
@@ -740,7 +964,7 @@
   // we decorated. Re-find the live row for a subject by its classId.
   const liveRowFor = (s) => {
     if (s.row.isConnected) return s.row;
-    const key = s.call.args[0];
+    const key = classArgOf(s.call);
     if (!key) return null;
     return (
       Array.from(
@@ -756,9 +980,22 @@
   const doRun = async () => {
     const tableWrap = document.querySelector(".table-responsive");
     if (!tableWrap) return;
+    // A just-opened semester lists every course as 0/0 — those registers are
+    // empty, so probing the detail endpoints for them is pure waste
+    const headRow =
+      tableWrap.querySelector("thead tr") ||
+      (tableWrap.querySelector("table") || { rows: [] }).rows[0];
+    const totalCol = headRow
+      ? Array.from(headRow.cells).findIndex((c) => /total/i.test(c.innerText))
+      : -1;
+    const hasClasses = (row) => {
+      if (totalCol === -1 || !row.cells || row.cells.length <= totalCol)
+        return true; // can't judge — keep the row
+      return parseFloat(row.cells[totalCol].innerText) > 0;
+    };
     const subjects = Array.from(tableWrap.querySelectorAll("tbody tr"))
       .map((row) => ({ row, call: extractDetailCall(row) }))
-      .filter((s) => s.call);
+      .filter((s) => s.call && hasClasses(s.row));
     if (subjects.length === 0) {
       const sample = tableWrap.querySelector("tbody tr");
       showStatus(
@@ -780,6 +1017,9 @@
     let lastDetailError = "";
     for (const s of subjects) {
       try {
+        // VTOP swapped the table out mid-run (semester change) — these rows
+        // are gone, and a fresh run for the new table is already queued
+        if (!s.row.isConnected && !liveRowFor(s)) continue;
         const cacheKey = s.call.args.join("|");
         let history = historyCache[cacheKey];
         if (!history) {
@@ -822,14 +1062,50 @@
     const rowsData = collected.map(({ s, history }) => {
       const attended = history.filter((h) => h.attended).length;
       const total = history.length;
-      const code = courseCodeOf(liveRowFor(s) || s.row);
-      const scheduled = code ? schedule[code] : null;
-      const meetings =
-        scheduled && Object.keys(scheduled).length
-          ? scheduled
-          : weekdayMeetings(history);
-      const size = sessionSize(history);
-      const unit = size > 1 ? " lab(s)" : "";
+      const rowEl = liveRowFor(s) || s.row;
+      const code = courseCodeOf(rowEl);
+      // Lab or theory comes from the row's own course-type text ("Embedded
+      // Lab" / "Theory Only") — inferring it from 2-entries-per-date
+      // mislabels summer theory (meets twice daily) as a lab. The data
+      // heuristic remains only for rows that name neither.
+      const rowText = rowEl.innerText || rowEl.textContent || "";
+      const isLab =
+        /\blab\b/i.test(rowText) ||
+        (!/theory/i.test(rowText) && sessionSize(history) > 1);
+      const size = isLab ? sessionSize(history) : 1;
+      const unit = isLab ? " lab(s)" : "";
+      // this subject's OWN kind from the timetable — embedded theory and
+      // lab share the course code
+      const sched =
+        code && schedule[code]
+          ? schedule[code][isLab ? "lab" : "theory"]
+          : null;
+      let meetings;
+      if (
+        sched &&
+        Object.keys(sched).length &&
+        timetableMatchesHistory(sched, history)
+      ) {
+        if (isLab) {
+          // timetable lab cells are hours (2 per session); history entries
+          // per session vary by deployment — convert to history units
+          meetings = {};
+          Object.entries(sched).forEach(([wd, cells]) => {
+            meetings[wd] = Math.max(1, Math.floor(cells / 2)) * size;
+          });
+        } else {
+          meetings = sched;
+        }
+      } else {
+        meetings = weekdayMeetings(history);
+      }
+      // The row's slot string ("L31+L32+L43+L44") knows the real weekly
+      // schedule: L-slots come in 2-hour pairs, so 4 slots = 2 sessions/
+      // week. If the register has posted fewer weekly days than that, the
+      // projections undercount — warn instead of silently trusting it.
+      const slotPairs = isLab
+        ? Math.floor((rowText.match(/\bL\d+\b/g) || []).length / 2)
+        : 0;
       // next upcoming exam (label + date), for the forecast banner and the
       // home-page notices card
       const nextExam =
@@ -852,17 +1128,89 @@
             )
           : null;
       const pct = total ? Math.round((attended / total) * 100) : null;
+      const lastPosted = history.length
+        ? history[history.length - 1].date
+        : null;
+      const staleSince =
+        lastPosted && missedPostings(calendar, meetings, lastPosted) >= 2
+          ? shortDate(lastPosted)
+          : null;
+      const seenDays = Object.keys(meetings).length;
+      const remainEntries = calendar
+        ? countClassesUntil(calendar, meetings, null)
+        : null;
+      // Never-dip variant: largest b with attended/(total + b) >= 75% — you
+      // stay above the limit at every moment, in any order, no assumption
+      // that you attend the rest. (The before-exam columns instead answer
+      // "≥75% ON exam day if I attend everything else".)
+      const safeNowEntries = Math.max(
+        0,
+        Math.min(
+          remainEntries === null ? Infinity : remainEntries,
+          Math.floor((4 * attended - 3 * total) / 3)
+        )
+      );
+      // Debar forecast: if you stop attending today, the date the running
+      // percentage first drops under 75% (each future class only grows the
+      // denominator)
+      const semOver =
+        calendar &&
+        calendar.lastInstructional &&
+        calendar.lastInstructional < todayIso;
+      let debarNote = null;
+      if (semOver) {
+        debarNote = "semester over";
+      } else if (total && attended / total < ATTENDANCE_MIN) {
+        debarNote = "already below 75%";
+      } else if (calendar && total) {
+        let cum = 0;
+        for (const iso of calendar.instructionalDays) {
+          if (iso <= todayIso) continue;
+          cum += meetings[new Date(iso).getDay()] || 0;
+          if (attended / (total + cum) < ATTENDANCE_MIN) {
+            debarNote = `skip everything → <75% on ${shortDate(new Date(iso))}`;
+            break;
+          }
+        }
+        if (!debarNote) debarNote = "can't drop below 75% this sem";
+      }
+      // Best case: attend every remaining class
+      const bestNote =
+        remainEntries !== null && total
+          ? semOver
+            ? `semester over — final ${pct}%`
+            : `attend all → ${Math.round(((attended + remainEntries) / (total + remainEntries)) * 100)}%`
+          : null;
       return {
         name: subjectName(liveRowFor(s) || s.row),
+        code,
+        attended,
+        total,
+        size,
+        staleSince,
+        debarNote,
+        bestNote,
+        safeCount: Math.floor(safeNowEntries / size),
+        partialNote:
+          slotPairs > seenDays
+            ? `register shows only ${seenDays} of ~${slotPairs} weekly lab day(s)`
+            : null,
         nextBunkable,
         nextExamLabel: nextExam ? nextExam[0] : null,
         pct,
-        recover: pct !== null && pct < 75 ? attendToTarget(attended, total) : 0,
-        unit: size > 1 ? "lab(s)" : "class(es)",
+        // attendToTarget works in history entries (hours for labs) — show
+        // whole sessions like every other number
+        recover:
+          pct !== null && pct < 75
+            ? Math.ceil(attendToTarget(attended, total) / size)
+            : 0,
+        unit: isLab ? "lab(s)" : "class(es)",
         held: total,
-        remaining: calendar
-          ? `${Math.floor(countClassesUntil(calendar, meetings, null) / size)}${unit}`
-          : "--",
+        remaining:
+          remainEntries !== null
+            ? `${Math.floor(remainEntries / size)}${unit}`
+            : "--",
+        safeNow: `${Math.floor(safeNowEntries / size)}${unit}`,
         cat1: bunkCell(calendar, calendar && calendar.cat1, attended, total, meetings, history, size, unit),
         cat2: bunkCell(calendar, calendar && calendar.cat2, attended, total, meetings, history, size, unit),
         fat: bunkCell(calendar, calendar && calendar.fat, attended, total, meetings, history, size, unit),
@@ -872,13 +1220,35 @@
     renderForecastBanner(rowsData);
     renderBunkTable(rowsData);
 
-    // snapshot for the home-page notices card
+    // stale registers also get a visible nudge on VTOP's own row, where the
+    // (outdated) percentage is displayed
+    rowsData.forEach((r, i) => {
+      if (!r.staleSince) return;
+      const row = liveRowFor(collected[i].s);
+      if (!row || row.querySelector(".vrevamp-stale-flag")) return;
+      const cell =
+        row.cells && row.cells.length > 2 ? row.cells[2] : row.cells && row.cells[0];
+      if (!cell) return;
+      const flag = document.createElement("div");
+      flag.className = "vrevamp-stale-flag";
+      flag.textContent = `⚠ not posted since ${r.staleSince}`;
+      flag.title =
+        "vRevamp: this register hasn't been updated — the percentage shown here is outdated";
+      flag.style.cssText =
+        "color:#c0392b;font-size:11px;font-weight:bold;margin-top:2px;";
+      cell.appendChild(flag);
+    });
+
+    // snapshot for the home-page notices card and the marks-page flag
     chrome.storage.local.set({
       vrevamp_attendance_summary: {
         fetchedAt: Date.now(),
         semester: semesterName,
         subjects: rowsData.map((r) => ({
           name: r.name,
+          code: r.code,
+          pct: r.pct,
+          safeNow: r.safeCount,
           nextBunkable: r.nextBunkable,
           unit: r.unit,
         })),

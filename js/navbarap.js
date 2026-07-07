@@ -1,4 +1,7 @@
 const nav_bar_change = () => {
+	// idempotent: the load event, the SW message, and SPA re-fires can all
+	// land here — never build a second navbar
+	if (document.getElementById("navbar")) return;
 	let items_list = Array.from(document.getElementsByTagName("a")).filter(
 		(e) => e.dataset.url
 	);
@@ -24,6 +27,7 @@ const nav_bar_change = () => {
 	}
 	// console.log(marks, attendance, course_page, da_upload, time_table, calendar);
 	let nav = document.getElementsByClassName("collapse navbar-collapse");
+	if (!nav[0]) return; // page without the VTOP navbar (login/404): nothing to decorate
 	let span = document.createElement("div");
 	span.id = "navbar";
 	span.innerHTML = `

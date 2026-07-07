@@ -251,18 +251,20 @@ function myMain(evt) {
     let img = document.getElementsByClassName(
       "form-control img-fluid bg-light border-0"
     )[0];
-    img.style.height = "40px!important";
-    img.style.width = "200px!important";
     let textB = document.getElementById("captchaStr");
     let submitB = document.getElementById("submitBtn");
+    if (!img || !textB || !submitB) return; // role-picker/404: no captcha yet
+    img.style.height = "40px!important";
+    img.style.width = "200px!important";
     solve(img, textB);
     submitB.focus();
   } else {
     let img = document.getElementById("captcha_id");
-    img.style.height = "40px!important";
-    img.style.width = "200px!important";
     let textB = document.getElementById("captchaString");
     let submitB = document.getElementById("loginButton");
+    if (!img || !textB || !submitB) return; // no captcha on this page
+    img.style.height = "40px!important";
+    img.style.width = "200px!important";
     solve(img, textB);
     submitB.focus();
   }

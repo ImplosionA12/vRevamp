@@ -40,19 +40,39 @@
     return p;
   };
 
-  const buildCard = (calendar, summary) => {
+  const buildCard = (calendar, summary, collapsed) => {
     const card = document.createElement("div");
     card.id = "vrevamp-home-notices";
     card.style.cssText =
-      "margin:10px;padding:10px 14px;background:#fff;border:1px solid #ccc;" +
+      "margin:8px 10px;padding:8px 12px;background:#fff;border:1px solid #ccc;" +
       "border-left:4px solid rgb(60,141,188);border-radius:4px;" +
       "box-shadow:0 1px 3px rgba(0,0,0,0.1);";
 
+    // header doubles as a collapse toggle so the card never hogs the page;
+    // the body is height-capped and scrolls internally
+    const head = document.createElement("div");
+    head.style.cssText =
+      "display:flex;justify-content:space-between;align-items:center;cursor:pointer;";
     const title = document.createElement("p");
     title.textContent = "vRevamp — heads up";
     title.style.cssText =
-      "font-weight:bold;margin:0 0 6px 0;font-size:14px;color:rgb(60,141,188);";
-    card.appendChild(title);
+      "font-weight:bold;margin:0;font-size:13px;color:rgb(60,141,188);";
+    const toggle = document.createElement("span");
+    toggle.textContent = collapsed ? "▸ show" : "▾ hide";
+    toggle.style.cssText = "font-size:11px;color:#888;";
+    head.appendChild(title);
+    head.appendChild(toggle);
+    card.appendChild(head);
+
+    const body = document.createElement("div");
+    body.style.cssText = `max-height:96px;overflow-y:auto;margin-top:4px;${collapsed ? "display:none;" : ""}`;
+    card.appendChild(body);
+    head.addEventListener("click", () => {
+      const wasHidden = body.style.display === "none";
+      body.style.display = wasHidden ? "" : "none";
+      toggle.textContent = wasHidden ? "▾ hide" : "▸ show";
+      chrome.storage.local.set({ vrevamp_notices_collapsed: !wasHidden });
+    });
 
     let added = 0;
 
@@ -69,7 +89,7 @@
           d === 0
             ? `\u{1F4DD} ${label} starts today! (${fmt(iso)})`
             : `\u{1F4DD} ${label} starts in ${d} day(s) (${fmt(iso)})`;
-        card.appendChild(line(text, d <= 7 ? "#c0392b" : null));
+        body.appendChild(line(text, d <= 7 ? "#c0392b" : null));
         added++;
       });
 
@@ -77,7 +97,7 @@
         (iso) => daysUntil(iso) >= 0
       );
       if (nextHoliday) {
-        card.appendChild(
+        body.appendChild(
           line(
             `\u{1F3D6}️ Next holiday: ${fmt(nextHoliday)} (in ${daysUntil(nextHoliday)} day(s))`,
             "#2e7d32"
@@ -86,7 +106,7 @@
         added++;
       }
     } else {
-      card.appendChild(
+      body.appendChild(
         line(
           "Open the Attendance page once so vRevamp can read the academic calendar.",
           "#888"
@@ -101,7 +121,7 @@
       );
       if (atRisk.length) {
         atRisk.forEach((s) => {
-          card.appendChild(
+          body.appendChild(
             line(
               `⚠️ ${s.name}: only ${s.nextBunkable} ${s.unit || "class(es)"} skippable before the next exam`,
               "#c0392b"
@@ -110,10 +130,28 @@
           added++;
         });
       } else if (summary.subjects.length) {
-        card.appendChild(
+        body.appendChild(
           line(
             "✅ Attendance: all subjects have buffer before the next exam.",
             "#2e7d32"
+          )
+        );
+        added++;
+      }
+      // compact safe-skip overview — the "never dip below 75%" numbers
+      const withSafe = summary.subjects.filter(
+        (s) => typeof s.safeNow === "number"
+      );
+      if (withSafe.length) {
+        body.appendChild(
+          line(
+            `🎯 Safe to skip now: ${withSafe
+              .map(
+                (s) =>
+                  `${s.code || s.name.split(" ")[0]}${/lab/i.test(s.unit || "") ? " (lab)" : ""} ${s.safeNow}`
+              )
+              .join(" · ")}`,
+            null
           )
         );
         added++;
@@ -122,7 +160,7 @@
         (Date.now() - (summary.fetchedAt || 0)) / DAY_MS
       );
       if (ageDays >= 1) {
-        card.appendChild(
+        body.appendChild(
           line(
             `(attendance data is ${ageDays} day(s) old — open the Attendance page to refresh)`,
             "#888"
@@ -140,14 +178,26 @@
     if (document.getElementById("vrevamp-alert-head")) return true;
     const container =
       document.querySelector("#main-section") ||
-      document.querySelector(".content-wrapper");
+      document.querySelector(".content-wrapper") ||
+      // 2026 layout: the SCROLLABLE content wrapper, not #core-container —
+      // that one is overflow:hidden, so a card there is pinned above the
+      // scroll region and permanently eats viewport height
+      document.querySelector("#core-container .overflow-auto.showBlock") ||
+      document.querySelector("#b5wrapper") ||
+      document.querySelector("#core-container");
     if (!container) return false;
     const calendar = await getLatestCalendar();
-    const summary =
-      (await chrome.storage.local.get("vrevamp_attendance_summary"))
-        .vrevamp_attendance_summary || null;
-    const card = buildCard(calendar, summary);
-    if (card) container.insertBefore(card, container.firstChild);
+    const stored = await chrome.storage.local.get([
+      "vrevamp_attendance_summary",
+      "vrevamp_notices_collapsed",
+    ]);
+    const summary = stored.vrevamp_attendance_summary || null;
+    const card = buildCard(calendar, summary, !!stored.vrevamp_notices_collapsed);
+    // re-check after the awaits: two message-triggered renders can interleave
+    // at the storage reads and both pass the guard at the top (seen live —
+    // duplicated card on the 2026 home page)
+    if (card && !document.getElementById("vrevamp-home-notices"))
+      container.insertBefore(card, container.firstChild);
     return true;
   };
 

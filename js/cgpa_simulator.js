@@ -20,6 +20,12 @@
  * grade-shaped rows, the build is driven by a DOM observer (not just the
  * message), and the panel always renders with a "copy debug info" button so a
  * mis-detection still yields the exact structure to fix.
+ *
+ * Credits/CGPA live on the separate Grade History page (Examination → Grade
+ * History), NOT on the Grades page. They're cached in chrome.storage.local
+ * whenever that page is open, and fetched silently from
+ * examinations/examGradeView/StudentGradeHistory when the cache can't cover
+ * the courses on screen.
  */
 (() => {
   const GRADE_POINTS = { S: 10, A: 9, B: 8, C: 7, D: 6, E: 5, F: 0 };
@@ -40,13 +46,21 @@
   const overrides = {}; // code -> hypothetical grade, survives rebuilds
   let mode = "gpa";
 
+  // credits + CGPA cached from the Grade History page / silent fetch
+  const STORE_CREDITS = "vrevamp_grade_credits";
+  const STORE_DETAILS = "vrevamp_cgpa_details";
+  let cachedCredits = {};
+  let cachedDetails = null;
+  let historyFetch = "idle"; // idle | pending | done | failed
+
   // ---- table discovery -----------------------------------------------------
 
   const rowsOf = (t) => Array.from(t.querySelectorAll("tr"));
   const cellTexts = (tr) => Array.from(tr.children).map(txt);
 
+  // per-cell, not whole-row text: \b fails when cells concatenate ("BJan-2026")
   const isHistoryTable = (t) =>
-    rowsOf(t).filter((r) => hasMonth(txt(r))).length >= 2;
+    rowsOf(t).filter((r) => cellTexts(r).some(hasMonth)).length >= 2;
 
   // the current-semester grade table = most "code + grade" rows, excluding the
   // history table (which also has codes/grades but carries Mon-YYYY)
@@ -82,21 +96,24 @@
         markI = texts.findIndex((t, i) => i > codeI && i !== gradeI && isMark(t));
       const title =
         texts.slice(codeI + 1).find((t) => t.length > 6 && !/^\d/.test(t)) || "";
+      // the "+" button carries the course id the detail endpoint needs
+      const dm = /getGradeViewDetails\('([^']+)'\)/.exec(tr.outerHTML || "");
       out.push({
         code: texts[codeI],
         title: title.slice(0, 40),
         mark: markI >= 0 ? num(texts[markI]) : NaN,
         grade: texts[gradeI],
         rowEl: tr,
+        detailId: dm ? dm[1] : null,
       });
     });
     const seen = new Set();
     return out.filter((c) => !seen.has(c.code) && seen.add(c.code));
   };
 
-  const parseCredits = () => {
+  const parseCredits = (root = document) => {
     const map = {};
-    Array.from(document.querySelectorAll("table tr")).forEach((tr) => {
+    Array.from(root.querySelectorAll("table tr")).forEach((tr) => {
       const texts = cellTexts(tr);
       if (!texts.some(hasMonth)) return;
       const code = texts.find(isCode);
@@ -106,9 +123,9 @@
     return map;
   };
 
-  const parseCgpaDetails = () => {
+  const parseCgpaDetails = (root = document) => {
     let result = { cgpa: NaN, creditsEarned: NaN };
-    Array.from(document.querySelectorAll("table")).forEach((t) => {
+    Array.from(root.querySelectorAll("table")).forEach((t) => {
       if (!/CGPA/i.test(t.textContent) || !/Credits Earned/i.test(t.textContent))
         return;
       const rows = rowsOf(t);
@@ -125,21 +142,26 @@
     return result;
   };
 
+  const cutoffsFromTable = (t) => {
+    let cutoffs = null;
+    rowsOf(t).forEach((tr) => {
+      const vals = cellTexts(tr).filter((s) => /[<>≥≤]=?\s*\d/.test(s));
+      if (vals.length >= 5) {
+        cutoffs = {};
+        GRADES.forEach((g, i) => {
+          cutoffs[g] =
+            vals[i] !== undefined ? num(vals[i].replace(/<\d.*/, "")) : NaN;
+        });
+      }
+    });
+    return cutoffs;
+  };
+
   const parseRanges = (list) => {
     Array.from(document.querySelectorAll("table"))
       .filter((t) => /Range of Grades/i.test(t.textContent))
       .forEach((t) => {
-        let cutoffs = null;
-        rowsOf(t).forEach((tr) => {
-          const vals = cellTexts(tr).filter((s) => /[<>]=?\s*\d/.test(s));
-          if (vals.length >= 5) {
-            cutoffs = {};
-            GRADES.forEach((g, i) => {
-              cutoffs[g] =
-                vals[i] !== undefined ? num(vals[i].replace(/<\d.*/, "")) : NaN;
-            });
-          }
-        });
+        const cutoffs = cutoffsFromTable(t);
         if (!cutoffs) return;
         let owner = null;
         list.forEach((c) => {
@@ -150,6 +172,142 @@
             owner = c;
         });
         if (owner && !owner.cutoffs) owner.cutoffs = cutoffs;
+      });
+  };
+
+  // ---- silent per-course cutoff fetch ---------------------------------------
+  // The "Range of Grades" only exists inside the "+" expansion; instead of
+  // making the user expand every course, fetch the same fragment the "+"
+  // button does (examinations/examGradeView/getGradeViewDetails) for any
+  // course still missing cutoffs, and rebuild when they land.
+  const cutoffCache = {}; // detailId -> cutoffs
+  const cutoffAttempted = new Set();
+  let cutoffFetchRunning = false;
+
+  const fetchMissingCutoffs = (list) => {
+    if (cutoffFetchRunning) return;
+    const csrf = document.querySelector('input[name="_csrf"]');
+    const auth = document.getElementById("authorizedIDX");
+    const semEl = document.querySelector("#semesterSubId");
+    if (!csrf || !auth || !semEl || !semEl.value) return;
+    const todo = list.filter(
+      (c) => !c.cutoffs && c.detailId && !cutoffAttempted.has(c.detailId)
+    );
+    if (!todo.length) return;
+    cutoffFetchRunning = true;
+    (async () => {
+      let landed = false;
+      for (const c of todo) {
+        cutoffAttempted.add(c.detailId);
+        try {
+          const body = new URLSearchParams({
+            _csrf: csrf.value,
+            authorizedID: auth.value,
+            x: new Date().toUTCString(),
+            semesterSubId: semEl.value,
+            courseId: c.detailId,
+          });
+          const res = await fetch(
+            location.origin + "/vtop/examinations/examGradeView/getGradeViewDetails",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+              },
+              body: body.toString(),
+              credentials: "same-origin",
+            }
+          );
+          if (!res.ok) continue;
+          const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+          let cutoffs = null;
+          Array.from(doc.querySelectorAll("table"))
+            .filter((t) => /Range of Grades/i.test(t.textContent))
+            .forEach((t) => {
+              cutoffs = cutoffs || cutoffsFromTable(t);
+            });
+          if (cutoffs) {
+            cutoffCache[c.detailId] = cutoffs;
+            landed = true;
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        } catch (e) {
+          /* stays on the expand-course hint */
+        }
+      }
+      cutoffFetchRunning = false;
+      if (landed) {
+        lastSig = ""; // force a rebuild with the fetched cutoffs
+        scheduleBuild();
+      }
+    })();
+  };
+
+  // ---- credits/CGPA cache + silent grade-history fetch ---------------------
+
+  const persistCache = () => {
+    try {
+      chrome.storage.local.set({
+        [STORE_CREDITS]: cachedCredits,
+        [STORE_DETAILS]: cachedDetails,
+      });
+    } catch (e) {
+      /* extension context gone — nothing to do */
+    }
+  };
+
+  const absorb = (creditMap, det) => {
+    let grew = false;
+    Object.keys(creditMap).forEach((k) => {
+      if (cachedCredits[k] !== creditMap[k]) {
+        cachedCredits[k] = creditMap[k];
+        grew = true;
+      }
+    });
+    if (det && !isNaN(det.cgpa)) {
+      if (!cachedDetails || cachedDetails.cgpa !== det.cgpa) grew = true;
+      cachedDetails = det;
+    }
+    if (grew) persistCache();
+    return grew;
+  };
+
+  // the Grades page carries no credits/CGPA at all — pull the Grade History
+  // fragment the same way the SPA does and harvest it
+  const fetchHistory = () => {
+    if (historyFetch !== "idle") return;
+    const csrf = document.querySelector('input[name="_csrf"]');
+    const auth = document.getElementById("authorizedIDX");
+    if (!csrf || !auth) {
+      historyFetch = "failed";
+      return;
+    }
+    historyFetch = "pending";
+    const body =
+      "verifyMenu=true&authorizedID=" +
+      encodeURIComponent(auth.value) +
+      "&_csrf=" +
+      encodeURIComponent(csrf.value) +
+      "&nocache=" +
+      Date.now();
+    fetch(location.origin + "/vtop/examinations/examGradeView/StudentGradeHistory", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error("HTTP " + r.status))))
+      .then((html) => {
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        historyFetch = "done";
+        if (absorb(parseCredits(doc), parseCgpaDetails(doc))) {
+          lastSig = ""; // force a rebuild with the new data
+          scheduleBuild();
+        }
+      })
+      .catch((e) => {
+        historyFetch = "failed";
+        console.warn("vRevamp what-if simulator: grade-history fetch failed", e);
       });
   };
 
@@ -178,7 +336,8 @@
   const marksToNext = (c) => {
     if (!c.cutoffs || isNaN(c.mark)) return null;
     const idx = GRADES.indexOf(gradeOf(c));
-    if (idx <= 0) return { top: true };
+    if (idx < 0) return null; // P/N/unknown grade — no "next grade" notion
+    if (idx === 0) return { top: true };
     const need = c.cutoffs[GRADES[idx - 1]];
     if (isNaN(need)) return null;
     return { nextGrade: GRADES[idx - 1], gap: Math.max(0, +(need - c.mark).toFixed(1)) };
@@ -254,7 +413,11 @@
       else if (mtn)
         nextText =
           mtn.gap === 0 ? `at ${mtn.nextGrade} cutoff` : `${mtn.gap} mark(s) → ${mtn.nextGrade}`;
-      else if (!isNaN(c.mark)) nextText = "expand course ↑";
+      else if (!isNaN(c.mark))
+        nextText =
+          c.detailId && !cutoffAttempted.has(c.detailId)
+            ? "fetching…"
+            : "expand course ↑";
       tr.appendChild(cell(nextText, "text-align:center;color:#555;font-size:12px;"));
       table.appendChild(tr);
     });
@@ -319,14 +482,22 @@
         const w = document.createElement("p");
         w.style.cssText = "margin:6px 0;color:#999;font-size:12px;";
         w.textContent =
-          "Some courses have no credits on this page — open the Grade History view once so credits load.";
+          historyFetch === "pending" || historyFetch === "idle"
+            ? "Loading credits from your grade history…"
+            : "Couldn't load credits for some courses — open Examination → Grade History once and come back.";
         body.appendChild(w);
       }
     } else {
       const { cgpa, creditsEarned } = details;
       if (isNaN(cgpa) || isNaN(creditsEarned)) {
         body.appendChild(
-          stat("CGPA:", "couldn't read the CGPA Details box — scroll it into view and reopen.", "#c0392b")
+          stat(
+            "CGPA:",
+            historyFetch === "pending" || historyFetch === "idle"
+              ? "loading from your grade history…"
+              : "couldn't load — open Examination → Grade History once and come back.",
+            "#c0392b"
+          )
         );
       } else {
         const projCgpa = (cgpa * creditsEarned - orig.pts + proj.pts) / creditsEarned;
@@ -365,6 +536,7 @@
     lines.push(`courses found: ${courses.length}`);
     lines.push(`credits map: ${JSON.stringify(credits)}`);
     lines.push(`cgpa details: ${JSON.stringify(details)}`);
+    lines.push(`history fetch: ${historyFetch}, cached credits: ${Object.keys(cachedCredits).length}`);
     const gt = findGradeTable();
     lines.push("--- grade table (first 4 rows) ---");
     if (gt)
@@ -399,18 +571,40 @@
     const gradeTable = findGradeTable();
     const detailsBox = document.querySelector("table") &&
       Array.from(document.querySelectorAll("table")).find((t) => /CGPA/i.test(t.textContent));
-    // only act on the grade page: needs either a grade table or the CGPA box
+    // only act on the grade pages: needs either a grade table or the CGPA box
     if (!gradeTable && !detailsBox) return;
 
-    courses = gradeTable ? parseCurrentSem(gradeTable) : [];
-    credits = parseCredits();
-    details = parseCgpaDetails();
-    if (courses.length) parseRanges(courses);
+    // harvest whatever this page offers (the Grade History page carries both)
+    const pageCredits = parseCredits();
+    const pageDetails = parseCgpaDetails();
+    absorb(pageCredits, pageDetails);
 
-    const anchor =
-      gradeTable.closest("#studentGradeView") ||
-      gradeTable.closest(".row") ||
-      gradeTable;
+    // on the Grade History page itself there is nothing to simulate — cache
+    // its credits/CGPA for the Grades page and stay out of the way
+    if (!gradeTable && Object.keys(pageCredits).length) return;
+
+    courses = gradeTable ? parseCurrentSem(gradeTable) : [];
+    credits = { ...cachedCredits, ...pageCredits };
+    details = !isNaN(pageDetails.cgpa) ? pageDetails : cachedDetails || pageDetails;
+    if (courses.length) {
+      parseRanges(courses);
+      courses.forEach((c) => {
+        if (!c.cutoffs && c.detailId && cutoffCache[c.detailId])
+          c.cutoffs = cutoffCache[c.detailId];
+      });
+      fetchMissingCutoffs(courses);
+    }
+
+    // credits/CGPA still missing for what's on screen -> pull grade history
+    if (
+      courses.length &&
+      (courses.some((c) => credits[c.code] == null) || isNaN(details.cgpa))
+    )
+      fetchHistory();
+
+    const anchorFor = (el) =>
+      el && (el.closest("#studentGradeView") || el.closest(".row") || el);
+    const anchor = anchorFor(gradeTable) || anchorFor(detailsBox);
 
     let panel = document.getElementById(PANEL_ID);
     if (!panel) {
@@ -429,7 +623,7 @@
       const hint = document.createElement("p");
       hint.style.cssText = "margin:0 0 6px 0;color:#666;font-size:12px;";
       hint.textContent =
-        "Change any grade to see your projected GPA / CGPA — credits come from your grade history, no guessing. Expand a course (the + button) to see marks short of the next grade.";
+        "Change any grade to see your projected GPA / CGPA — credits come from your grade history, and per-course grade cutoffs are fetched automatically for the marks-to-next-grade column.";
       panel.appendChild(hint);
 
       const bodyWrap = document.createElement("div");
@@ -502,5 +696,17 @@
     else setTimeout(startObserving, 300);
   };
   startObserving();
+
+  // last session's harvest, so credits show instantly on the Grades page
+  try {
+    chrome.storage.local.get([STORE_CREDITS, STORE_DETAILS], (r) => {
+      cachedCredits = { ...(r[STORE_CREDITS] || {}), ...cachedCredits };
+      if (!cachedDetails && r[STORE_DETAILS]) cachedDetails = r[STORE_DETAILS];
+      lastSig = "";
+      scheduleBuild();
+    });
+  } catch (e) {
+    /* no storage (shouldn't happen in the extension) */
+  }
   scheduleBuild();
 })();

@@ -10,8 +10,12 @@ It does **not** touch the live VTOP portal — no login or credentials are neede
 ## What it covers
 
 - **Next-class widget** — current/next class + countdown from the saved timetable
-- **CGPA what-if simulator** — semester GPA, live recompute on grade change,
-  cumulative-CGPA projection, add-course
+- **CGPA what-if simulator** — credit join from the grade-history table,
+  semester GPA, marks-to-next-grade from per-course cutoffs, live recompute on
+  grade change, cumulative-CGPA projection from the page's CGPA Details box,
+  the fallback panel when the grade table can't be detected, credits/CGPA
+  resolved from the chrome.storage cache (the real Grades page carries
+  neither), and the silent harvest of the Grade History page into that cache
 - **Full timetable `.ics` export** — event count, lab-hour merging, weekly
   recurrence ending at the calendar's last instructional day
 - **Attendance forecaster banner + bunk table** — below-75% flagging, recovery
@@ -25,4 +29,4 @@ npx playwright install chromium   # one-time browser download
 npm test
 ```
 
-Expected output ends with `21 passed, 0 failed`.
+Expected output ends with `34 passed, 0 failed`.

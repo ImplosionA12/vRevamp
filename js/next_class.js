@@ -118,7 +118,10 @@
   const render = async () => {
     const container =
       document.querySelector("#main-section") ||
-      document.querySelector(".content-wrapper");
+      document.querySelector(".content-wrapper") ||
+      // 2026 layout: the scrollable content wrapper (see home_notices.js)
+      document.querySelector("#core-container .overflow-auto.showBlock") ||
+      document.querySelector("#b5wrapper");
     if (!container) return false;
     if (timetable === undefined) timetable = await getSavedTimetable();
     const info = describe(todaysClasses(timetable));

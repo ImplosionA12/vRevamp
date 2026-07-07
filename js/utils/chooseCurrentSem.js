@@ -37,6 +37,31 @@ function parseSemesterStart(text) {
     return new Date(firstYear + 1, 0, 1);
 }
 
+// Every real option index, ordered by how likely it is to hold the ongoing
+// semester's data: semesters that have started (newest first), then the
+// rest. attendance.js walks this list when a semester loads with no
+// attendance rows (e.g. the just-opened registration semester).
+function semesterFallbackOrder() {
+    const sel = document.getElementById("semesterSubId");
+    if (!sel) return [];
+    const now = new Date();
+    const entries = Array.from(sel.options)
+        .map((opt, index) => ({
+            index,
+            start:
+                opt.value && opt.innerText.trim()
+                    ? parseSemesterStart(opt.innerText.trim())
+                    : null,
+            real: !!(opt.value && opt.innerText.trim()),
+        }))
+        .filter((e) => e.real);
+    const started = entries
+        .filter((e) => e.start && e.start <= now)
+        .sort((a, b) => b.start - a.start);
+    const rest = entries.filter((e) => !e.start || e.start > now);
+    return started.concat(rest).map((e) => e.index);
+}
+
 function chooseCurrentSemester() {
     const chooseSemesterSearchBox = document.getElementById("semesterSubId");
     if (!chooseSemesterSearchBox) return;

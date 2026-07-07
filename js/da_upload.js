@@ -1,4 +1,240 @@
 let error_code = 0;
+
+const DA_MONTHS = {
+  Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
+  Jul: "07", Aug: "08", Sep: "09", Sept: "09", Oct: "10", Nov: "11", Dec: "12",
+};
+const DA_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the due
+
+// Fresh Google token via the worker at click time (chrome.identity refreshes
+// silently once consent exists — the token stored at popup-login expires in
+// ~1 h). Falls back to the stored token where messaging isn't available.
+// Shared with exam_schedule.js, hence the window guard.
+if (typeof window.vrGoogleToken !== "function") {
+  window.vrGoogleToken = (opts) =>
+    new Promise((resolve) => {
+      const fallback = () =>
+        chrome.storage.sync.get(["token"], (r) => resolve(r.token || null));
+      try {
+        chrome.runtime.sendMessage(
+          {
+            message: "get_google_token",
+            interactive: !!(opts && opts.interactive),
+            stale: (opts && opts.stale) || null,
+          },
+          (t) => {
+            if (chrome.runtime.lastError || t === undefined) return fallback();
+            resolve(t || null);
+          }
+        );
+      } catch {
+        fallback();
+      }
+    });
+}
+
+// One calendar event per assignment with an email (+popup) reminder — unlike
+// calendar() below this needs no calendar-notification defaults to be set up.
+function create_email_reminder(date_due, course_code, assign_title, course_title, token) {
+  const m = date_due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
+  if (!m || !DA_MONTHS[m[2]]) return Promise.resolve({ ok: false, status: 0 });
+  const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
+  return fetch(
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?alt=json",
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        summary: `DA due: ${course_code} — ${assign_title}`,
+        description: `${course_title} (vRevamp reminder, email ${DA_REMINDER_LEAD_MIN / 60} h before)`,
+        start: { dateTime: `${iso}T20:00:00+05:30` },
+        end: { dateTime: `${iso}T21:00:00+05:30` },
+        reminders: {
+          useDefault: false,
+          overrides: [
+            { method: "email", minutes: DA_REMINDER_LEAD_MIN },
+            { method: "popup", minutes: DA_REMINDER_LEAD_MIN },
+          ],
+        },
+      }),
+    }
+  )
+    .then((r) => ({ ok: r.status === 200, status: r.status }))
+    .catch(() => ({ ok: false, status: 0 }));
+}
+
+const da_header_index = (row, re) =>
+  [...row.cells].findIndex((c) => re.test(c.textContent));
+
+// detail fragment (processDigitalAssignment): course info table + the
+// assignment list (Title / Due Date / Document Details), found by header text
+const parse_da_detail = (doc) => {
+  const tables = [...doc.querySelectorAll("table")];
+  let course_code = "", course_title = "";
+  const info = tables.find(
+    (t) => t.rows[0] && /course\s*code/i.test(t.rows[0].textContent)
+  );
+  if (info && info.rows[1]) {
+    const ci = da_header_index(info.rows[0], /course\s*code/i);
+    const ti = da_header_index(info.rows[0], /course\s*title/i);
+    if (info.rows[1].cells[ci]) course_code = info.rows[1].cells[ci].textContent.trim();
+    if (info.rows[1].cells[ti]) course_title = info.rows[1].cells[ti].textContent.trim();
+  }
+  const items = [];
+  const list = tables.find(
+    (t) => t.rows[0] && /due\s*date/i.test(t.rows[0].textContent)
+  );
+  if (list) {
+    const iTitle = da_header_index(list.rows[0], /title/i);
+    const iDue = da_header_index(list.rows[0], /due\s*date/i);
+    const iDoc = da_header_index(list.rows[0], /document\s*details/i);
+    for (const r of [...list.rows].slice(1)) {
+      if (r.cells.length <= iDoc) continue; // the Upload/Edit sub-header row
+      const due = r.cells[iDue] ? r.cells[iDue].textContent.trim() : "";
+      if (!/^\d{1,2}-[A-Za-z]{3,4}-\d{4}$/.test(due)) continue;
+      items.push({
+        title: r.cells[iTitle] ? r.cells[iTitle].textContent.trim() : "",
+        due,
+        uploaded: r.cells[iDoc]
+          ? !/file\s*not\s*uploaded/i.test(r.cells[iDoc].textContent)
+          : true,
+      });
+    }
+  }
+  return { course_code, course_title, items };
+};
+
+// 2026 layout: class table is Sl.No / Class Nbr / Course Code / Course Title /
+// Course Type / Faculty Name / Dashboard. Adds an "Upcoming Dues" column with
+// the nearest un-submitted due date and a 🔔 button that creates calendar
+// events (email reminder 24 h before) for every upcoming due of that course.
+let da_page_2026 = async () => {
+  const classTable = [...document.querySelectorAll("table")].find(
+    (t) =>
+      t.rows[0] &&
+      /class\s*nbr/i.test(t.rows[0].textContent) &&
+      /dashboard/i.test(t.rows[0].textContent)
+  );
+  if (!classTable || classTable.dataset.vrevampDues === "1") return;
+  classTable.dataset.vrevampDues = "1";
+
+  const iNbr = da_header_index(classTable.rows[0], /class\s*nbr/i);
+  const th = document.createElement("td");
+  th.textContent = "Upcoming Dues";
+  th.style.width = "14%";
+  classTable.rows[0].appendChild(th);
+
+  const csrfEl = document.querySelector("input[name=_csrf]");
+  const csrf = csrfEl ? csrfEl.value : "";
+  const regEl =
+    document.querySelector(".navbar-text.text-light.small.fw-bold") ||
+    document.getElementsByClassName("VTopHeaderStyle")[0];
+  const reg = regEl ? regEl.innerText.replace("(STUDENT)", "").trim() : "";
+
+  for (const row of [...classTable.rows].slice(1)) {
+    const cell = document.createElement("td");
+    cell.textContent = "…";
+    row.appendChild(cell);
+    const classId = row.cells[iNbr] ? row.cells[iNbr].textContent.trim() : "";
+    if (!/^\w+$/.test(classId)) {
+      cell.textContent = "--";
+      continue;
+    }
+    let meta;
+    try {
+      const res = await fetch(
+        `${window.location.origin}/vtop/examinations/processDigitalAssignment`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+          },
+          body: `authorizedID=${reg}&x=${new Date().toGMTString()}&classId=${classId}&_csrf=${csrf}`,
+        }
+      );
+      meta = parse_da_detail(
+        new DOMParser().parseFromString(await res.text(), "text/html")
+      );
+    } catch {
+      cell.textContent = "--";
+      continue;
+    }
+    const now = new Date().getTime();
+    const dueMs = (d) => new Date(d.replace(/-/g, " ")).getTime();
+    const upcoming = meta.items
+      .filter((a) => !a.uploaded && dueMs(a.due) + 86399000 >= now)
+      .sort((a, b) => dueMs(a.due) - dueMs(b.due));
+    cell.textContent = "";
+    cell.title = meta.items
+      .map((a) => `${a.title}: ${a.due} ${a.uploaded ? "✓ submitted" : "✗ not uploaded"}`)
+      .join("\n");
+    if (upcoming.length === 0) {
+      const missed = meta.items.filter((a) => !a.uploaded).length;
+      if (meta.items.length === 0) cell.textContent = "No DAs posted";
+      else if (missed > 0) {
+        cell.textContent = `⚠ ${missed} past due (not uploaded)`;
+        cell.style.background = "rgb(238, 75, 43,0.35)";
+      } else cell.textContent = "✅ all submitted";
+      continue;
+    }
+    const days = Math.ceil((dueMs(upcoming[0].due) - now) / 86400000);
+    cell.style.background =
+      days <= 3 ? "rgb(238, 75, 43,0.6)" : "rgb(170, 255, 0,0.6)";
+    const span = document.createElement("span");
+    span.textContent = `${upcoming[0].due} (${days} day(s) left)`;
+    cell.appendChild(span);
+    const btn = document.createElement("button");
+    btn.className = "vrevamp-da-remind";
+    btn.textContent = "🔔 email me";
+    btn.title = `Google Calendar event per upcoming due, email ${DA_REMINDER_LEAD_MIN / 60} h before`;
+    btn.style.cssText =
+      "display:block;margin-top:4px;font-size:11px;cursor:pointer;";
+    cell.appendChild(btn);
+    btn.addEventListener("click", async () => {
+      // fresh token at click time — the popup-login one expires in ~1 h
+      let token = await window.vrGoogleToken({});
+      if (!token) token = await window.vrGoogleToken({ interactive: true });
+      if (!token) {
+        alert("Sign in with Google — allow the consent window (or use the vRevamp popup once), then retry.");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "…";
+      let done = 0;
+      let refreshed = false;
+      for (let i = 0; i < upcoming.length; i++) {
+        const a = upcoming[i];
+        const r = await create_email_reminder(
+          a.due, meta.course_code, a.title, meta.course_title, token
+        );
+        if (r.status === 401 && !refreshed) {
+          refreshed = true;
+          token = await window.vrGoogleToken({ stale: token });
+          if (token) {
+            i--; // redo this assignment with the fresh token
+            continue;
+          }
+        }
+        if (r.status === 401) {
+          alert("Google session expired — sign in again from the vRevamp popup.");
+          btn.textContent = "sign-in needed";
+          btn.disabled = false;
+          return;
+        }
+        if (r.ok) done++;
+        await sleep(400);
+      }
+      btn.textContent = done > 0 ? `✓ ${done} reminder(s)` : "failed — retry";
+      btn.disabled = done > 0;
+    });
+  }
+};
+
 function calendar(date, course_code, course_name, token, time, retries = 3) {
   var map = {
     Jan: "01",
@@ -346,7 +582,14 @@ let sort = () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "da_upload") {
     try {
-      da_page();
+      const is2026 = [...document.querySelectorAll("table")].some(
+        (t) =>
+          t.rows[0] &&
+          /class\s*nbr/i.test(t.rows[0].textContent) &&
+          /dashboard/i.test(t.rows[0].textContent)
+      );
+      if (is2026) da_page_2026();
+      else da_page();
     } catch (error) {
       // console.log(error);
     }

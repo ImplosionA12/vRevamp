@@ -18,6 +18,7 @@ const sharedNames = [
   "getTimeTable",
   // js/utils
   "chooseCurrentSemester",
+  "semesterFallbackOrder",
   "filterRepeated",
   "filterRepeatedColumns",
   // js/captcha
