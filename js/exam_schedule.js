@@ -264,13 +264,6 @@ let exam_schedule_sync = () => {
     bell.style.background = "rgb(73,117,182)";
     bell.onclick = async () => {
       try {
-        let token = await window.vrGoogleToken({});
-        // never consented yet — one interactive consent window, right now
-        if (!token) token = await window.vrGoogleToken({ interactive: true });
-        if (!token) {
-          exam_status(bell, "sign in with Google — allow the consent window (or use the vRevamp popup once), then retry", false);
-          return;
-        }
         const now = new Date();
         const todayIso =
           `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-` +
@@ -285,6 +278,13 @@ let exam_schedule_sync = () => {
         });
         if (upcoming.length === 0) {
           exam_status(bell, "no upcoming exams with a published time in this group", false);
+          return;
+        }
+        let token = await window.vrGoogleToken({});
+        // never consented yet — one interactive consent window, right now
+        if (!token) token = await window.vrGoogleToken({ interactive: true });
+        if (!token) {
+          exam_status(bell, "sign in with Google — allow the consent window (or use the vRevamp popup once), then retry", false);
           return;
         }
         bell.disabled = true;

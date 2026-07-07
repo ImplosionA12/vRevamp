@@ -1,6 +1,20 @@
 These are the changes made to the project: 
 
-## Google sign-in fixed for 🔔 reminders + richer exam emails (2026-07-07)
+## 🔔 no longer demands Google sign-in for all-past exam groups (2026-07-07, live)
+- Live follow-up: user's "huge loading" was VTOP's own server stalling its
+  static assets (jquery/app.js pending for ~30 s; extension not even
+  injected yet — it has no blocking webRequest permission). Not ours.
+- "Can't see reminder buttons": two causes seen live. (a) Pages opened
+  before an extension reload keep orphaned content scripts that can't
+  receive SW messages — a page refresh fixes it. (b) Summer II 2025-26 has
+  NO published exam schedule yet ("Details Not Found"), so there is nothing
+  to attach buttons to; Winter 2025-26 shows Download + 🔔 per group fine.
+- Real flaw found while clicking: the 🔔 handler acquired a Google token
+  (popping the one-time consent window) BEFORE checking whether the group
+  has any upcoming exams — an all-past group demanded sign-in just to say
+  "no upcoming exams". Order flipped in `js/exam_schedule.js`: the
+  no-upcoming answer now comes first, sign-in only when there's something
+  to schedule. 100 checks green.
 - User report: 🔔 kept asking to sign in. Root cause: the popup's "login"
   stores a **one-time access token** in `chrome.storage.sync` — Google
   access tokens expire after ~1 h, so by click time it was always dead
