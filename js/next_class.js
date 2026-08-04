@@ -114,6 +114,46 @@
   };
 
   let timetable; // undefined = not loaded yet, null = none saved
+  let timetableStale = false;
+
+  const getLatestCalendar = async () => {
+    const all = await chrome.storage.local.get(null);
+    const calendars = Object.keys(all)
+      .filter((k) => k.startsWith("vrevamp_calendar_"))
+      .map((k) => all[k]);
+    calendars.sort((a, b) => (b.fetchedAt || 0) - (a.fetchedAt || 0));
+    return calendars[0] || null;
+  };
+
+  // A timetable saved during a previous semester must not drive "Done for
+  // the day" / "No classes today" — the new semester's classes are simply
+  // unknown. semesterLooksStale lives in js/utils/chooseCurrentSem.js.
+  const checkStale = async (tt) => {
+    if (!tt || typeof semesterLooksStale !== "function") return false;
+    const calendar = await getLatestCalendar();
+    if (tt.semester) {
+      // only trust the calendar's end dates if it belongs to the same sem
+      const calMatches =
+        calendar &&
+        String(calendar.semester || "").trim() === String(tt.semester).trim();
+      return semesterLooksStale(tt.semester, calMatches ? calendar : null);
+    }
+    // no semester stamp but a save date: VTOP's timetable page can render
+    // the registered semester with the dropdown still on the placeholder
+    // (seen live 2026-07-16), so judge by when it was saved — a save made
+    // during the current term is current data
+    if (typeof tt.savedAt === "number") {
+      const termStart =
+        typeof currentTermStartEstimate === "function"
+          ? currentTermStartEstimate()
+          : null;
+      return !!(termStart && tt.savedAt < termStart.getTime());
+    }
+    // legacy blob (no stamps at all — saved before this feature): it is at
+    // least as old as the newest cached calendar, so if that calendar's
+    // semester is over, the timetable is too
+    return !!(calendar && semesterLooksStale(calendar.semester, calendar));
+  };
 
   const render = async () => {
     const container =
@@ -123,8 +163,16 @@
       document.querySelector("#core-container .overflow-auto.showBlock") ||
       document.querySelector("#b5wrapper");
     if (!container) return false;
-    if (timetable === undefined) timetable = await getSavedTimetable();
-    const info = describe(todaysClasses(timetable));
+    if (timetable === undefined) {
+      timetable = await getSavedTimetable();
+      timetableStale = await checkStale(timetable);
+    }
+    const info = timetableStale
+      ? {
+          tone: "#b8860b",
+          text: "\u{1F5D3}️ Saved timetable looks like last semester's — open the Time Table page once to refresh it.",
+        }
+      : describe(todaysClasses(timetable));
     if (!info) return true; // no timetable saved — stay silent
     let card = document.getElementById(CARD_ID);
     if (!card) {

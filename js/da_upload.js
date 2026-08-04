@@ -7,10 +7,12 @@ const DA_MONTHS = {
 const DA_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the due
 
 // Fresh Google token via the worker at click time (chrome.identity refreshes
-// silently once consent exists — the token stored at popup-login expires in
-// ~1 h). Falls back to the stored token where messaging isn't available.
-// Shared with exam_schedule.js, hence the window guard.
+// silently once consent exists). The worker replies { token, error } — the
+// error is kept so the buttons can say WHY no consent window appeared (most
+// often: the Chrome profile itself has no Google account signed in).
+// Shared with exam_schedule.js / timetable_ics.js, hence the window guard.
 if (typeof window.vrGoogleToken !== "function") {
+  window.vrGoogleAuthError = null;
   window.vrGoogleToken = (opts) =>
     new Promise((resolve) => {
       const fallback = () =>
@@ -22,15 +24,64 @@ if (typeof window.vrGoogleToken !== "function") {
             interactive: !!(opts && opts.interactive),
             stale: (opts && opts.stale) || null,
           },
-          (t) => {
-            if (chrome.runtime.lastError || t === undefined) return fallback();
-            resolve(t || null);
+          (resp) => {
+            if (chrome.runtime.lastError || resp === undefined) return fallback();
+            if (resp && typeof resp === "object") {
+              window.vrGoogleAuthError = resp.error || null;
+              return resolve(resp.token || null);
+            }
+            resolve(resp || null); // worker from before the update: bare token
           }
         );
       } catch {
         fallback();
       }
     });
+  // the sign-in failure, phrased for the button status lines
+  window.vrGoogleAuthHint = () => {
+    const e = window.vrGoogleAuthError || "";
+    if (/bad client id|invalid_client|deleted_client/i.test(e))
+      return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
+    if (/not signed in/i.test(e))
+      return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
+    if (/did not approve|access|denied|closed|cancel/i.test(e))
+      return "the Google consent window was closed — click again and allow access";
+    return e
+      ? `Google sign-in failed: ${e}`
+      : "Google sign-in failed — allow the consent window, then retry";
+  };
+}
+
+// Chrome-native reminders via the worker (chrome.alarms + notifications) —
+// needs no Google account at all. Shared with exam_schedule.js (window guard).
+if (typeof window.vrLocalReminders !== "function") {
+  window.vrLocalReminders = (tag, reminders) =>
+    new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          { message: "schedule_local_reminders", tag, reminders },
+          (n) => {
+            if (chrome.runtime.lastError) return resolve(null);
+            resolve(typeof n === "number" ? n : null);
+          }
+        );
+      } catch {
+        resolve(null);
+      }
+    });
+}
+
+// One-tap "add to Google Calendar" template URL — see exam_schedule.js for
+// the rationale (no OAuth client / consent needed, works for every user).
+// Shared with exam_schedule.js, hence the window guard.
+if (typeof window.vrGcalTemplateUrl !== "function") {
+  window.vrGcalTemplateUrl = (ev) =>
+    "https://calendar.google.com/calendar/render?action=TEMPLATE" +
+    `&text=${encodeURIComponent(ev.title)}` +
+    `&dates=${ev.start}/${ev.end}` +
+    "&ctz=Asia/Kolkata" +
+    `&details=${encodeURIComponent(ev.details || "")}` +
+    (ev.location ? `&location=${encodeURIComponent(ev.location)}` : "");
 }
 
 // One calendar event per assignment with an email (+popup) reminder — unlike
@@ -188,23 +239,60 @@ let da_page_2026 = async () => {
     const span = document.createElement("span");
     span.textContent = `${upcoming[0].due} (${days} day(s) left)`;
     cell.appendChild(span);
+    // 🔔 Chrome notifications for every upcoming due of this course — 6 PM
+    // the evening before and 8 AM on the due day. No Google sign-in.
     const btn = document.createElement("button");
     btn.className = "vrevamp-da-remind";
-    btn.textContent = "🔔 email me";
-    btn.title = `Google Calendar event per upcoming due, email ${DA_REMINDER_LEAD_MIN / 60} h before`;
+    btn.textContent = "🔔 remind me";
+    btn.title =
+      "Chrome notification the evening before (6 PM) and the morning of (8 AM) each due — no sign-in needed";
     btn.style.cssText =
-      "display:block;margin-top:4px;font-size:11px;cursor:pointer;";
+      "display:inline-block;margin-top:4px;font-size:11px;cursor:pointer;";
     cell.appendChild(btn);
     btn.addEventListener("click", async () => {
-      // fresh token at click time — the popup-login one expires in ~1 h
+      btn.disabled = true;
+      const reminders = [];
+      upcoming.forEach((a) => {
+        const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
+        if (!m || !DA_MONTHS[m[2]]) return;
+        const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
+        const dueDay = new Date(`${iso}T08:00:00+05:30`).getTime();
+        const title = `DA due: ${meta.course_code} — ${a.title}`;
+        const body = `${meta.course_title}\nDue ${a.due} — not uploaded yet`;
+        reminders.push({ when: dueDay - 14 * 3600 * 1000, title: `Tomorrow — ${title}`, body });
+        reminders.push({ when: dueDay, title: `Today — ${title}`, body });
+      });
+      const n = await window.vrLocalReminders(
+        `da:${meta.course_code || classId}`,
+        reminders
+      );
+      btn.textContent =
+        n === null
+          ? "failed — retry"
+          : n === 0
+            ? "already due"
+            : `✓ ${n} reminder(s)`;
+      btn.disabled = n > 0;
+    });
+
+    // ✉ optional Google Calendar events with an email 24 h before each due
+    const mailBtn = document.createElement("button");
+    mailBtn.className = "vrevamp-da-remind";
+    mailBtn.textContent = "✉ email";
+    mailBtn.title = `Google Calendar event per upcoming due, email ${DA_REMINDER_LEAD_MIN / 60} h before — needs one-time Google consent`;
+    mailBtn.style.cssText =
+      "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;cursor:pointer;";
+    cell.appendChild(mailBtn);
+    mailBtn.addEventListener("click", async () => {
+      // fresh token at click time — a stored one expires in ~1 h
       let token = await window.vrGoogleToken({});
       if (!token) token = await window.vrGoogleToken({ interactive: true });
       if (!token) {
-        alert("Sign in with Google — allow the consent window (or use the vRevamp popup once), then retry.");
+        alert("vRevamp: " + window.vrGoogleAuthHint());
         return;
       }
-      btn.disabled = true;
-      btn.textContent = "…";
+      mailBtn.disabled = true;
+      mailBtn.textContent = "…";
       let done = 0;
       let refreshed = false;
       for (let i = 0; i < upcoming.length; i++) {
@@ -221,16 +309,42 @@ let da_page_2026 = async () => {
           }
         }
         if (r.status === 401) {
-          alert("Google session expired — sign in again from the vRevamp popup.");
-          btn.textContent = "sign-in needed";
-          btn.disabled = false;
+          alert("vRevamp: Google session expired — click again to re-consent.");
+          mailBtn.textContent = "sign-in needed";
+          mailBtn.disabled = false;
           return;
         }
         if (r.ok) done++;
         await sleep(400);
       }
-      btn.textContent = done > 0 ? `✓ ${done} reminder(s)` : "failed — retry";
-      btn.disabled = done > 0;
+      mailBtn.textContent = done > 0 ? `✓ ${done} email(s)` : "failed — retry";
+      mailBtn.disabled = done > 0;
+    });
+
+    // 📅 one-tap: prefilled Google Calendar event per upcoming due — opens
+    // in a new tab, the student just presses Save. No sign-in setup at all.
+    upcoming.forEach((a) => {
+      const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
+      if (!m || !DA_MONTHS[m[2]]) return;
+      const day = `${m[3]}${DA_MONTHS[m[2]]}${m[1].padStart(2, "0")}`;
+      const link = document.createElement("a");
+      link.className = "vrevamp-da-gcal";
+      link.textContent = upcoming.length > 1 ? `📅 ${a.due}` : "📅 gcal";
+      link.title =
+        "one tap: opens Google Calendar with this due prefilled — just press Save (no sign-in setup)";
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.style.cssText =
+        "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;";
+      link.href = window.vrGcalTemplateUrl({
+        title: `DA due: ${meta.course_code} — ${a.title}`,
+        start: `${day}T200000`,
+        end: `${day}T210000`,
+        details:
+          `${meta.course_title}\nDue ${a.due}\n\n` +
+          "Tip: add an Email notification to this event (or set one as your Google Calendar default) to get it mailed to you.",
+      });
+      cell.appendChild(link);
     });
   }
 };

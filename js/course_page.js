@@ -20,6 +20,10 @@ const get_link = (link_href, reg_no) => {
   //     const params = "authorizedID=" + reg_no + "&_csrf=" + csrf + "&x=" + encodeURIComponent(utc.toUTCString());
   //     return "https://vtop.vit.ac.in/vtop/" + url.trim() + "?" + params;
   // }
+  // NOTE: this used to be three branches, but the second tested
+  // `indexOf("vtop2") == -1` again — the exact condition the first branch
+  // had already consumed — so it was unreachable and, being a copy of the
+  // first, changed nothing anyway. Two real cases remain.
   if (webadress.indexOf("vtop2") === -1) {
     const csrf = document.getElementsByName("_csrf")[0].defaultValue;
     const params =
@@ -30,25 +34,14 @@ const get_link = (link_href, reg_no) => {
       "&x=" +
       encodeURIComponent(utc.toUTCString());
     return "https://vtop.vitap.ac.in/vtop/" + url.trim() + "?" + params;
-  } else if (webadress.indexOf("vtop2") == -1) {
-    const csrf = document.getElementsByName("_csrf")[0].defaultValue;
-    const params =
-      "authorizedID=" +
-      reg_no +
-      "&_csrf=" +
-      csrf +
-      "&x=" +
-      encodeURIComponent(utc.toUTCString());
-    return "https://vtop.vitap.ac.in/vtop/" + url.trim() + "?" + params;
-  } else {
-    const params =
-      "authorizedID=" + reg_no + "&x=" + encodeURIComponent(utc.toUTCString());
-    return "https://vtop.vitap.ac.in/vtop/" + url.trim() + "?" + params;
   }
+  const params =
+    "authorizedID=" + reg_no + "&x=" + encodeURIComponent(utc.toUTCString());
+  return "https://vtop.vitap.ac.in/vtop/" + url.trim() + "?" + params;
 };
 
 //Link Details
-const get_link_details = (link_element, index) => {
+const get_link_details = (link_element) => {
   // console.log(link_element);
   if (link_element.outerText.indexOf("_") === -1) {
     let description =
@@ -109,7 +102,7 @@ const download_files = (type) => {
   // console.log(all_links);
   all_links = all_links
     .filter((link) => type === "all" || link["checked"])
-    .map((link, index) => get_link_details(checkbox_link(link)[0], index));
+    .map((link) => get_link_details(checkbox_link(link)[0]));
 
   const { course, faculty_slot } = course_details();
 
@@ -127,6 +120,14 @@ let change_type = (box) => {
 };
 
 const modify_page = () => {
+  // Every `course_page_change` message starts a fresh interval that calls
+  // this. Without a guard a second message (SPA back-and-forth between
+  // course pages, or a re-fired webRequest event) appended a SECOND toolbar
+  // — duplicate "Select All", a second file-name dropdown, and a second
+  // checkbox in front of every material link. The 2026 SPA replaces the
+  // fragment on a real navigation, so this id is absent whenever the page
+  // genuinely needs decorating again.
+  if (document.getElementById("select_all")) return;
   const { course, faculty_slot } = course_details();
 
   //Caution text
@@ -186,7 +187,7 @@ const modify_page = () => {
         box.addEventListener("mouseover", change_type);
       });
     } else if (val == "click") {
-      checkbox1.forEach((box, index) => {
+      checkbox1.forEach((box) => {
         box.removeEventListener("mouseover", change_type);
       });
     }
@@ -231,11 +232,11 @@ const modify_page = () => {
   });
 
   //remove the download redirection of material and add checkbox
-  ref_material.forEach((elem, index) => {
+  ref_material.forEach((elem) => {
     elem.addEventListener("click", (event) => {
       event.preventDefault();
       return trigger_download({
-        link_data: [get_link_details(elem, index)],
+        link_data: [get_link_details(elem)],
         course,
         faculty_slot,
       });

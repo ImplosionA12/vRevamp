@@ -15,9 +15,12 @@
   const GCAL_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
   // Fresh Google token via the worker at click time (chrome.identity refreshes
-  // silently once consent exists). Shared with exam_schedule.js/da_upload.js,
-  // hence the window guard.
+  // silently once consent exists). The worker replies { token, error } — the
+  // error is kept so the buttons can say WHY no consent window appeared (most
+  // often: the Chrome profile itself has no Google account signed in).
+  // Shared with exam_schedule.js/da_upload.js, hence the window guard.
   if (typeof window.vrGoogleToken !== "function") {
+    window.vrGoogleAuthError = null;
     window.vrGoogleToken = (opts) =>
       new Promise((resolve) => {
         const fallback = () =>
@@ -29,15 +32,32 @@
               interactive: !!(opts && opts.interactive),
               stale: (opts && opts.stale) || null,
             },
-            (t) => {
-              if (chrome.runtime.lastError || t === undefined) return fallback();
-              resolve(t || null);
+            (resp) => {
+              if (chrome.runtime.lastError || resp === undefined) return fallback();
+              if (resp && typeof resp === "object") {
+                window.vrGoogleAuthError = resp.error || null;
+                return resolve(resp.token || null);
+              }
+              resolve(resp || null); // worker from before the update: bare token
             }
           );
         } catch {
           fallback();
         }
       });
+    // the sign-in failure, phrased for the button status lines
+    window.vrGoogleAuthHint = () => {
+      const e = window.vrGoogleAuthError || "";
+      if (/bad client id|invalid_client|deleted_client/i.test(e))
+        return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
+      if (/not signed in/i.test(e))
+        return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
+      if (/did not approve|access|denied|closed|cancel/i.test(e))
+        return "the Google consent window was closed — click again and allow access";
+      return e
+        ? `Google sign-in failed: ${e}`
+        : "Google sign-in failed — allow the consent window, then retry";
+    };
   }
 
   // getDay() index for the recurrence: 0=Sun..6=Sat
@@ -140,18 +160,15 @@
     return cal ? cal.lastInstructional : null; // "YYYY-MM-DD"
   };
 
-  const buildIcs = (timetable, untilIso) => {
-    const header = filterRepeated(timetable.header);
-    const now = new Date();
-    const stamp =
-      now.getUTCFullYear() +
-      String(now.getUTCMonth() + 1).padStart(2, "0") +
-      String(now.getUTCDate()).padStart(2, "0") +
-      "T" +
-      String(now.getUTCHours()).padStart(2, "0") +
-      String(now.getUTCMinutes()).padStart(2, "0") +
-      String(now.getUTCSeconds()).padStart(2, "0") +
-      "Z";
+  // header is only guaranteed on timetables saved by the current build; an
+  // older/partial blob without it must degrade into "no classes found"
+  // rather than throwing out of an un-awaited click handler
+  const headerOf = (timetable) =>
+    filterRepeated(Array.isArray(timetable.header) ? timetable.header : []);
+
+  const buildIcs = (timetable, untilIso, exams) => {
+    const header = headerOf(timetable);
+    const dtstamp = vrIcs.stamp();
 
     // recurrence end: lastInstructional + 1 day buffer, else ~17 weeks out
     const end = untilIso
@@ -160,36 +177,54 @@
     end.setDate(end.getDate() + 1);
     const until = ymd(end) + "T180000Z";
 
-    let count = 0;
-    let body = "";
+    const blocks = [];
     timetable.data.forEach((row) => {
       const wd = dayToNum(row.day);
       if (wd === undefined) return;
       const date = ymd(anchorDate(wd));
       classesForDay(header, row).forEach((c) => {
-        count++;
-        body +=
-          "BEGIN:VEVENT\n" +
-          `UID:${stamp}-${c.course}-${wd}-${c.slot}-${count}@vitap.ac.in\n` +
-          `DTSTAMP:${stamp}\n` +
-          `DTSTART;TZID=Asia/Kolkata:${date}T${hms(c.start)}\n` +
-          `DTEND;TZID=Asia/Kolkata:${date}T${hms(c.end)}\n` +
-          `RRULE:FREQ=WEEKLY;UNTIL=${until}\n` +
-          `SUMMARY:${c.course}${c.slot ? ` (${c.slot})` : ""}\n` +
-          (c.venue ? `LOCATION:${c.venue}\n` : "") +
-          "END:VEVENT\n\n";
+        blocks.push([
+          // weekday + slot + start time identify a weekly class; no export
+          // counter, so re-exporting produces the same UIDs and a re-import
+          // updates the series instead of duplicating it
+          `UID:${vrIcs.uid("vrevamp-class", c.course, wd, c.slot, hms(c.start))}`,
+          `DTSTAMP:${dtstamp}`,
+          `DTSTART;TZID=Asia/Kolkata:${date}T${hms(c.start)}`,
+          `DTEND;TZID=Asia/Kolkata:${date}T${hms(c.end)}`,
+          `RRULE:FREQ=WEEKLY;UNTIL=${until}`,
+          `SUMMARY:${vrIcs.esc(`${c.course}${c.slot ? ` (${c.slot})` : ""}`)}`,
+          c.venue ? `LOCATION:${vrIcs.esc(c.venue)}` : "",
+        ]);
       });
     });
 
-    if (count === 0) return null;
-    return (
-      "BEGIN:VCALENDAR\n" +
-      "VERSION:2.0\n" +
-      "PRODID:-//vRevamp//Timetable//EN\n" +
-      "CALSCALE:GREGORIAN\n\n" +
-      body +
-      "END:VCALENDAR"
-    );
+    // single (non-recurring) events for cached upcoming exams, so the one
+    // downloaded file carries classes AND exams — the same set the Google
+    // Calendar import adds (examEvents / templateLinks)
+    (exams || []).forEach((e) => {
+      const day = e.dateIso.replace(/-/g, "");
+      const detail = [
+        e.slot ? `Slot: ${e.slot}` : "",
+        e.reporting ? `Reporting: ${e.reporting}` : "",
+        e.seatLoc || e.seatNo ? `Seat: ${e.seatLoc || "-"} No. ${e.seatNo || "-"}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      blocks.push([
+        `UID:${vrIcs.uid("vrevamp-exam", e.type, e.code, day, e.start)}`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART;TZID=Asia/Kolkata:${day}T${e.start}00`,
+        `DTEND;TZID=Asia/Kolkata:${day}T${e.end}00`,
+        `SUMMARY:${vrIcs.esc(
+          `${e.type} exam: ${e.code}${e.title ? ` — ${e.title}` : ""}`
+        )}`,
+        e.venue ? `LOCATION:${vrIcs.esc(e.venue)}` : "",
+        detail ? `DESCRIPTION:${vrIcs.esc(detail)}` : "",
+      ]);
+    });
+
+    if (blocks.length === 0) return null;
+    return vrIcs.calendar("-//vRevamp//Timetable//EN", blocks);
   };
 
   /* ---- Google Calendar import ------------------------------------------ */
@@ -242,7 +277,7 @@
   };
 
   const buildGcalEvents = (timetable, cal, titles) => {
-    const header = filterRepeated(timetable.header);
+    const header = headerOf(timetable);
     const untilIso =
       cal && cal.lastInstructional
         ? cal.lastInstructional
@@ -290,17 +325,25 @@
     return { events, untilIso };
   };
 
-  // upcoming CAT/FAT exams from the schedule cached by the Exam Schedule
-  // page — one single (non-recurring) event per exam, at the exam's own
-  // window. Returns null when that page has never been opened.
-  const examEvents = async () => {
+  // upcoming CAT/FAT exams (raw rows) from the schedule cached by the Exam
+  // Schedule page. Returns null when that page has never been opened.
+  const upcomingCachedExams = async () => {
     const r = await chrome.storage.local.get(["vrevamp_exam_schedule"]);
     const cache = (r || {}).vrevamp_exam_schedule;
     if (!cache || !Array.isArray(cache.exams)) return null;
     const today = isoOf(new Date());
+    return cache.exams.filter(
+      (e) => e && e.dateIso && e.dateIso >= today && e.start && e.end
+    );
+  };
+
+  // the same exams as Google Calendar API bodies — one single
+  // (non-recurring) event per exam, at the exam's own window
+  const examEvents = async () => {
+    const upcoming = await upcomingCachedExams();
+    if (upcoming === null) return null;
     const hm = (t) => `${t.slice(0, 2)}:${t.slice(2)}:00`; // "1000" -> "10:00:00"
-    return cache.exams
-      .filter((e) => e && e.dateIso && e.dateIso >= today && e.start && e.end)
+    return upcoming
       .map((e) => ({
         summary: `${e.type} exam: ${e.code}${e.title ? ` — ${e.title}` : ""}`,
         location: e.venue || undefined,
@@ -345,6 +388,191 @@
     return removed;
   };
 
+  // sign-in failures the user can actually fix by retrying — everything else
+  // (dead OAuth client, unknown errors) goes to the sign-in-free fallback
+  const retryableAuthError = (e) =>
+    /not signed in|did not approve|access|denied|closed|cancel/i.test(e || "");
+
+  // Sign-in-free import. Used to download the .ics and open Google
+  // Calendar's own Import page, but the 2026 Calendar revamp broke that
+  // page outright — /r/settings (and /r/settings/import) never renders, it
+  // just shows the week view "loading" forever (live 2026-07-18). So the
+  // fallback is now a panel of one-tap render?action=TEMPLATE links — the
+  // same no-OAuth mechanism as the exam/DA 📅 links, which the new UI still
+  // honours (recurrence included via the recur= param): one link per weekly
+  // class carrying its whole-semester RRULE, one per upcoming exam. Each
+  // opens the user's calendar prefilled; they press Save, close the tab,
+  // click the next one.
+  const templateLinks = (timetable, cal, titles, rawExams) => {
+    const header = headerOf(timetable);
+    const untilIso =
+      cal && cal.lastInstructional
+        ? cal.lastInstructional
+        : isoOf(new Date(Date.now() + 17 * 7 * 24 * 3600 * 1000));
+    const untilD = new Date(untilIso + "T00:00:00");
+    untilD.setDate(untilD.getDate() + 1); // same buffer as the .ics
+    const until = ymd(untilD) + "T180000Z";
+
+    const links = [];
+    timetable.data.forEach((row) => {
+      const wd = dayToNum(row.day);
+      if (wd === undefined) return;
+      const first = nextDate(wd);
+      if (isoOf(first) > untilIso) return; // this weekday is done for the sem
+      classesForDay(header, row).forEach((c) => {
+        const title = titles[c.course];
+        const day = ymd(first);
+        links.push({
+          label:
+            `${String(row.day).trim().toUpperCase().slice(0, 3)} ` +
+            `${hmsColon(c.start).slice(0, 5)} · ` +
+            (title ? `${c.course} — ${title}` : c.course) +
+            (c.slot ? ` (${c.slot})` : ""),
+          url:
+            "https://calendar.google.com/calendar/render?action=TEMPLATE" +
+            `&text=${encodeURIComponent(
+              (title ? `${c.course} — ${title}` : c.course) + (c.slot ? ` (${c.slot})` : "")
+            )}` +
+            `&dates=${day}T${hms(c.start)}/${day}T${hms(c.end)}` +
+            "&ctz=Asia/Kolkata" +
+            `&recur=${encodeURIComponent(`RRULE:FREQ=WEEKLY;UNTIL=${until}`)}` +
+            `&details=${encodeURIComponent("vRevamp timetable import")}` +
+            (c.venue ? `&location=${encodeURIComponent(c.venue)}` : ""),
+        });
+      });
+    });
+
+    (rawExams || []).forEach((e) => {
+      const day = e.dateIso.replace(/-/g, "");
+      const detail = [
+        e.slot ? `Slot: ${e.slot}` : "",
+        e.reporting ? `Reporting: ${e.reporting}` : "",
+        e.seatLoc || e.seatNo ? `Seat: ${e.seatLoc || "-"} No. ${e.seatNo || "-"}` : "",
+        "vRevamp timetable import",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      links.push({
+        label: `${e.dateIso} · ${e.type} exam: ${e.code}${e.title ? ` — ${e.title}` : ""}`,
+        url:
+          "https://calendar.google.com/calendar/render?action=TEMPLATE" +
+          `&text=${encodeURIComponent(
+            `${e.type} exam: ${e.code}${e.title ? ` — ${e.title}` : ""}`
+          )}` +
+          `&dates=${day}T${e.start}00/${day}T${e.end}00` +
+          "&ctz=Asia/Kolkata" +
+          `&details=${encodeURIComponent(detail)}` +
+          (e.venue ? `&location=${encodeURIComponent(e.venue)}` : ""),
+      });
+    });
+    return { links, untilIso };
+  };
+
+  const LINKS_ID = "vrevamp-tt-links";
+
+  const showLinksPanel = (btn, links) => {
+    const old = document.getElementById(LINKS_ID);
+    if (old) old.remove();
+    const panel = document.createElement("div");
+    panel.id = LINKS_ID;
+    panel.style.cssText =
+      "margin:8px;padding:10px 12px;border:1px solid #c4cfdd;border-radius:8px;" +
+      "background:#f6f8fb;font-size:13px;line-height:1.5;max-width:920px;color:#222;";
+    const head = document.createElement("div");
+    head.style.cssText = "margin-bottom:8px;";
+    head.textContent =
+      "Click each class once — Google Calendar opens with it prefilled " +
+      "(weekly repeat for the whole semester included) — press Save there, " +
+      "come back, click the next. Saved ones grey out.";
+    panel.appendChild(head);
+    links.forEach((l) => {
+      const a = document.createElement("a");
+      a.href = l.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "📅 " + l.label;
+      a.style.cssText =
+        "display:inline-block;margin:3px 6px 3px 0;padding:3px 10px;" +
+        "border:1px solid #4975b6;border-radius:14px;background:#fff;" +
+        "color:#204b86;text-decoration:none;";
+      a.addEventListener("click", () => {
+        a.style.opacity = "0.45";
+        a.style.borderColor = "#999";
+        if (!a.textContent.startsWith("✓")) a.textContent = "✓ " + a.textContent;
+      });
+      panel.appendChild(a);
+    });
+    // after the status note (btn's nextElementSibling) when it exists
+    const after = btn.nextElementSibling && btn.nextElementSibling.className === "vrevamp-tt-note"
+      ? btn.nextElementSibling
+      : btn;
+    after.insertAdjacentElement("afterend", panel);
+  };
+
+  // Fully automatic path: the worker opens each prefilled editor in a
+  // background tab, presses Save there itself, closes it (message:
+  // gcal_template_import) — one click imports the whole semester with no
+  // sign-in. lastAutoProgress mirrors the worker's progress messages so a
+  // dropped sendResponse (worker suspended mid-run) can't make a
+  // successful import look like a failure.
+  let lastAutoProgress = null;
+
+  const autoImport = (urls) =>
+    new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ message: "gcal_template_import", urls }, (r) => {
+          resolve(chrome.runtime.lastError || r === undefined ? null : r);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+
+  const oneTapFallback = async (btn, timetable, cal, titles) => {
+    const rawExams = (await upcomingCachedExams()) || [];
+    const { links, untilIso } = templateLinks(timetable, cal, titles, rawExams);
+    if (!links.length) return false;
+    btn.disabled = true;
+    tt_status(
+      btn,
+      `sign-in isn't possible in this build — importing directly instead: 0/${links.length}…`,
+      true
+    );
+    lastAutoProgress = null;
+    const res = (await autoImport(links.map((l) => l.url))) || lastAutoProgress;
+    btn.disabled = false;
+    const saved = res && typeof res.saved === "number" ? res.saved : 0;
+    if (saved > 0) {
+      tt_status(
+        btn,
+        `✓ ${saved}/${links.length} event(s) saved to Google Calendar — ` +
+          `${links.length - rawExams.length} weekly class(es)` +
+          (rawExams.length ? ` + ${rawExams.length} exam(s)` : "") +
+          `, classes until ${untilIso}` +
+          (saved < links.length
+            ? " — some didn't save; the one-tap links below cover everything, re-click any that are missing"
+            : "") +
+          ". (Re-running this import adds everything AGAIN — to redo it, first delete the old events in Google Calendar.)",
+        true
+      );
+      if (saved < links.length) showLinksPanel(btn, links);
+      return true;
+    }
+    // worker can't do it (old build, no permission, or the editor never
+    // loaded — e.g. Chrome has no Google session): manual one-tap panel
+    showLinksPanel(btn, links);
+    tt_status(
+      btn,
+      `✓ sign-in isn't possible in this build (and Google's Import page is broken), ` +
+        `so here are one-tap links instead: ${links.length - rawExams.length} weekly class(es)` +
+        (rawExams.length ? ` + ${rawExams.length} exam(s)` : "") +
+        `, classes until ${untilIso} — click each one below and press Save` +
+        (res && res.lastError ? ` (auto-import failed: ${res.lastError})` : ""),
+      true
+    );
+    return true;
+  };
+
   const onGcalClick = async (btn) => {
     try {
       const timetable = await getSavedTimetable();
@@ -365,7 +593,17 @@
       // never consented yet — one interactive consent window, right now
       if (!token) token = await window.vrGoogleToken({ interactive: true });
       if (!token) {
-        tt_status(btn, "sign in with Google — allow the consent window (or use the vRevamp popup once), then retry", false);
+        const err = window.vrGoogleAuthError || "";
+        console.info(
+          "vRevamp timetable import: Google sign-in failed:",
+          err || "(no error reported)"
+        );
+        // sign-in is impossible in this build (the upstream OAuth client id
+        // is dead — every user hits this) or failed for an unknown reason:
+        // do the import the no-sign-in way instead of dead-ending
+        if (!retryableAuthError(err) && (await oneTapFallback(btn, timetable, cal, titles)))
+          return;
+        tt_status(btn, window.vrGoogleAuthHint(), false);
         return;
       }
       btn.disabled = true;
@@ -389,8 +627,15 @@
           }
         }
         if (r.status === 401) {
-          tt_status(btn, "Google session expired — sign in again from the vRevamp popup", false);
+          // a cached token from when the OAuth client was still alive can get
+          // this far and then die un-refreshably — same fallback as above
           btn.disabled = false;
+          if (
+            !retryableAuthError(window.vrGoogleAuthError) &&
+            (await oneTapFallback(btn, timetable, cal, titles))
+          )
+            return;
+          tt_status(btn, "Google session expired — click again to re-consent", false);
           return;
         }
         if (r.ok) done++;
@@ -412,7 +657,19 @@
       );
     } catch (error) {
       console.warn("vRevamp timetable → Google Calendar:", error);
-      tt_status(btn, "failed — refresh and try again", false);
+      // a chrome://extensions reload orphans this script in already-open
+      // tabs: the button stays visible but every chrome.* call throws —
+      // only a page refresh reattaches the new build
+      const orphaned = /context invalidated|Extension context/i.test(
+        String((error && error.message) || error)
+      );
+      tt_status(
+        btn,
+        orphaned
+          ? "vRevamp was updated under this page — refresh the page (F5), then click again"
+          : "failed — refresh and try again",
+        false
+      );
       btn.disabled = false;
     }
   };
@@ -427,21 +684,37 @@
     document.body.removeChild(a);
   };
 
-  const onClick = async () => {
-    const timetable = await getSavedTimetable();
-    if (!timetable || !Array.isArray(timetable.data) || !timetable.data.length) {
-      alert(
-        "vRevamp: no saved timetable yet. Let the timetable finish loading on " +
-          "this page, then try again."
+  const onClick = async (btn) => {
+    try {
+      const timetable = await getSavedTimetable();
+      if (!timetable || !Array.isArray(timetable.data) || !timetable.data.length) {
+        tt_status(
+          btn,
+          "no saved timetable yet — let the page finish loading, then retry",
+          false
+        );
+        return;
+      }
+      // buildIcs took an `exams` argument that nothing ever passed, so the
+      // downloaded file silently held classes only while the Google import
+      // beside it included exams. Same cache, same filter as examEvents().
+      const exams = (await upcomingCachedExams()) || [];
+      const ics = buildIcs(timetable, await getLatestCalendarEnd(), exams);
+      if (!ics) {
+        tt_status(btn, "couldn't read any classes from the timetable", false);
+        return;
+      }
+      download(ics);
+      tt_status(
+        btn,
+        `✓ downloaded — weekly classes` +
+          (exams.length ? ` + ${exams.length} upcoming exam(s)` : ""),
+        true
       );
-      return;
+    } catch (error) {
+      console.warn("vRevamp timetable .ics:", error);
+      tt_status(btn, "export failed — refresh the page and try again", false);
     }
-    const ics = buildIcs(timetable, await getLatestCalendarEnd());
-    if (!ics) {
-      alert("vRevamp: couldn't read any classes from the timetable.");
-      return;
-    }
-    download(ics);
   };
 
   const addButton = () => {
@@ -454,7 +727,7 @@
     btn.className = "btn btn-primary";
     btn.textContent = " Export timetable to .ics ";
     btn.style.cssText = "margin:8px;background:rgb(73,117,182);";
-    btn.onclick = onClick;
+    btn.onclick = () => onClick(btn);
     anchor.insertBefore(btn, anchor.firstChild);
     const gbtn = document.createElement("button");
     gbtn.id = GCAL_BTN_ID;
@@ -476,5 +749,24 @@
 
   chrome.runtime.onMessage.addListener((request) => {
     if (request.message === "timetable_view_page") addWithRetries();
+    if (request.message === "gcal_template_progress") {
+      lastAutoProgress = { saved: request.saved || 0 };
+      const b = document.getElementById(GCAL_BTN_ID);
+      if (b)
+        tt_status(
+          b,
+          `importing… ${request.done}/${request.total} (${request.saved} saved)`,
+          true
+        );
+    }
   });
+
+  // NOTE: there used to be a window.postMessage("gcal_import") hook here so
+  // automation could drive the import without a real click. It shipped, and
+  // page-world code is not trusted: anything running on the VTOP page (VTOP
+  // itself, an injected script, an XSS on the portal) could fire it and make
+  // the worker open dozens of background tabs writing to the student's Google
+  // Calendar, with no user gesture. Removed 2026-07-25. To drive this from a
+  // test, call onGcalClick via chrome.scripting in the isolated world, or
+  // dispatch the "timetable_view_page" message and click the real button.
 })();

@@ -1,5 +1,573 @@
 These are the changes made to the project: 
 
+## Code audit: dead code removal + latent-bug fixes (2026-08-02)
+
+A read-through of every content script, the service worker and the popup,
+looking for code that can never run and for defects the existing tests
+don't reach. Lint clean, 186/186 tests green (6 new).
+
+### Dead code removed
+
+- **`js/navbarcc.js` — the whole file.** It only ever ran on
+  `request.message === "vtopcc_nav_bar"`, and nothing has ever sent that:
+  the worker's vocabulary is `vtop2_nav_bar` / `nav_bar_change`. Its markup
+  also targets `loadmydiv(...)`, the pre-2026 vtopcc SPA entry point, so
+  reviving it against the current layout would be guesswork. Deleted, and
+  unregistered from `manifest.json` — one less content script parsed on
+  every VTOP page.
+- **`vtopcc_captcha` / `vtop2_captcha` broadcasts** (`background.js`). No
+  listener exists anywhere: `js/captcha/captchaparser.js` is a separate
+  `content_scripts` entry that self-starts on window `load`. Each one woke
+  every content-script `onMessage` listener in the tab for nothing.
+- **`case "ics_import_fallback"`** (`background.js`). Documented as kept for
+  content scripts predating 2026-07-18 that outlive a worker update — but
+  that can't happen: an extension update orphans old content scripts and
+  invalidates their `chrome.runtime`, so they cannot send anything.
+- **`case "login"` / `case "logout"`** (`background.js`). Both popup buttons
+  are commented out in `html/popup.html`, and `js/popup.js` binds neither;
+  `get_google_token` superseded `login` anyway.
+- **`showOfflineIcon` listener** (`js/showOfflineIcon.js`). The worker's
+  per-request broadcast of it was removed in 8055f0e as the listener-storm
+  culprit; the listener it fed stayed behind as another no-op woken by
+  every message.
+- **`getBlockText()`** (`js/timetable/createTimeTable.js`). Its only
+  reference was a commented-out line.
+- **The unreachable third branch of `get_link()`** (`js/course_page.js`).
+  `else if (webadress.indexOf("vtop2") == -1)` re-tested the exact condition
+  the `if` above had already consumed — and was a verbatim copy of it, so it
+  would have changed nothing even if reachable.
+- **`buildIcs()`'s `exams` parameter** (`js/timetable_ics.js`) — see below;
+  fixed by wiring it up rather than deleting it.
+- Unused `index` parameters threaded through `js/course_page.js`.
+
+### Bugs fixed
+
+- **Timetable .ics download silently omitted exams.** `buildIcs(timetable,
+  untilIso, exams)` built exam VEVENTs from the cached schedule, but its one
+  caller passed two arguments. So the import button added classes *and*
+  upcoming CAT/FAT exams while the .ics button beside it, reading the same
+  cache, wrote classes only. Now passes `upcomingCachedExams()`, and reports
+  what it wrote instead of staying silent.
+- **`TZID=Asia/Kolkata` with no `VTIMEZONE`** (`js/shared/ics.js`). RFC 5545
+  section 3.6.5 requires a TZID parameter to reference a definition in the
+  same object; a bare Olson name is undefined behaviour. Google and Apple
+  resolve it anyway — which is why it went unnoticed in a file written
+  specifically for spec conformance — but a strict consumer may read every
+  class as floating local time. Emits an IST `STANDARD` component (UTC+5:30,
+  no DST since 1945), and only when an event actually references it.
+- **Navbar buttons for menu entries the student doesn't have**
+  (`js/navbarap.js`). A missing entry (My Curriculum is the usual one) left
+  its index `undefined`, and the template still emitted the button — so
+  clicking it ran `[undefined].click()` and threw in the page.
+  `if (time_table)` had the mirror-image bug: a legitimate index of **0** is
+  falsy, silently substituting Calendar for Time Table. Buttons are now
+  emitted only for indices that resolved.
+- **`js/navbarap.js` threw on every `nav_bar_change`** on pages without
+  `.btn-group.dropend`, because the message handler dereferenced `[0].style`
+  unguarded — the identical check at load time already used `?.`. The throw
+  also skipped the navbar build.
+- **Grade simulator re-scanned every table on every VTOP page, forever.**
+  `scheduleBuild`'s guard read
+  `if (sig === lastSig && document.getElementById(PANEL_ID)) return;`.
+  On any page with no panel — i.e. all of VTOP except the grade pages — the
+  second clause is false, so the short-circuit was unreachable and
+  `buildPanel()` (three separate walks over every table and row in the
+  document) ran on every quiet tick of a `document.body` subtree observer
+  that never disconnects. Panel presence is already the third field of
+  `sig`, so dropping the clause keeps the rebuild-after-re-render behaviour.
+  Same failure mode as the freeze fixed in 8055f0e.
+- **A rate-limited GitHub response poisoned the contributors list forever**
+  (`js/contributors.js`). Unauthenticated API calls are capped at 60/h/IP and
+  then answer 403 with an *object*, not an array. That object was written
+  straight to `chrome.storage.local`, so `.forEach` threw *and* the junk was
+  cached permanently — the list stayed empty on every later popup open. The
+  surrounding try/catch caught none of it: everything ran inside an async
+  storage callback. Now validates the shape before caching, and catches
+  inside the callback.
+- **Offline mode opened a burst of tabs.** The `onBeforeRequest` listener
+  called `chrome.tabs.create` per *request*, and an offline page load still
+  emits one event per subresource it attempts. Rate-limited to one tab per
+  offline episode; coming back online re-arms it.
+- **`displayTableData()` mutated the blob being saved**
+  (`js/timetable/timetable.js`). It `splice()`d index 0 off the header and
+  each theory/lab array — the same array objects `change_time_table()` hands
+  to `saveTimeTable()` one line earlier. It works only because
+  `chrome.storage` serialises its argument at call time; reordering those two
+  lines, or awaiting anything between them, would have persisted a timetable
+  missing its first column. (The test shim already carried a workaround
+  comment for this.) Now copies with `slice()`; both callers render
+  identically.
+- **Bare ISO dates parsed as UTC** (`js/home_notices.js`,
+  `js/utils/chooseCurrentSem.js`). `new Date("2026-08-15")` is UTC midnight,
+  so for any viewer west of Greenwich the heads-up card printed the previous
+  day and weekday for every exam and holiday, and `semesterLooksStale`
+  computed end-of-day on the wrong date. `js/attendance_insights.js` already
+  documents this hazard and carries the local-time parser; the other two now
+  match it.
+- **Duplicated course-page toolbar** (`js/course_page.js`). Every
+  `course_page_change` message started a fresh interval that called
+  `modify_page()` with no idempotency guard, so a second message appended a
+  second "Select All", a second file-name dropdown, and a second checkbox in
+  front of every material link. Guarded on `#select_all`, which a genuine SPA
+  navigation clears.
+- **`js/marks_page.js` dereferenced `.box-body` unguarded**, throwing past
+  its own `catch` into `console.error` on layouts without it.
+- **`js/timetable_ics.js` .ics button did nothing, silently**, when the saved
+  timetable had no `header` array: `filterRepeated(undefined)` threw out of an
+  un-awaited click handler. Header access is now guarded (degrades to
+  "couldn't read any classes") and the handler has a `catch`.
+
+### Known, not fixed
+
+- `js/wifi/hostel.js` `login()` reports "Login successful" whenever the fetch
+  doesn't throw — it never inspects the response, so wrong credentials look
+  like success. It also uses `mode: "cors"` against a host that isn't in
+  `host_permissions`. Both need an on-campus test against
+  `hfw.vitap.ac.in:8090` to fix correctly; guessing at the response format
+  would be worse than leaving it.
+- `js/outing/store.js` appends the form field as `"x="` (trailing `=` in the
+  key). Page-context code mirroring VTOP's own form; unverifiable without a
+  live outing form.
+- `js/da_upload.js`'s pre-2026 `da_page()` path and `js/course_page.js`'s
+  `get_link()` legacy branch are kept deliberately as layout fallbacks, not
+  treated as dead.
+
+## Forecast banner contradicted the column beside it (2026-07-26)
+
+Verified against live VTOP data (10 subjects): every bunk number the
+extension prints is arithmetically correct — `safeNow`, session sizing,
+"attend all →%", banner/table sync, and the FAT column re-derived
+independently from remaining classes all match. The defect was purely in
+how the banner phrased one of them.
+
+`renderForecastBanner` (`js/attendance_insights.js`) printed
+`nextBunkable` — "≥75% **on exam day** if you attend everything else" —
+with the qualifier dropped:
+
+> 🟢 Lowest margin: CSE3009 — 2 class(es) skippable before CAT-1
+
+directly above that subject's own table cell reading *"Only 0 class(es)
+can be Skipped, be Cautious"*. Two different numbers for one subject on
+one screen. Worse, it *ranked* subjects by `nextBunkable`, so it named
+CSE3009 at 2 while four rows sat at 0 by the never-dip metric — ranking
+on one metric with the eye landing on the other.
+
+Now it ranks on `safeCount` (the same never-dip number the table's
+safe-now column shows) and carries both horizons on one line:
+
+> 🟢 Tightest: CSE3009 — 0 class(es) safe to skip right now (2 before
+> CAT-1 if you attend everything else)
+
+The parenthetical is omitted when the two numbers agree. No maths
+changed. The home-page card was checked and already labels the two
+metrics distinctly ("skippable before the next exam" vs "Safe to skip
+now"), so it needed no change.
+
+## Code review follow-ups: ICS correctness, backdoor, CI, message storm (2026-07-25)
+
+Acting on a senior review of the whole extension. Five items, worst first.
+
+- **Malformed .ics was silently dropping exams** (new `js/shared/ics.js`,
+  used by `js/exam_schedule.js` + `js/timetable_ics.js`). Reproduced with
+  real data: a course with BOTH a theory and a lab exam produced two events
+  with the **identical UID** (it was built from the export timestamp +
+  course code alone). Same UID means "same event", so Google/Apple Calendar
+  kept one and discarded the other — the student's exam simply wasn't
+  there, with no error anywhere. Three more RFC 5545 violations in the same
+  output: unescaped TEXT values; `DTSTAMP;TZID=Asia/Kolkata:…` (DTSTAMP is
+  defined as UTC — no TZID, must end in `Z`); and LF endings with unfolded,
+  arbitrarily long lines.
+
+  **Correction (2026-07-26), after checking against ical.js** — the review
+  claimed unescaped `,`/`;` "split one property into several values". That
+  is **wrong**: ical.js recovers unescaped commas, semicolons *and*
+  backslashes intact, so they were never causing the data loss attributed to
+  them. The escaping defect that genuinely breaks files is a **literal
+  newline** inside a value: the parser reads the remainder as a new content
+  line and **rejects the entire calendar** ("invalid line (no token ';' or
+  ':')"). Nothing imports at all.
+  A second correction, from testing in Chrome: this was first written up as
+  "a cell containing `AB-1<br>Room 324` yields a newline via `textContent`".
+  Also wrong — `<br>` contributes nothing to `textContent`; that markup on
+  one line gives `"AB-1Room 324"`. The newline actually comes from a cell
+  whose content **spans multiple source lines** (`<td>\n AB-1\n Room 324\n
+  </td>`, or one nested element per line), because `textContent` preserves
+  the source whitespace between text nodes and `.trim()` only strips the
+  ends. JSP output routinely wraps cell content that way, so it is
+  reachable — but it has not been confirmed against live VTOP markup for
+  the exam table specifically. Escaping
+  `,`/`;` stays — it is required by RFC 5545 §3.3.11 and a stricter or
+  multi-value-aware consumer may well differ from ical.js — but it should
+  not be described as fixing data loss. The confirmed-severe defects are the
+  **UID collision** and the **literal newline**.
+  All .ics generation now goes through `vrIcs.calendar()`, which escapes
+  TEXT values, folds at **75 octets** (code-point walk, so a 3-byte em dash
+  is never split), emits CRLF, and builds content-derived UIDs — stable
+  across re-exports, so re-importing updates rather than duplicates. Exam
+  download also corrected from `data:text/plain` to `text/calendar`.
+- **Removed a page-world backdoor** (`js/timetable_ics.js`): a
+  `window.postMessage({vrevamp:"gcal_import"})` listener, added as a
+  live-verification hook, shipped. Any script running on the VTOP page
+  (VTOP itself, an injected script, an XSS on the portal) could fire it and
+  make the worker open dozens of background tabs writing to the student's
+  Google Calendar — no user gesture required.
+- **CI had never run once**: both workflows triggered on `main` while the
+  default branch is `master`. Pointed at `master` and added lint + the full
+  verification suite as a gate — the Web Store upload job now refuses to
+  publish a build that hasn't passed both. Packing moved to
+  `.github/pack.sh`, an **allowlist** (the old `zip -r . -x …` denylist
+  excluded neither `node_modules/` nor `tests/` nor `package-lock.json`; it
+  only ever produced a sane archive because CI never ran `npm ci`). The
+  script self-checks the archive before handing it over.
+- **`web.vitap.ac.in` was a dead zone**: injected by `content_scripts` but
+  absent from `host_permissions` *and* from `VTOP_URLS` in the worker, so
+  it received no webRequest events — all 17 content scripts loaded and not
+  one message-driven feature worked there. Added to both (confirmed live).
+  Note: this is a new host permission, so Chrome will disable the extension
+  until each user re-accepts it, and the Web Store will re-review.
+  Also deduped redundant `matches`/`host_permissions` entries.
+- **Message storm** (`service_worker/background.js`, `js/showOfflineIcon.js`):
+  `showOfflineIcon` was broadcast once per *completed request* — every
+  image, stylesheet, script and XHR. A single VTOP page load is 50–100
+  requests, and each message wakes all ~17 content-script `onMessage`
+  listeners, so one load cost well over a thousand listener invocations —
+  the same budget that caused the "Page Unresponsive" freeze fixed in
+  8055f0e. The icon never needed a message: it now renders itself on load
+  and stays idempotent. The listener is kept for explicit re-renders.
+- Tests: added an RFC 5545 conformance block (UID collision with a
+  theory+lab pair, comma/semicolon escaping, CRLF, UTC DTSTAMP, 75-octet
+  folding incl. multi-byte and exact unfold round-trip) plus conformance
+  assertions on the timetable export. **177/177 pass** (was 160), eslint
+  clean. `vrIcs` declared in `eslint.config.mjs` as a shared global.
+- **Test harness fidelity** (`tests/verify.mjs`): the `chrome.storage` stub
+  returned live references (`{...s}` is shallow), where the real API
+  structured-clones both in and out. That made a whole bug class untestable
+  — `displayTableData()` splices index 0 off the header/theory/lab arrays it
+  is handed, and with a shared reference that corrupted the "stored"
+  timetable for every later reader in the same page. Found while running the
+  full manifest bundle in a real browser: `timetable.js` and
+  `timetable_ics.js` both answer `timetable_view_page`, and under the old
+  stub the first silently ate the second's 08:00 theory class. The real
+  extension is unaffected (every `get` is a fresh clone), but the stub now
+  clones too, so the aliasing can't hide. Suite still 177/177.
+
+### Live verification (2026-07-25, real Chrome, not Playwright)
+Nothing in the suite reads `manifest.json`, so a bad path or a
+shared-scope collision would ship undetected. Built a harness that
+concatenates all 29 `content_scripts[0].js` files **in manifest order** into
+one page, as Chrome does at inject time:
+- all 29 paths resolve, **0 uncaught errors**, 18 listeners registered,
+  `vrIcs` present with its full API, and every pre-existing shared global
+  (`filterRepeated`, `getTimeTable`, `saveData`, `semesterLooksStale`,
+  `domtoimage`) still resolves — no redeclaration collision from the new file.
+- exam export driven end-to-end (real button click, captured download) and
+  the .ics parsed by an **independent** RFC 5545 consumer written from the
+  spec: 2 events with distinct UIDs, and `SUMMARY`/`LOCATION` round-trip to
+  the *exact* original strings, commas and semicolons intact. The folded
+  `DESCRIPTION` unfolds back to `Seat: R3C1 No. 5` — fold/unfold is
+  lossless. Max line exactly 75 octets, no bare LF, `DTSTAMP` UTC.
+- timetable export: theory + merged 2-hour lab, unique UIDs, weekly RRULE.
+- security: `window.postMessage({vrevamp:"gcal_import"})` now does **nothing**
+  (no `gcal_template_import` reaches the worker).
+- offline icon renders itself on load with **zero** messages sent.
+
+## Bunk Calculator accuracy hardening, round 2 (2026-07-19)
+- **Calendar month fetch rework** (`js/attendance_insights.js`): the month
+  list previously merged the landing page's onclick dates with the
+  per-semester endpoint's — the same month could be fetched several times
+  (per-day links, case-variant date strings, or a landing page defaulted to
+  a different semester), and every re-fetch **duplicated its instructional
+  days**, inflating "remaining till sem end" and every bunkable column.
+  Now: per-semester endpoint first (landing only as fallback), one fetch
+  per calendar month, and day records are merged per date (flags OR-ed) so
+  a date can never appear twice in `instructionalDays`. Cache version 3→4
+  so previously stored (possibly inflated) calendars refetch once.
+- **Nested-table guards**: a wrapper `<td>` around a nested month grid used
+  to match the day regex against the whole month's text (bogus day flagged
+  with every label — could even shift the "first CAT-1 day"); a wrapper
+  `<tr>` around a nested register table could add a phantom
+  Present/Absent entry. Both are now skipped.
+- **One-off classes no longer projected forward**: in the
+  inferred-from-history schedule, a weekday the subject met on only once
+  across a 3+ week history (makeup class / day-order swap) is dropped
+  instead of being counted as a weekly meeting.
+- What-if simulator's "safe now" is now capped by the classes actually
+  remaining (shrinking as skips/attends are simulated), matching the table.
+- **Honest unreachable-75% banner**: a below-75 subject whose remaining
+  classes can't lift it back used to get impossible advice ("attend the
+  next 5" when 4 remain) — it now says "can't reach 75% this sem even
+  attending everything (max N%)", consistent with the attend-all note.
+- **TZ-safe weekday math**: every `new Date("YYYY-MM-DD").getDay()` (UTC
+  parse — wrong weekday west of Greenwich) replaced with local-time
+  `wdOfIso`/`dateOfIso` helpers; gap/debar dates display via the same.
+- Tests: duplicate same-month link fixture, nested-wrapper register
+  fixture + held-count assertion, unreachable-75% banner assertion —
+  160/160 pass, eslint clean.
+- **Live verification (2026-07-19, Fall 2026-27)**: pulled the real
+  calendar (75 instructional days 14 Jul–14 Nov, CAT-1 17 Aug, CAT-2
+  28 Sep, FAT 16 Nov, no lab-FAT marked yet) and all 8 non-empty registers
+  directly from VTOP, then brute-forced which weekly pattern explains each
+  subject's rendered row — for **every subject one pattern reproduces all
+  six columns exactly** (remaining, CAT-1/2, FAT, safe-now, debar date).
+  Confirmed live: labs post ONE register row per session while VTOP's
+  headline counts hours (0/2 vs 1 entry); Mondays are genuinely
+  "No Instructional Day" this semester (Tue–Sat teaching) and the parser
+  excludes them correctly; calendar landing/months endpoints currently
+  clean (no per-day links, no nested grids) — the dedupe/nesting guards
+  protect against layouts that did/could ship them. Soft spot: LIB2006 is
+  absent from the saved timetable (flagged on its row) so its schedule is
+  guessed from a 1-entry register — reopening the Time Table page fixes.
+
+## Bunk Calculator accuracy audit + fixes (2026-07-18, late night)
+- **User-reported**: suspected wrong CSE4007 (embedded theory+lab) numbers.
+  Verified live against VTOP's own data, recomputed every cell by hand:
+  theory register 1/3 (14/15 Jul absent, 17 Jul present), lab register one
+  row per session (VTOP's headline 2/2 counts HOURS), CAT-1 starts 17 Aug,
+  12 Tue/Wed/Fri instructional days before it → bunkable-before-CAT-1 = 1
+  is **correct** (as are CAT-2: 5, FAT: 9, remaining 42 / lab 15, FAT 4).
+  The scary numbers were real: 2 of 3 theory classes missed.
+- Accuracy fixes that DID come out of the audit:
+  - Percentages now display VTOP-style (ceil: 1/3 → 34%) so the banner
+    never disagrees with VTOP's row beside it; all below-75% checks now use
+    the exact ratio, so 74.6% (displayed 75%) can no longer escape the red
+    flag (previously `Math.round` hid it).
+  - Lab "Classes held" is now whole sessions (`total/size`) like every
+    other lab number — on per-hour deployments it showed hours.
+  - Rows the saved timetable can't schedule now say so on the subject cell
+    ("not in the saved timetable" / "saved timetable disagrees with this
+    register — schedule guessed from N posted weekday(s)"): live, LIB2006
+    fell back to 1-day/week history inference (remaining 13 vs true ~40)
+    with no hint why.
+  - **Register-completeness check** (user request): scheduled class days
+    with no register entry between the first and last posted entries get a
+    "⚠ no entry for N scheduled class day(s): dates — class skipped or not
+    posted" note (days after the last entry stay the stale flag's job;
+    today excluded — often not posted yet).
+- Tests: GAP1001 fixture (MON/WED/FRI timetable, 7 Jan hole, 1/3 → 34%) —
+  5 new assertions; 158/158 pass, eslint clean.
+
+## Timetable import fallback: one-tap links — Google broke their Import page (2026-07-18)
+- **User-reported**: the fallback's Import tab "keeps loading infinitely".
+  Reproduced live: Google's 2026 Calendar revamp broke the whole classic
+  settings surface — `/r/settings/import` (and `/r/settings`, even via the
+  in-app gear → Settings) never renders; the URL changes but the week view
+  stays up forever. `calendar.google.com/render?action=TEMPLATE` still
+  works in the new UI, **including recurrence via `recur=RRULE:…`**
+  (verified live: prefilled editor shows "Weekly on Monday, until 15 Nov").
+- The no-sign-in fallback no longer downloads an .ics or opens the dead
+  Import page. It now renders a one-tap links panel under the button
+  (`#vrevamp-tt-links`): one TEMPLATE link per weekly class carrying the
+  whole-semester `RRULE…UNTIL` (attendance-snapshot title, venue, slot,
+  next-occurrence anchor — same data as the API path, minus EXDATEs which
+  TEMPLATE URLs can't express) + one single-event link per cached upcoming
+  exam. Click → prefilled editor in a new tab → Save; clicked links grey
+  out with a ✓. The plain "Export timetable to .ics" button stays for
+  file-based calendars.
+- Worker's `ics_import_fallback` handler kept as legacy (pre-update content
+  scripts), current builds never send it. Dead-client sign-in hint in all
+  three copies (timetable/exam/DA) no longer points at ⚙ Settings → Import.
+- Tests: dead-client block rewritten (panel contents, class-link RRULE
+  encoding, exam link sans recur, no download/no Import tab, ✓ grey-out);
+  old-worker test dropped with the path — 150/150 pass, eslint clean.
+
+## Same day, round 2: fully automatic one-click import (2026-07-18)
+- **User-reported**: 22 one-tap clicks is still manual labour — the button
+  should import everything itself, for every user, with zero setup.
+- New worker message `gcal_template_import`: for each TEMPLATE link it
+  opens a background tab, waits for the editor, `chrome.scripting`-injects
+  a MAIN-world clicker that presses Save (verified live that a JS click on
+  the editor's Save button works) and waits for the editor to close, then
+  closes the tab. Progress streams back per event
+  (`gcal_template_progress`) so the button counts "importing… n/22".
+  Manifest: + `scripting` permission, + `https://calendar.google.com/*`
+  host permission.
+- Button flow on dead sign-in: try the automatic import first; ✓ n/N note
+  on success. Partial success (an editor never loaded) shows the counts
+  AND the one-tap panel to finish by hand; total failure (old worker,
+  missing permission, no Google session, non-English Save label) falls
+  back to the panel exactly as before. A worker suspension that drops the
+  final sendResponse can't fake a failure — the content script keeps the
+  last progress message as the source of truth.
+- Tests: shim emulates the new worker message; 3 new tests (links handed
+  to the worker first; ✓ 3/3 + no panel; partial 2/3 + panel) — 153/153
+  pass, eslint clean.
+- **Verified live end-to-end** (22-class Fall 2026-27 timetable): triggered
+  the import via the page hook, watched "importing… n/22" count to
+  ✓ 22/22, confirmed all 22 weekly series in Google Calendar (~8 s/event).
+  Two hardening rounds from the live run: the worker stops after 3
+  straight zero-save failures instead of strobing 22 tabs, and reports
+  `lastError` (shown in the button note) so failures aren't silent. A
+  first run that "looked crashed" was actually saving slowly in the
+  background — re-clicking stacks a second copy of everything, so the
+  success note now warns that re-running duplicates (no API access = no
+  automatic replace-old like the OAuth path had).
+
+## Timetable import fallback: route it through the worker (2026-07-17)
+- **User-reported**: the 2026-07-16 fallback still "did nothing" when
+  clicked. Root cause: by the time the fallback ran, the click's user
+  activation was already spent on the two failed sign-in round-trips, so
+  the page-side `window.open()` (Import tab) — and potentially the anchor
+  download — were silently popup-blocked.
+- The worker now does both (new `ics_import_fallback` message): it
+  downloads the .ics via `chrome.downloads` and opens the Import page via
+  `chrome.tabs.create` — neither needs user activation, so nothing can be
+  blocked. The old page-side path stays as a last resort if the message
+  fails (worker from an older build).
+- The fallback also triggers more broadly: any sign-in failure that isn't
+  user-fixable (previously only the exact dead-client regex; now unknown
+  errors too), and the 401 dead end where a cached token from when the
+  client was alive dies un-refreshably mid-import.
+- Orphaned-content-script clicks (extension reloaded, tab not refreshed:
+  every `chrome.*` call throws "Extension context invalidated") now say
+  "vRevamp was updated under this page — refresh the page (F5)" instead of
+  the generic failure line. Sign-in failures are also `console.info`'d so
+  live debugging can see WHY.
+- Test shim emulates the new worker message (+ a flag to simulate an old
+  worker); 2 new tests (fallback goes through the worker; old worker →
+  page-side path still fires) — 149/149 pass, eslint clean.
+
+## Timetable → Google Calendar: no-sign-in fallback for the dead client (2026-07-16)
+- The "📅 import timetable to Google Calendar" button dead-ended for every
+  user: the API path needs OAuth and the published build's client id is dead.
+- Now, when sign-in fails with the bad/invalid/deleted-client error, the
+  button does the import the no-sign-in way in one click: builds the .ics
+  (weekly classes + cached upcoming exams — `buildIcs` gained an optional
+  exams argument, `upcomingCachedExams()` split out of `examEvents`),
+  downloads it, opens Google Calendar's Import page
+  (calendar.google.com/…/settings/import) in a new tab, and tells the user
+  to pick the file and press Import. Other sign-in failures (no Chrome
+  account, consent closed) keep their specific retryable hints.
+- Test shim's get_google_token now honours a seeded `google_error`; 2 new
+  tests (fallback .ics contents incl. exam VEVENT, Import page + note) —
+  147/147 pass, eslint clean.
+
+## Labs: bunk math targets the LAB FAT, never CATs (2026-07-16)
+- **User-reported**: lab components were treated like theory — "skippable
+  before the next exam" counted toward CAT-1/CAT-2 dates, but labs sit no
+  CATs; their only exam is the lab FAT (usually before the theory FATs).
+- Calendar parser (`classifyDay`) now splits FAT days: `fat` = theory
+  ("Final Assessment Test", or explicitly Theory), `labFat` = days whose
+  label mentions Lab/Laboratory ("Theory & Lab" flags both). This also stops
+  a lab-FAT day from dragging the theory FAT date earlier via firstIso.
+  Calendar cache version 2 → 3 so existing caches refetch with `labFat`.
+- Per-subject math: lab rows' next exam is now `["lab FAT", labFat || fat]`
+  (fallback when the calendar marks no separate lab day) — banner and home
+  card follow via nextExamLabel. Bunk table: lab rows show "no CATs for
+  labs" in the CAT columns and compute the FAT column to the lab FAT date;
+  footnote updated.
+- 3 new tests (labFat split, lab CAT columns, theory rows untouched) —
+  145/145 pass, eslint clean. (Test run note: machine was under memory
+  pressure from a running game; suite output had to go to a file.)
+
+## One-tap "add to Google Calendar" links — no OAuth needed (2026-07-16)
+- **Why**: the ✉️ email-reminder buttons ride on the Calendar API and the
+  manifest's OAuth client id — which is the original author's and is dead
+  ("bad client id", captured live on the button's error line 2026-07-16).
+  Every user would have to create their own Google Cloud OAuth client to use
+  them, which is unreasonable for a distributed extension.
+- **New universal path**: plain `calendar.google.com/render?action=TEMPLATE`
+  anchors (shared `window.vrGcalTemplateUrl` helper, guarded copy in
+  exam_schedule.js + da_upload.js). Clicking opens the user's own Google
+  Calendar with the event prefilled (title/window/venue/seat details,
+  `ctz=Asia/Kolkata`) — they just press Save. No extension OAuth, no consent
+  flow, works for every user.
+- Exam schedule page: every **upcoming** exam row with a published time gets
+  a "📅 add" link in its date cell (past / no-time rows skipped).
+  `exam_rows_of_group`'s cell reader now strips `.vrevamp-gcal-link` before
+  parsing — the link text was polluting the date cell and silently dropping
+  the row from the .ics/🔔/✉️ parsers (caught by the test suite).
+- DA page (2026): each course's Upcoming Dues cell gets "📅 gcal" per
+  un-submitted upcoming due (20:00–21:00 on the due day, like the ✉ path).
+- Event details carry a tip: add an Email notification to the event (or set
+  an email default in Google Calendar settings) to get reminders mailed.
+- ✉️/🔔 buttons unchanged (🔔 needs nothing; ✉️ works for whoever configures
+  their own client id). `vrGoogleAuthHint` (all three copies) now recognises
+  the bad/invalid/deleted-client errors and answers with the no-sign-in
+  alternatives (📅 links, .ics import) instead of a dead-end message.
+- 5 new tests — 142/142 pass, eslint clean.
+
+## Stale-semester detection: home cards stop showing last sem's data (2026-07-16)
+- **Bug (user-reported with screenshot)**: after the new semester started, the
+  home heads-up card still showed last semester's cached warnings ("only 0
+  class(es) skippable…", safe-skip counts) as if current, and the next-class
+  card said "Done for the day" from the old timetable.
+- New helpers in `js/utils/chooseCurrentSem.js`: `currentTermStartEstimate`
+  (latest of the ~Dec 1 / ~May 1 / ~Jul 1 term boundaries ≤ today) and
+  `semesterLooksStale(name, calendar)` — stale only when a newer term has
+  begun **and** the cached calendar's own last date (FAT / last instructional
+  day) is behind us, so it never cries wolf during transition weeks while the
+  old sem is still wrapping up.
+- `home_notices.js`: when stale, the at-risk / safe-skip / buffer / holiday
+  lines are suppressed and one amber note renders instead: cached data is
+  from "<sem>", open Attendance + Time Table once to load the new semester.
+  Exam countdowns from a stale calendar are skipped too.
+- `saveTimeTable` now stamps `semester` (from the timetable page's dropdown)
+  and `savedAt`; `next_class.js` checks staleness — a stamped old-sem
+  timetable, or a legacy unstamped blob while the newest cached calendar's
+  semester is over, renders "Saved timetable looks like last semester's —
+  open the Time Table page once to refresh it." instead of Done-for-the-day.
+- Live-verify follow-up (same day): VTOP's timetable page renders the
+  registered semester with the dropdown still on the placeholder, so the
+  blob got `savedAt` but no semester stamp and the legacy rule wrongly
+  flagged the fresh save. Fix: a blob with `savedAt` is judged by save date
+  vs `currentTermStartEstimate()` — only stampless blobs use the
+  calendar-proxy legacy rule.
+- Verified live on VTOP (2026-07-16): heads-up card showed the stale note
+  for "Summer Semester-II 2025-26 - AMR"; after opening Attendance (auto-
+  picked FALL SEMESTER 2026-27) the card flipped to new-sem data — CAT-1/
+  CAT-2/FAT countdowns, 19 Jul holiday, new-sem at-risk subjects — and the
+  next-class card runs off the new timetable.
+- 12 new tests (stale note + suppression, mid-semester negative case,
+  legacy/stamped/savedAt-only timetables) — 137/137 pass, eslint clean.
+
+## Message routing: deliver to the requesting tab, not the focused one (2026-07-16, live)
+- **Root cause of "features randomly missing" found live**: the worker's
+  `returnMessage` used `chrome.tabs.query({active:true})`, so page messages
+  (exam_schedule, timetable_view_page, da_upload…) only ever reached the
+  VTOP tab **while it was the focused tab**. Switch tabs/windows while VTOP
+  loads and every message-driven feature silently dies — including the
+  Google sign-in path (the token helper then fell back to a stale stored
+  token and reported "sign in" without ever opening the consent window).
+- Fix: `webRequest` events carry the requesting `details.tabId` — messages
+  now go straight to that tab; the active-tab guess is gone (fallback:
+  broadcast to all VTOP tabs when a request isn't tab-bound).
+- Verified live on VTOP (2026-07-16): with the tab **not** focused, the exam
+  schedule page now gets all three buttons (.ics / 🔔 notify / ✉️ email).
+- Live-testing gotcha discovered: claude-in-chrome's clicks are synthetic
+  events from *its* isolated world — they trigger VTOP's main-world handlers
+  but can never fire vRevamp's isolated-world button handlers. Button clicks
+  must be tested by a real user click.
+
+## Reminders without Google sign-in + real sign-in errors (2026-07-16)
+- **New: local reminders via `chrome.alarms` + `chrome.notifications`** — no
+  Google account, no consent window, nothing leaves the machine. The worker
+  handles `schedule_local_reminders` messages (`service_worker/background.js`):
+  reminders are stored under `vrevamp_local_reminders`, one alarm each, and
+  fire as Chrome desktop notifications; re-scheduling with the same tag
+  replaces the old set instead of stacking duplicates. Alarms survive browser
+  restarts (ones missed while Chrome was closed fire once at next launch).
+  Manifest regains `alarms` + adds `notifications`.
+- **Exam schedule page**: the bell is now "🔔 notify me before each exam" —
+  Chrome notifications 1 day and 2 h before each upcoming exam (venue, seat,
+  reporting time in the notification). The Google Calendar email path moved to
+  a separate opt-in "✉️ email me instead (Google)" button.
+- **DA page (2026)**: "🔔 remind me" now schedules Chrome notifications at
+  6 PM the evening before and 8 AM on the due day for every un-submitted
+  upcoming due of that course; "✉ email" keeps the Google Calendar route.
+- **Fixed the invisible sign-in failure**: `get_google_token` used to swallow
+  `chrome.runtime.lastError`, so when `chrome.identity.getAuthToken` failed
+  (most commonly the Chrome profile has no Google account signed in — then no
+  consent window can ever open) the buttons just looked dead. The worker now
+  returns `{ token, error }` and the shared `vrGoogleToken` helper (exam / DA /
+  timetable-import scripts) surfaces a readable reason via
+  `vrGoogleAuthHint()` — e.g. "Chrome has no Google account signed in…".
+- Removed all stale "sign in from the vRevamp popup" advice — the popup lost
+  its Google sign-in button long ago, so that instruction led nowhere.
+- Tests: shim now emulates the worker's `get_google_token` /
+  `schedule_local_reminders` messages; exam + DA sections rewritten for the
+  two-button UX with checks on the exact notification times. 125 checks, all
+  green; ESLint clean.
+
 ## "Page Unresponsive" freeze: timetable observer storm fixed (2026-07-07, live)
 - User screenshot: Chrome's "Page Unresponsive" dialog on VTOP. Root cause
   in the ORIGINAL upstream `js/timetable/timetable.js`: its MutationObserver

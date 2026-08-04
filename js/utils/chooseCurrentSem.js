@@ -62,6 +62,57 @@ function semesterFallbackOrder() {
     return started.concat(rest).map((e) => e.index);
 }
 
+// Estimated start of the term in progress today: the latest term boundary
+// (Winter ~Dec 1, Summer ~May 1, Fall ~Jul 1 — same estimates as
+// parseSemesterStart) that falls on or before `now`.
+function currentTermStartEstimate(now = new Date()) {
+    const y = now.getFullYear();
+    const candidates = [
+        new Date(y - 1, 11, 1), // Winter of the previous academic year
+        new Date(y, 4, 1),      // Summer terms
+        new Date(y, 6, 1),      // Fall
+        new Date(y, 11, 1),     // Winter
+    ];
+    let best = null;
+    for (const c of candidates) {
+        if (c <= now && (!best || c > best)) best = c;
+    }
+    return best;
+}
+
+// True when cached data tagged with `semesterName` looks like it belongs to a
+// finished semester: a newer term has (approximately) begun since it started,
+// AND — when that semester's academic calendar is available — its last known
+// date (FAT/last instructional day) is behind us. The boundary dates are
+// rough estimates, so the calendar check keeps this from crying wolf during
+// transition weeks while the old semester is still wrapping up.
+function semesterLooksStale(semesterName, calendar, now = new Date()) {
+    if (!semesterName) return false;
+    const start = parseSemesterStart(String(semesterName));
+    if (!start) return false;
+    const termStart = currentTermStartEstimate(now);
+    if (!termStart || start >= termStart) return false;
+    const endIso = [
+        calendar && calendar.fat,
+        calendar && calendar.lastInstructional,
+        calendar && calendar.cat2,
+        calendar && calendar.cat1,
+    ]
+        .filter(Boolean)
+        .sort()
+        .pop(); // ISO strings — lexicographic max is the latest date
+    if (endIso) {
+        // parse as LOCAL midnight — new Date("YYYY-MM-DD") is UTC midnight,
+        // and the setHours() below is local, so west of Greenwich the two
+        // combined landed the end-of-day on the wrong calendar day
+        const [y, m, d] = endIso.split("-").map(Number);
+        const end = new Date(y, m - 1, d);
+        end.setHours(23, 59, 59, 999);
+        return now > end;
+    }
+    return true;
+}
+
 function chooseCurrentSemester() {
     const chooseSemesterSearchBox = document.getElementById("semesterSubId");
     if (!chooseSemesterSearchBox) return;

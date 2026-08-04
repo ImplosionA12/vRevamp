@@ -29,16 +29,23 @@ const initScript = (fixedMs, storageSeed) => `
   window.__listeners = [];
   window.__storage = ${JSON.stringify(storageSeed || {})};
   window.__downloads = [];
+  // Real chrome.storage structured-clones on the way in AND out, so callers
+  // never share a reference with the store or with each other. The stub used
+  // to hand back live references ({...s} is shallow), which silently made
+  // aliasing bugs untestable: displayTableData() splices index 0 off the
+  // header/theory/lab arrays it is given, and with a shared reference that
+  // corrupted the "stored" timetable for every later reader in the same page.
+  const clone = (v) => (v === undefined ? undefined : structuredClone(v));
   const resolveGet = (keys) => {
     const s = window.__storage;
-    if (keys === null || keys === undefined) return { ...s };
-    if (typeof keys === "string") return { [keys]: s[keys] };
-    if (Array.isArray(keys)) { const o={}; keys.forEach(k=>o[k]=s[k]); return o; }
-    const o={}; Object.keys(keys).forEach(k=>o[k] = (k in s)? s[k] : keys[k]); return o;
+    if (keys === null || keys === undefined) return clone(s);
+    if (typeof keys === "string") return { [keys]: clone(s[keys]) };
+    if (Array.isArray(keys)) { const o={}; keys.forEach(k=>o[k]=clone(s[k])); return o; }
+    const o={}; Object.keys(keys).forEach(k=>o[k] = (k in s)? clone(s[k]) : keys[k]); return o;
   };
   const area = {
     get: (keys, cb) => { const r = resolveGet(keys); if (cb){cb(r); return;} return Promise.resolve(r); },
-    set: (obj, cb) => { Object.assign(window.__storage, obj); if(cb){cb();return;} return Promise.resolve(); },
+    set: (obj, cb) => { Object.assign(window.__storage, clone(obj)); if(cb){cb();return;} return Promise.resolve(); },
     remove: (keys, cb) => { (Array.isArray(keys)?keys:[keys]).forEach(k=>delete window.__storage[k]); if(cb){cb();return;} return Promise.resolve(); },
   };
   window.chrome = {
@@ -46,6 +53,47 @@ const initScript = (fixedMs, storageSeed) => `
       onMessage: { addListener: (fn) => window.__listeners.push(fn) },
       getURL: (p) => "chrome-extension://test/" + p,
       get lastError(){ return null; },
+      // minimal worker emulation: Google token comes from __storage.token,
+      // local reminders are recorded per-tag in __reminders (future-only,
+      // mirroring the worker's schedule_local_reminders filter)
+      sendMessage: (m, cb) => {
+        (window.__sent = window.__sent || []).push(m);
+        if (m && m.message === "get_google_token") {
+          const t = window.__storage.token || null;
+          if (cb) cb({ token: t, error: t ? null : (window.__storage.google_error || "OAuth2 not granted or revoked.") });
+          return;
+        }
+        if (m && m.message === "gcal_template_import") {
+          // worker emulation for the one-click TEMPLATE import: records the
+          // links; __autoImportSaves seeds how many events "saved"
+          // (undefined = worker from before this update -> unknown message)
+          window.__autoImport = m.urls;
+          if (cb) cb(window.__autoImportSaves === undefined ? undefined : { saved: window.__autoImportSaves, failed: m.urls.length - window.__autoImportSaves, total: m.urls.length });
+          return;
+        }
+        if (m && m.message === "ics_import_fallback") {
+          // TRAP, not a feature: the worker case that handled this was
+          // removed (Google's 2026 revamp broke /r/settings/import, so the
+          // sign-in-free path is the one-tap TEMPLATE panel). Kept so the
+          // assertion below — that nothing sends this any more, and no
+          // Import tab is opened — can still tell "not sent" apart from
+          // "sent into the void".
+          if (window.__swFallbackFails) { if (cb) cb(false); return; }
+          window.__downloads.push(m.ics);
+          (window.__opened = window.__opened || []).push("https://calendar.google.com/calendar/u/0/r/settings/import");
+          if (cb) cb(true);
+          return;
+        }
+        if (m && m.message === "schedule_local_reminders") {
+          const future = (Array.isArray(m.reminders) ? m.reminders : []).filter(
+            (r) => r && typeof r.when === "number" && r.when > Date.now() + 60000
+          );
+          (window.__reminders = window.__reminders || {})[m.tag] = future;
+          if (cb) cb(future.length);
+          return;
+        }
+        if (cb) cb(undefined);
+      },
     },
     storage: { local: area, session: area, sync: area },
     tabs: { query: () => {}, sendMessage: () => {}, create: () => {} },
@@ -381,6 +429,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
       "js/utils/filterRepeated.js",
+      "js/shared/ics.js",
       "js/timetable_ics.js",
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
@@ -392,9 +441,119 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const eventCount = ics ? (ics.match(/BEGIN:VEVENT/g) || []).length : 0;
     ok("ICS produced", !!ics && ics.startsWith("BEGIN:VCALENDAR"));
     ok("2 events (theory + merged lab)", eventCount === 2, "events=" + eventCount);
-    ok("lab merged to 14:00-15:50", !!ics && /DTSTART;TZID=Asia\/Kolkata:\d{8}T140000\n[\s\S]*?DTEND;TZID=Asia\/Kolkata:\d{8}T155000/.test(ics));
+    ok("lab merged to 14:00-15:50", !!ics && /DTSTART;TZID=Asia\/Kolkata:\d{8}T140000\r\n[\s\S]*?DTEND;TZID=Asia\/Kolkata:\d{8}T155000/.test(ics));
     ok("weekly recurrence with UNTIL", !!ics && /RRULE:FREQ=WEEKLY;UNTIL=20251121T180000Z/.test(ics), "until from calendar +1d buffer");
     ok("has CSE1005 + BCSE204P summaries", !!ics && /SUMMARY:CSE1005/.test(ics) && /SUMMARY:BCSE204P/.test(ics));
+    // RFC 5545 conformance — see js/shared/ics.js for what each of these
+    // used to get wrong and how it broke real imports.
+    ok("CRLF line endings, no bare LF", !!ics && !/[^\r]\n/.test(ics));
+    ok(
+      "DTSTAMP is UTC with Z and no TZID",
+      !!ics && /^DTSTAMP:\d{8}T\d{6}Z$/m.test(ics) && !/DTSTAMP;/.test(ics)
+    );
+    ok(
+      "every UID is unique",
+      (() => {
+        const uids = [...(ics || "").matchAll(/^UID:(.*)$/gm)].map((m) => m[1]);
+        return uids.length > 0 && new Set(uids).size === uids.length;
+      })(),
+      `uids=${[...(ics || "").matchAll(/^UID:(.*)$/gm)].map((m) => m[1]).join(" ")}`
+    );
+    ok(
+      "no content line exceeds 75 octets",
+      (ics || "").split("\r\n").every((l) => new TextEncoder().encode(l).length <= 75)
+    );
+    // RFC 5545 §3.6.5: a TZID parameter must reference a VTIMEZONE defined in
+    // the same object. We emitted bare "TZID=Asia/Kolkata" with no definition
+    // — Google/Apple resolve the Olson name anyway, which hid it, but a
+    // strict consumer may read every class as floating local time.
+    ok(
+      "TZID=Asia/Kolkata is backed by a VTIMEZONE definition",
+      !!ics &&
+        /BEGIN:VTIMEZONE\r\nTZID:Asia\/Kolkata\r\n/.test(ics) &&
+        /TZOFFSETFROM:\+0530\r\nTZOFFSETTO:\+0530/.test(ics) &&
+        ics.indexOf("BEGIN:VTIMEZONE") < ics.indexOf("BEGIN:VEVENT"),
+      (ics || "").split("BEGIN:VEVENT")[0]
+    );
+    await page.close();
+  }
+
+  /* ---- the .ics download carries cached exams too, like the gcal import ---- */
+  {
+    // buildIcs() has always taken an `exams` argument, but the only caller
+    // passed two arguments — so the downloaded file held classes only while
+    // the 📅 import button beside it added classes AND exams from the same
+    // cache. Same fixture as above plus a cached exam schedule.
+    const page = await newPage(browser);
+    await page.setContent("<body><div id='main-section'><div id='loadMyFragment'></div></div></body>");
+    await shim(page, {
+      fixedMs: new Date("2025-10-01T09:00:00+05:30").getTime(),
+      storage: {
+        "timeTable-V1": {
+          header: ["Start - End", "08:00 - 08:50"],
+          data: [{ day: "MON", theory: ["", "TA1-CSE1005-ETH-G14-CB-ALL"], lab: ["", ""] }],
+        },
+        "vrevamp_calendar_fall semester 2025-26": {
+          lastInstructional: "2025-11-20",
+          fetchedAt: Date.now(),
+        },
+        vrevamp_exam_schedule: {
+          fetchedAt: Date.now(),
+          semester: "Fall Semester 2025-26",
+          exams: [
+            // future → included
+            { type: "FAT", code: "CSE1005", title: "Data Structures", slot: "A1",
+              venue: "CB-324", reporting: "09:30 AM", seatLoc: "R3C1", seatNo: "5",
+              dateIso: "2025-11-24", start: "1000", end: "1300" },
+            // already past → must NOT be exported
+            { type: "CAT1", code: "CSE1005", title: "Data Structures", slot: "A1",
+              venue: "CB-324", reporting: "09:30 AM", seatLoc: "R3C1", seatNo: "5",
+              dateIso: "2025-09-10", start: "1000", end: "1130" },
+          ],
+        },
+      },
+    });
+    await inject(page, [
+      "js/store/store.js",
+      "js/store/saveTimeTableDetails.js",
+      "js/utils/filterRepeated.js",
+      "js/shared/ics.js",
+      "js/timetable_ics.js",
+    ]);
+    await page.evaluate(() => window.__dispatch("timetable_view_page"));
+    await delay(1200);
+    await page.evaluate(() => document.getElementById("vrevamp-timetable-ics").click());
+    await delay(300);
+    const ics = await page.evaluate(() => window.__downloads[0] || null);
+    const n = ics ? (ics.match(/BEGIN:VEVENT/g) || []).length : 0;
+    ok("1 class + 1 upcoming exam exported", n === 2, `events=${n}`);
+    ok(
+      "exam event sits on its own window, with no RRULE",
+      !!ics &&
+        /DTSTART;TZID=Asia\/Kolkata:20251124T100000/.test(ics) &&
+        /DTEND;TZID=Asia\/Kolkata:20251124T130000/.test(ics) &&
+        /SUMMARY:FAT exam: CSE1005/.test(ics),
+      (ics || "").split("BEGIN:VEVENT").pop()
+    );
+    ok(
+      "past exam excluded",
+      !!ics && !/20250910/.test(ics) && !/CAT1/.test(ics)
+    );
+    ok(
+      "exam seat/reporting detail carried in DESCRIPTION",
+      !!ics && /DESCRIPTION:Slot: A1/.test(ics) && /Reporting: 09:30 AM/.test(ics)
+    );
+    ok(
+      "button reports what it wrote",
+      /exam\(s\)/.test(
+        await page.evaluate(
+          () => document.getElementById("vrevamp-timetable-ics").nextElementSibling?.textContent || ""
+        )
+      ),
+      await page.evaluate(
+        () => document.getElementById("vrevamp-timetable-ics").nextElementSibling?.textContent || ""
+      )
+    );
     await page.close();
   }
 
@@ -465,6 +624,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
       "js/utils/filterRepeated.js",
+      "js/shared/ics.js",
       "js/timetable_ics.js",
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
@@ -541,6 +701,124 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       !!theory && theory.extendedProperties?.private?.vrevamp === "timetable" &&
         singles.length === 1 && singles[0].extendedProperties?.private?.vrevamp === "timetable"
     );
+
+    // dead upstream OAuth client (what every user of the published build
+    // hits): the import button must fall back to a panel of one-tap
+    // TEMPLATE links — Google's 2026 Calendar revamp broke the
+    // /r/settings/import page (never renders), so no download / no Import
+    // tab any more
+    await page.evaluate(() => {
+      delete window.__storage.token;
+      window.__storage.google_error =
+        "OAuth2 request failed: Service responded with error: 'bad client id: 102739538495-xyz.apps.googleusercontent.com'";
+      window.__opened = [];
+      window.open = (u) => { window.__opened.push(u); return null; };
+      window.__downloads.length = 0;
+    });
+    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await delay(800);
+    const fb = await page.evaluate(() => {
+      const panel = document.getElementById("vrevamp-tt-links");
+      return {
+        links: panel ? [...panel.querySelectorAll("a")].map((a) => ({ t: a.textContent, h: a.href })) : null,
+        dl: window.__downloads[0] || null,
+        opened: window.__opened,
+        sent: (window.__sent || []).map((m) => m && m.message),
+        note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
+      };
+    });
+    ok(
+      "dead client → one-tap panel with 2 class links + 1 exam link, no download/Import tab",
+      !!fb.links && fb.links.length === 3 && !fb.dl && fb.opened.length === 0 &&
+        !fb.sent.includes("ics_import_fallback"),
+      JSON.stringify({ n: fb.links && fb.links.length, dl: !!fb.dl, opened: fb.opened })
+    );
+    ok(
+      "class link: prefilled TEMPLATE URL with whole-semester weekly RRULE + venue",
+      !!fb.links &&
+        fb.links[0].h.startsWith("https://calendar.google.com/calendar/render?action=TEMPLATE") &&
+        /text=CSE1005/.test(fb.links[0].h) &&
+        fb.links[0].h.includes("dates=20251006T080000/20251006T085000") &&
+        fb.links[0].h.includes("ctz=Asia/Kolkata") &&
+        fb.links[0].h.includes("recur=RRULE%3AFREQ%3DWEEKLY%3BUNTIL%3D20251121T180000Z"),
+      fb.links && fb.links[0].h
+    );
+    ok(
+      "exam link: single event on the exam's own window, no recurrence",
+      !!fb.links &&
+        fb.links[2].h.includes("dates=20251124T100000/20251124T130000") &&
+        !fb.links[2].h.includes("recur=") &&
+        /location=CB-324/.test(fb.links[2].h) &&
+        /FAT exam/.test(fb.links[2].t),
+      fb.links && JSON.stringify(fb.links[2])
+    );
+    ok(
+      "instructive note: counts, end date, click-each-and-Save",
+      /one-tap links instead: 2 weekly class\(es\) \+ 1 exam\(s\), classes until 2025-11-20/.test(fb.note) &&
+        /press Save/.test(fb.note),
+      fb.note.slice(0, 160)
+    );
+    // clicking a link marks it done (grey + ✓) so the user can keep track
+    const clicked = await page.evaluate(() => {
+      const a = document.querySelector("#vrevamp-tt-links a");
+      a.addEventListener("click", (e) => e.preventDefault()); // don't navigate the test page
+      a.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      return { t: a.textContent, op: a.style.opacity };
+    });
+    ok(
+      "clicked link greys out with a ✓",
+      clicked.t.startsWith("✓ ") && clicked.op === "0.45",
+      JSON.stringify(clicked)
+    );
+    ok(
+      "dead client → worker was asked to auto-import the 3 TEMPLATE links first",
+      await page.evaluate(
+        () =>
+          Array.isArray(window.__autoImport) &&
+          window.__autoImport.length === 3 &&
+          window.__autoImport.every((u) =>
+            u.startsWith("https://calendar.google.com/calendar/render?action=TEMPLATE")
+          )
+      )
+    );
+
+    // current worker: the one-click auto-import saves everything itself —
+    // success note, no manual panel needed
+    await page.evaluate(() => {
+      window.__autoImportSaves = 3;
+      document.getElementById("vrevamp-tt-links")?.remove();
+    });
+    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await delay(800);
+    const auto = await page.evaluate(() => ({
+      note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
+      panel: !!document.getElementById("vrevamp-tt-links"),
+    }));
+    ok(
+      "worker auto-import → ✓ 3/3 saved note, no manual panel",
+      /✓ 3\/3 event\(s\) saved to Google Calendar — 2 weekly class\(es\) \+ 1 exam\(s\), classes until 2025-11-20/.test(auto.note) &&
+        !auto.panel,
+      JSON.stringify(auto)
+    );
+
+    // partial auto-import (e.g. one editor never loaded): counts + the
+    // panel appears so the user can finish by hand
+    await page.evaluate(() => {
+      window.__autoImportSaves = 2;
+    });
+    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await delay(800);
+    const partial = await page.evaluate(() => ({
+      note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
+      links: document.querySelectorAll("#vrevamp-tt-links a").length,
+    }));
+    ok(
+      "partial auto-import → ✓ 2/3 note + one-tap panel to finish manually",
+      /✓ 2\/3 event\(s\) saved/.test(partial.note) &&
+        /re-click any that are missing/.test(partial.note) &&
+        partial.links === 3,
+      JSON.stringify(partial)
+    );
     await page.close();
   }
 
@@ -599,9 +877,13 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // subject A (CSE1005): 8 present / 2 absent = 80% (safe)
     // subject B (MAT2001): 6 present / 4 absent = 60% (below 75)
     // academic calendar fixtures
+    // two onclick dates in the SAME month (real landing pages carry per-day
+    // links too) — the month must be fetched once, not once per link, or
+    // every instructional day double-counts
     const landing = `<html><body>
       <select><option value=""></option><option value="SEM1">Fall Semester 2025-26</option></select>
       <button onclick="m('01-JUL-2025')">Jul</button>
+      <button onclick="m('15-JUL-2025')">today</button>
       </body></html>`;
     const monthGrid = `<html><body><table><tbody>
       <tr>
@@ -689,6 +971,14 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     ok("academic calendar parsed & cached", !!calendarWorked && calendarWorked.cat1 === "2025-07-10" && calendarWorked.fat === "2025-07-20",
       calendarWorked ? `cat1=${calendarWorked.cat1} fat=${calendarWorked.fat}` : "no calendar");
+    // the grid lists 7 instructional days; the duplicate July link must not
+    // double them (each phantom day inflates remaining + every bunkable cell)
+    const instr = calendarWorked ? calendarWorked.instructionalDays : [];
+    ok(
+      "duplicate same-month links don't double-count instructional days",
+      instr.length === 7 && new Set(instr).size === 7,
+      `instructionalDays=${JSON.stringify(instr)}`
+    );
     await page.close();
   }
 
@@ -723,12 +1013,25 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     </tbody></table>`;
     // all-Present so the uncapped CAT-1 bunkable (2) would exceed the 1
     // class that actually remains before CAT-1 — must be capped to 1
+    // nested inside a wrapper table, like live modals — the wrapper <tr>'s
+    // joined text carries a date + "Present" and must NOT become an 11th entry
     const histStale = (() => {
       let out = "";
       for (let i = 0; i < 10; i++)
         out += `<tr><td>${i + 1}</td><td>${20 + i}-12-2025</td><td>A1</td><td>X</td><td>Present</td></tr>`;
-      return "<table><tbody>" + out + "</tbody></table>";
+      return (
+        "<table><tbody><tr><td><table><tbody>" + out +
+        "</tbody></table></td></tr></tbody></table>"
+      );
     })();
+    // 1/3 present with a register hole: timetable says MON/WED/FRI, entries
+    // exist for 5 & 9 & 12 Jan but the scheduled 7 Jan has none — must get
+    // the gap note; 1/3 must display VTOP-style as 34%, not 33%
+    const histGap = `<table><tbody>
+      <tr><td>1</td><td>05-01-2026</td><td>C1</td><td>MON</td><td>Present</td></tr>
+      <tr><td>2</td><td>09-01-2026</td><td>C1</td><td>FRI</td><td>Absent</td></tr>
+      <tr><td>3</td><td>12-01-2026</td><td>C1</td><td>MON</td><td>Absent</td></tr>
+    </tbody></table>`;
     const calLanding = `<html><body>
       <select id="semesterSubId"><option value=""></option><option value="AP2025264">Winter Semester 2025-26</option></select>
       <select id="classGroupId"><option value="COMB">All Class Group (Combined)</option></select>
@@ -739,6 +1042,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       <td>09 Instructional Day - General (Semester)</td><td>10 CAT - I - General (Semester)</td>
       <td>12 Instructional Day - General (Semester)</td><td>14 Instructional Day - General (Semester)</td>
       <td>15 Holiday - General (Semester)</td><td>16 Instructional Day - General (Semester)</td>
+      <td>17 Final Assessment Test (Laboratory) - General (Semester)</td>
       <td>18 Instructional Day - General (Semester)</td><td>20 Final Assessment Test - General (Semester)</td>
       </tr></tbody></table></body></html>`;
 
@@ -761,13 +1065,16 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           header: ["Start - End", "09:00 - 09:50", "10:00 - 10:50", "11:00 - 11:50"],
           data: [
             { day: "MON",
-              theory: ["", "A1-CSE1005-ETH-AB1-CB-ALL", "TA1-SWE2088-ETH-511-CB-ALL", ""],
+              theory: ["", "A1-CSE1005-ETH-AB1-CB-ALL", "TA1-SWE2088-ETH-511-CB-ALL", "C1-GAP1001-ETH-512-CB-ALL"],
               lab: ["", "", "", ""] },
             { day: "TUE",
               theory: ["", "TB1-SWE2088-ETH-511-CB-ALL", "", ""],
               lab: ["", "", "L31-SWE2088-ELA-409-CB-ALL", "L32-SWE2088-ELA-409-CB-ALL"] },
+            { day: "WED",
+              theory: ["", "C2-GAP1001-ETH-512-CB-ALL", "", ""],
+              lab: ["", "", "", ""] },
             { day: "FRI",
-              theory: ["", "TC1-SWE2088-ETH-511-CB-ALL", "", ""],
+              theory: ["", "TC1-SWE2088-ETH-511-CB-ALL", "", "TC2-GAP1001-ETH-512-CB-ALL"],
               lab: ["", "", "L43-SWE2088-ELA-409-CB-ALL", "L44-SWE2088-ELA-409-CB-ALL"] },
           ],
         },
@@ -781,6 +1088,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             const m = /courseId=([^&]+)/.exec(body); const id = m ? decodeURIComponent(m[1]) : "";
             const ct = /courseType=([^&]+)/.exec(body);
             if (id.includes("PHY1999")) return ${JSON.stringify(histStale)};
+            if (id.includes("GAP1001")) return ${JSON.stringify(histGap)};
             // like live VTOP: the lab's register comes back ONLY for its own
             // courseType — with courseType=TH (e.g. leaked from a template
             // captured off a theory row) it returns the theory register
@@ -805,6 +1113,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           <tr><td>CSE1005 - Course A - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_CSE1005_00100','TH')">view</a></td></tr>
           <tr><td>MAT2001 - Course B - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_MAT2001_00200','TH')">view</a></td></tr>
           <tr><td>PHY1999 - Course C - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_PHY1999_00300','TH')">view</a></td></tr>
+          <tr><td>GAP1001 - Course F - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_GAP1001_00600','TH')">view</a></td></tr>
           <tr><td>SWE2077 - Course D - Embedded Lab</td><td>AP2025264000340 - L31+L32+L43+L44 - 409</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_SWE2077_00400','LO')">view</a></td></tr>
           <tr><td>SWE2088 - Course E - Embedded Lab</td><td>AP2025264000341 - L31+L32+L43+L44 - 409</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_SWE2088_00500','LO')">view</a></td></tr>
         </tbody></table></div>`;
@@ -880,6 +1189,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     const phyRow = table && table.find((r) => /PHY1999/.test(r[0]));
     ok(
+      "wrapper row of a nested register table not counted (PHY held = 10)",
+      !!phyRow && phyRow[1] === "10",
+      phyRow ? `held=${phyRow[1]}` : "no row"
+    );
+    ok(
       "bunkable capped at classes that actually remain (CAT-1: 1, not 2)",
       !!phyRow && phyRow[4] === "1",
       phyRow ? `cat1=${phyRow[4]}` : "no row"
@@ -929,6 +1243,40 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "no partial warning when the timetable covers both lab days",
       !!lab88 && !/register shows only/.test(lab88[0])
     );
+    // VTOP ceils percentages (1/3 -> 34%) — the banner must match it, and
+    // the exact ratio (not the displayed 34) must drive the below-75 flag.
+    // Only 4 classes remain (MON/WED/FRI till 18 Jan), so 75% is out of
+    // reach: (1+4)/(3+4) = 71% — the banner must say that instead of the
+    // impossible "attend the next 5"
+    ok(
+      "GAP1001 1/3 shown VTOP-style as 34%, unreachable 75% said honestly",
+      !!banner && /GAP1001[\s\S]*34% — can't reach 75% this sem even attending everything \(max 71%\)/.test(banner),
+      banner ? banner.slice(banner.indexOf("GAP1001"), banner.indexOf("GAP1001") + 110) : "no banner"
+    );
+    // register-completeness: scheduled 7 Jan (WED per timetable) has no
+    // entry between the posted 5 Jan and 12 Jan — must be surfaced
+    const gapRow = table && table.find((r) => /GAP1001/.test(r[0]));
+    ok(
+      "register hole flagged (no entry for scheduled 7 Jan)",
+      !!gapRow && /no entry for 1 scheduled class day\(s\): 7 Jan/.test(gapRow[0]),
+      gapRow ? gapRow[0].slice(0, 140) : "no row"
+    );
+    ok(
+      "no gap note on a continuous register (CSE1005)",
+      !!cseRow && !/no entry for/.test(cseRow[0])
+    );
+    // rows the saved timetable can't schedule say so: MAT2001 is absent
+    // from it, CSE1005's cached entry contradicts its own history
+    const matRow = table && table.find((r) => /MAT2001/.test(r[0]));
+    ok(
+      "course missing from saved timetable gets the coverage note",
+      !!matRow && /not in the saved timetable/.test(matRow[0]),
+      matRow ? matRow[0].slice(0, 140) : "no row"
+    );
+    ok(
+      "contradicted timetable entry gets the disagree note",
+      !!cseRow && /saved timetable disagrees with this register/.test(cseRow[0])
+    );
     // VTOP's own table row also carries the stale nudge
     const vtopStale = await page.evaluate(() => {
       const row = [...document.querySelectorAll(".table-responsive tbody tr")]
@@ -977,6 +1325,25 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "calendar parsed via new endpoints (CAT-1 + FAT dates)",
       !!cal && cal.cat1 === "2026-01-10" && cal.fat === "2026-01-20",
       cal ? `cat1=${cal.cat1} fat=${cal.fat}` : "no calendar"
+    );
+    // the 17th is "Final Assessment Test (Laboratory)": it must land in
+    // labFat and must NOT drag the theory FAT date earlier
+    ok(
+      "lab FAT day (17th) split from theory FAT (20th)",
+      !!cal && cal.labFat === "2026-01-17" && cal.fat === "2026-01-20",
+      cal ? `labFat=${cal.labFat} fat=${cal.fat}` : "no calendar"
+    );
+    // lab rows sit no CATs: CAT columns say so, and their next-exam math
+    // runs to the lab FAT instead of CAT-1
+    ok(
+      "lab row CAT columns say 'no CATs for labs'",
+      !!lab88 && lab88[4] === "no CATs for labs" && lab88[5] === "no CATs for labs",
+      lab88 ? `cat1=${lab88[4]} cat2=${lab88[5]}` : "no row"
+    );
+    ok(
+      "theory rows keep their CAT numbers",
+      !!phyRow && phyRow[4] === "1",
+      phyRow ? `cat1=${phyRow[4]}` : "no row"
     );
     await page.close();
   }
@@ -1365,7 +1732,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             <td>R2C2</td><td>9</td></tr>
       </table></body>`);
     await shim(page, { fixedMs: fixedExam });
-    await inject(page, ["js/exam_schedule.js"]);
+    await inject(page, ["js/shared/ics.js", "js/exam_schedule.js"]);
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
     const btns = await page.evaluate(() =>
@@ -1374,10 +1741,49 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         .filter((t) => t.includes("Download"))
     );
     ok("one download button per exam group (FAT + CAT1)", btns.length === 2, JSON.stringify(btns));
-    const bells = await page.evaluate(() =>
-      [...document.querySelectorAll("button")].filter((b) => /email me/.test(b.textContent)).length
+    const counts = await page.evaluate(() => ({
+      notify: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
+      mail: [...document.querySelectorAll("button")].filter((b) => /email me/.test(b.textContent)).length,
+    }));
+    ok(
+      "one 🔔 notify + one ✉️ email button per exam group",
+      counts.notify === 2 && counts.mail === 2,
+      JSON.stringify(counts)
     );
-    ok("one 🔔 button per exam group", bells === 2, `bells=${bells}`);
+
+    // 📅 one-tap template links need no OAuth at all — only the upcoming
+    // exam with a published window gets one (past + no-time rows skipped)
+    const gcalLinks = await page.evaluate(() =>
+      [...document.querySelectorAll(".vrevamp-gcal-link")].map((a) => a.href)
+    );
+    ok(
+      "📅 one-tap link only on the upcoming published exam",
+      gcalLinks.length === 1,
+      `links=${gcalLinks.length}`
+    );
+    // the dead upstream OAuth client must produce an actionable hint, not a
+    // dead-end error (seen live 2026-07-16)
+    const deadClientHint = await page.evaluate(() => {
+      window.vrGoogleAuthError =
+        "OAuth2 request failed: Service responded with error: 'bad client id: 102739538495-xyz.apps.googleusercontent.com'";
+      return window.vrGoogleAuthHint();
+    });
+    ok(
+      "dead-client sign-in error points at the no-sign-in paths",
+      /one-tap/.test(deadClientHint) && /import button on the timetable page/.test(deadClientHint),
+      deadClientHint
+    );
+
+    ok(
+      "link prefills title/window/venue via calendar template URL",
+      gcalLinks.length === 1 &&
+        gcalLinks[0].startsWith("https://calendar.google.com/calendar/render?action=TEMPLATE") &&
+        gcalLinks[0].includes(encodeURIComponent("FAT exam: ECE2015 — Computer Architecture")) &&
+        gcalLinks[0].includes("dates=20260504T100000/20260504T130000") &&
+        gcalLinks[0].includes("ctz=Asia/Kolkata") &&
+        gcalLinks[0].includes("location=CB-324"),
+      (gcalLinks[0] || "").slice(0, 180)
+    );
 
     const examCache = await page.evaluate(() => window.__storage.vrevamp_exam_schedule);
     const cachedFat = examCache && examCache.exams && examCache.exams.find((e) => e.type === "FAT" && e.code === "ECE2015");
@@ -1421,23 +1827,71 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         dl.includes("DTSTART;TZID=Asia/Kolkata:20260504T100000") &&
         dl.includes("DTEND;TZID=Asia/Kolkata:20260504T130000") &&
         dl.includes("LOCATION:CB-324") &&
-        dl.includes("Seat Location : R3C1; Seat Number : 5"),
+        // DESCRIPTION is one escaped TEXT value: "\n" between fields, and the
+        // literal ";" separators are gone (they used to be raw, which splits
+        // the property into several values)
+        dl.includes("Seat: R3C1 No. 5"),
       dl ? dl.slice(dl.indexOf("BEGIN:VEVENT"), dl.indexOf("BEGIN:VEVENT") + 300) : "no ics"
     );
 
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(200);
     const btns2 = await page.evaluate(() => document.querySelectorAll("button").length);
-    ok("message re-fire does not duplicate buttons", btns2 === 4, `buttons=${btns2}`);
+    ok("message re-fire does not duplicate buttons", btns2 === 6, `buttons=${btns2}`);
 
-    // 🔔 without a Google sign-in: point at the popup, create nothing
-    const bellNote = (which) =>
-      page.evaluate((re) => {
+    const bellNote = (btnRe, which) =>
+      page.evaluate(([bre, re]) => {
         const b = [...document.querySelectorAll("button")]
-          .filter((x) => /email me/.test(x.textContent))
+          .filter((x) => new RegExp(bre).test(x.textContent))
           .find((x) => new RegExp(re).test(x.closest("td").textContent));
         return b && b.nextElementSibling ? b.nextElementSibling.textContent : null;
-      }, which);
+      }, [btnRe, which]);
+
+    // 🔔 local notifications: no Google at all — 1 day + 2 h before the one
+    // upcoming exam (past FRL1001 and no-time PHY0000 skipped)
+    await page.evaluate(() => {
+      [...document.querySelectorAll("button")]
+        .filter((b) => /notify me/.test(b.textContent))[0]
+        .click();
+    });
+    await delay(300);
+    const fatRems = await page.evaluate(() => (window.__reminders || {})["exam:FAT"] || []);
+    ok(
+      "🔔 FAT schedules 2 Chrome notifications: 1 day + 2 h before the upcoming exam",
+      fatRems.length === 2 &&
+        fatRems[0].when === Date.parse("2026-05-03T10:00:00+05:30") &&
+        fatRems[1].when === Date.parse("2026-05-04T08:00:00+05:30") &&
+        /✓ 2 Chrome notification/.test((await bellNote("notify me", "FAT")) || ""),
+      JSON.stringify({
+        whens: fatRems.map((r) => new Date(r.when).toISOString()),
+        note: await bellNote("notify me", "FAT"),
+      })
+    );
+    ok(
+      "notification carries venue, seat and reporting time",
+      fatRems.length === 2 &&
+        /Tomorrow — FAT exam: ECE2015/.test(fatRems[0].title || "") &&
+        /CB-324/.test(fatRems[0].body || "") &&
+        /R3C1 No\. 5/.test(fatRems[0].body || "") &&
+        /reporting 09:30 AM/.test(fatRems[0].body || ""),
+      JSON.stringify(fatRems[0] || null)
+    );
+    await page.evaluate(() => {
+      [...document.querySelectorAll("button")]
+        .filter((b) => /notify me/.test(b.textContent))[1]
+        .click();
+    });
+    await delay(300);
+    const cat1Rems = await page.evaluate(
+      () => ((window.__reminders || {})["exam:CAT1"] || []).length
+    );
+    ok(
+      "🔔 CAT1 (all past) reports no upcoming exams, schedules nothing",
+      cat1Rems === 0 && /no upcoming exams/.test((await bellNote("notify me", "CAT1")) || ""),
+      `rems=${cat1Rems} note=${await bellNote("notify me", "CAT1")}`
+    );
+
+    // ✉️ without a Google sign-in: surface the real identity error, create nothing
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
         .filter((b) => /email me/.test(b.textContent))[0]
@@ -1445,9 +1899,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     await delay(300);
     ok(
-      "🔔 without sign-in asks for the popup login, creates nothing",
-      gcalExam.length === 0 && /sign in with Google/.test((await bellNote("FAT")) || ""),
-      `events=${gcalExam.length} note=${await bellNote("FAT")}`
+      "✉️ without sign-in shows the real Google error, creates nothing",
+      gcalExam.length === 0 && /Google sign-in failed/.test((await bellNote("email me", "FAT")) || ""),
+      `events=${gcalExam.length} note=${await bellNote("email me", "FAT")}`
     );
 
     // signed in: only the UPCOMING exam gets an event (past + no-time skipped)
@@ -1459,7 +1913,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     await delay(900);
     ok(
-      "🔔 FAT creates ONE event — only the upcoming exam (past/no-time skipped)",
+      "✉️ FAT creates ONE event — only the upcoming exam (past/no-time skipped)",
       gcalExam.length === 1,
       `events=${gcalExam.length}`
     );
@@ -1484,9 +1938,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       JSON.stringify(exEv.description || "")
     );
     ok(
-      "🔔 FAT confirms inline",
-      /✓ 1 reminder\(s\) set/.test((await bellNote("FAT")) || ""),
-      `note=${await bellNote("FAT")}`
+      "✉️ FAT confirms inline",
+      /✓ 1 reminder\(s\) set/.test((await bellNote("email me", "FAT")) || ""),
+      `note=${await bellNote("email me", "FAT")}`
     );
 
     // a group whose exams are all in the past: say so, create nothing
@@ -1497,10 +1951,143 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     await delay(300);
     ok(
-      "🔔 CAT1 (all past) reports no upcoming exams, creates nothing",
-      gcalExam.length === 1 && /no upcoming exams/.test((await bellNote("CAT1")) || ""),
-      `events=${gcalExam.length} note=${await bellNote("CAT1")}`
+      "✉️ CAT1 (all past) reports no upcoming exams, creates nothing",
+      gcalExam.length === 1 && /no upcoming exams/.test((await bellNote("email me", "CAT1")) || ""),
+      `events=${gcalExam.length} note=${await bellNote("email me", "CAT1")}`
     );
+    await page.close();
+  }
+
+  /* ============ exam .ics: RFC 5545 conformance regressions ============ */
+  console.log("\n=== exam .ics: UID collision + TEXT escaping (RFC 5545) ===");
+  {
+    // The bug this guards: a course with BOTH a theory and a lab exam got the
+    // same UID (it was built from the export timestamp + course code alone).
+    // Same UID means "same event", so importing the file into Google/Apple
+    // Calendar silently kept one exam and dropped the other. The titles and
+    // venue here also carry the "," and ";" that used to go out unescaped and
+    // split one property into several values.
+    const page = await newPage(browser);
+    await page.setContent(`<body>
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <table class="customTable">
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>CSE1005</td><td>Data Structures, Algorithms and Applications</td><td>TH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>AB-1, Room 324; Block C</td>
+            <td>R3C1</td><td>5</td></tr>
+        <tr><td>2</td><td>CSE1005</td><td>Data Structures Lab</td><td>ELA</td><td>AP2</td><td>L31</td>
+            <td>06-May-2026</td><td>AN1</td><td>01:30 PM</td><td>02:00 PM - 05:00 PM</td><td>CB-Lab</td>
+            <td>R1C2</td><td>9</td></tr>
+      </table></body>`);
+    await shim(page, { fixedMs: new Date("2026-04-01T09:00:00+05:30").getTime() });
+    await inject(page, ["js/shared/ics.js", "js/exam_schedule.js"]);
+    await page.evaluate(() => window.__dispatch("exam_schedule"));
+    await delay(300);
+    await page.evaluate(() =>
+      [...document.querySelectorAll("button")]
+        .find((b) => /Download FAT/.test(b.textContent))
+        .click()
+    );
+    await delay(200);
+    const ics = await page.evaluate(() => window.__downloads[0] || null);
+    const uids = [...(ics || "").matchAll(/^UID:(.*)$/gm)].map((m) => m[1]);
+
+    ok(
+      "theory + lab of the SAME course produce 2 events",
+      !!ics && (ics.match(/BEGIN:VEVENT/g) || []).length === 2,
+      `events=${ics ? (ics.match(/BEGIN:VEVENT/g) || []).length : 0}`
+    );
+    ok(
+      "…with DISTINCT UIDs (the collision that dropped an exam on import)",
+      uids.length === 2 && uids[0] !== uids[1],
+      JSON.stringify(uids)
+    );
+    ok(
+      "UID is stable — derived from exam content, not the export timestamp",
+      uids.every((u) => /^vrevamp-exam-CSE1005-\d{8}-\d{4}-/.test(u)),
+      JSON.stringify(uids)
+    );
+    ok(
+      "comma in course title escaped in SUMMARY",
+      !!ics && ics.includes("SUMMARY:CSE1005: Data Structures\\, Algorithms and Applications"),
+      (ics || "").split("\r\n").find((l) => l.startsWith("SUMMARY:CSE1005: Data"))
+    );
+    ok(
+      "comma AND semicolon in venue escaped in LOCATION",
+      !!ics && ics.includes("LOCATION:AB-1\\, Room 324\\; Block C"),
+      (ics || "").split("\r\n").find((l) => l.startsWith("LOCATION:AB-1"))
+    );
+    ok("CRLF line endings, no bare LF", !!ics && !/[^\r]\n/.test(ics));
+    ok(
+      "DTSTAMP is UTC with Z and carries no TZID parameter",
+      !!ics && /^DTSTAMP:\d{8}T\d{6}Z$/m.test(ics) && !/DTSTAMP;/.test(ics)
+    );
+    ok(
+      "no content line exceeds 75 octets (folded per RFC 5545 §3.1)",
+      !!ics &&
+        ics.split("\r\n").every((l) => new TextEncoder().encode(l).length <= 75),
+      (ics || "")
+        .split("\r\n")
+        .filter((l) => new TextEncoder().encode(l).length > 75)
+        .join(" | ") || "all within limit"
+    );
+    // Folding only triggers past 75 octets, which this fixture stays under —
+    // exercise the primitive directly, including the multi-byte case (an em
+    // dash is 3 bytes, and course titles are full of them, so a naive
+    // character-count fold splits one in half and corrupts the file).
+    const foldChecks = await page.evaluate(() => {
+      const enc = new TextEncoder();
+      const long = "SUMMARY:" + "A".repeat(200);
+      const folded = window.vrIcs.fold(long);
+      const emdash = "SUMMARY:" + "—".repeat(60); // 3 octets each = 180
+      const foldedEm = window.vrIcs.fold(emdash);
+      const lines = (s) => s.split("\r\n");
+      return {
+        wrapped: lines(folded).length > 1,
+        allWithin: lines(folded).every((l) => enc.encode(l).length <= 75),
+        continuationsSpaced: lines(folded).slice(1).every((l) => l.startsWith(" ")),
+        unfoldsExactly: lines(folded).map((l, i) => (i ? l.slice(1) : l)).join("") === long,
+        emWithin: lines(foldedEm).every((l) => enc.encode(l).length <= 75),
+        emIntact: !foldedEm.includes("�") &&
+          lines(foldedEm).map((l, i) => (i ? l.slice(1) : l)).join("") === emdash,
+        shortUntouched: window.vrIcs.fold("SUMMARY:short") === "SUMMARY:short",
+      };
+    });
+    ok("fold: long line wraps into 75-octet chunks", foldChecks.wrapped && foldChecks.allWithin);
+    ok("fold: continuation lines start with one space", foldChecks.continuationsSpaced);
+    ok("fold: unfolding reproduces the original exactly", foldChecks.unfoldsExactly);
+    ok(
+      "fold: multi-byte em dashes never split mid-character",
+      foldChecks.emWithin && foldChecks.emIntact
+    );
+    ok("fold: a short line is left alone", foldChecks.shortUntouched);
+
+    // The escaping case that actually breaks files: a LITERAL newline in a
+    // value. Emitted raw, the parser reads the remainder as a new content
+    // line and rejects the whole calendar. It arises from a cell whose
+    // content spans multiple SOURCE lines (textContent keeps the whitespace
+    // between text nodes; .trim() only strips the ends) — not from <br>,
+    // which contributes nothing to textContent. (Unescaped , ; and \ are
+    // spec violations too, but lenient parsers such as ical.js recover those
+    // intact — this is the one that loses everything.)
+    const newlineChecks = await page.evaluate(() => {
+      const venue = "AB-1\n        Room 324";        // exactly what textContent gives
+      const line = "LOCATION:" + window.vrIcs.esc(venue);
+      const unesc = (v) => v.replace(/\\([\\;,nN])/g, (_, c) =>
+        (c === "n" || c === "N") ? "\n" : c);
+      return {
+        noRawNewlineEmitted: !/\n/.test(line),
+        escapedAsBackslashN: line.includes("\\n"),
+        roundTrips: unesc(line.slice("LOCATION:".length)) === venue,
+        staysOneContentLine: line.split(/\r?\n/).length === 1,
+      };
+    });
+    ok("newline in a value is escaped, never emitted raw", newlineChecks.noRawNewlineEmitted && newlineChecks.escapedAsBackslashN);
+    ok("newline value stays a single content line (file still parses)", newlineChecks.staysOneContentLine);
+    ok("newline value round-trips back to the original text", newlineChecks.roundTrips);
     await page.close();
   }
 
@@ -1621,13 +2208,40 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       JSON.stringify(states)
     );
 
+    // 🔔 local: Chrome notifications for the one un-submitted upcoming DA —
+    // evening before (18:00) + due-day morning (08:00), no Google involved
     await page.click(".vrevamp-da-remind");
-    await delay(600);
+    await delay(300);
     const btnText = await page.evaluate(
       () => document.querySelector(".vrevamp-da-remind").textContent
     );
+    const daRems = await page.evaluate(
+      () => (window.__reminders || {})["da:MGT1029"] || []
+    );
     ok(
-      "🔔 creates ONE calendar event (only the un-submitted upcoming DA)",
+      "🔔 schedules 2 Chrome notifications for the un-submitted upcoming DA only",
+      daRems.length === 2 && gcal.length === 0 &&
+        daRems[0].when === Date.parse("2026-07-09T18:00:00+05:30") &&
+        daRems[1].when === Date.parse("2026-07-10T08:00:00+05:30") &&
+        /DA due: MGT1029 — Digital Assessment-2/.test(daRems[0].title || ""),
+      JSON.stringify({
+        whens: daRems.map((r) => new Date(r.when).toISOString()),
+        title: (daRems[0] || {}).title,
+        gcal: gcal.length,
+      })
+    );
+    ok("🔔 button confirms the schedule", /✓ 2 reminder/.test(btnText), btnText);
+
+    // ✉ optional Google path: one calendar event with the 24 h email
+    await page.evaluate(() =>
+      document.querySelectorAll(".vrevamp-da-remind")[1].click()
+    );
+    await delay(600);
+    const mailText = await page.evaluate(
+      () => document.querySelectorAll(".vrevamp-da-remind")[1].textContent
+    );
+    ok(
+      "✉ creates ONE calendar event (only the un-submitted upcoming DA)",
       gcal.length === 1,
       `events=${gcal.length}`
     );
@@ -1641,7 +2255,32 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         /MGT1029/.test(ev.summary || ""),
       JSON.stringify({ start: ev.start, reminders: ev.reminders, summary: ev.summary })
     );
-    ok("button confirms the schedule", /✓ 1 reminder/.test(btnText), btnText);
+    ok("✉ button confirms the schedule", /✓ 1 email/.test(mailText), mailText);
+
+    // 📅 one-tap template link (no OAuth): upcoming un-submitted due only
+    const daLinks = await page.evaluate(() => {
+      const t = document.querySelector("table.customTable");
+      return {
+        total: document.querySelectorAll(".vrevamp-da-gcal").length,
+        row1: [...t.rows[1].cells[7].querySelectorAll(".vrevamp-da-gcal")].map(
+          (a) => ({ t: a.textContent, href: a.href, target: a.target })
+        ),
+      };
+    });
+    ok(
+      "📅 one-tap gcal link on the upcoming due only",
+      daLinks.total === 1 && daLinks.row1.length === 1 &&
+        daLinks.row1[0].t === "📅 gcal" && daLinks.row1[0].target === "_blank",
+      JSON.stringify(daLinks)
+    );
+    ok(
+      "DA link prefills the due (20:00 on due day, template URL)",
+      daLinks.row1.length === 1 &&
+        daLinks.row1[0].href.startsWith("https://calendar.google.com/calendar/render?action=TEMPLATE") &&
+        daLinks.row1[0].href.includes("dates=20260710T200000/20260710T210000") &&
+        daLinks.row1[0].href.includes(encodeURIComponent("DA due: MGT1029 — Digital Assessment-2")),
+      JSON.stringify(daLinks.row1)
+    );
 
     // re-fired message must not duplicate the column
     await page.evaluate(() => window.__dispatch("da_upload"));
@@ -1797,6 +2436,145 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       `messages=${s.messages.length} reloads=${s.reloads} counter=${s.counter}`
     );
     await page.close();
+  }
+
+  /* ============ stale-semester detection (home cards) ============ */
+  console.log("\n=== stale-semester detection: heads-up + next-class cards ===");
+  {
+    // Summer Sem-II 2025-26 ended (FAT 13 Jul); today is 16 Jul 2026 — the
+    // Fall term has begun. Cached warnings must NOT render as current.
+    const fixed = new Date("2026-07-16T18:00:00+05:30").getTime();
+    const oldSem = "Summer Semester-II 2025-26";
+    const oldCalendar = {
+      version: 2,
+      semester: oldSem,
+      fetchedAt: fixed - 20 * 86400000,
+      cat1: "2026-05-25",
+      cat2: "2026-06-20",
+      fat: "2026-07-13",
+      holidays: [],
+      instructionalDays: [],
+      lastInstructional: "2026-07-10",
+    };
+    const oldSummary = {
+      fetchedAt: fixed - 5 * 86400000,
+      semester: oldSem,
+      subjects: [
+        { name: "STS1007 - Arithmetic problem solving - Theory Only", code: "STS1007", pct: 76, safeNow: 0, nextBunkable: 0, unit: "class(es)" },
+      ],
+    };
+    const storage = {
+      ["vrevamp_calendar_" + oldSem.toLowerCase()]: oldCalendar,
+      vrevamp_attendance_summary: oldSummary,
+    };
+
+    // heads-up card: stale note shown, at-risk/safe-skip lines suppressed
+    let page = await newPage(browser);
+    await page.setContent("<body><div id='main-section'></div></body>");
+    await shim(page, { fixedMs: fixed, storage });
+    await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
+    await delay(1200);
+    let text = await page.evaluate(() => {
+      const el = document.getElementById("vrevamp-home-notices");
+      return el ? el.textContent : null;
+    });
+    ok("heads-up card rendered", !!text, text || "no card");
+    ok("stale note names the old semester", !!text && text.includes(oldSem) && /looks over/.test(text), (text || "").slice(0, 160));
+    ok("old at-risk warnings suppressed", !!text && !/skippable before the next exam/.test(text));
+    ok("old safe-skip line suppressed", !!text && !/Safe to skip now/.test(text));
+    await page.close();
+
+    // same caches 11 days earlier (semester still running) → normal render
+    const during = new Date("2026-07-05T10:00:00+05:30").getTime();
+    page = await newPage(browser);
+    await page.setContent("<body><div id='main-section'></div></body>");
+    await shim(page, { fixedMs: during, storage });
+    await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
+    await delay(1200);
+    text = await page.evaluate(() => {
+      const el = document.getElementById("vrevamp-home-notices");
+      return el ? el.textContent : null;
+    });
+    ok("mid-semester: no stale note", !!text && !/looks over/.test(text), (text || "").slice(0, 160));
+    ok("mid-semester: at-risk warning shown", !!text && /skippable before the next exam/.test(text));
+    ok("mid-semester: FAT countdown shown", !!text && /FAT starts in/.test(text));
+    await page.close();
+
+    // next-class card, legacy timetable blob (no semester/savedAt stamp):
+    // old-sem calendar is over → stale message, not "Done for the day"
+    const wd = DAY_CODES[new Date(fixed).getDay()];
+    const legacyTimetable = {
+      header: ["Start - End", "09:00 - 09:50"],
+      data: [{ day: wd, theory: ["", "TA1-CSE1005-ETH-G14-CB-ALL"], lab: ["", ""] }],
+    };
+    page = await newPage(browser);
+    await page.setContent("<body><div id='main-section'></div></body>");
+    await shim(page, { fixedMs: fixed, storage: { ...storage, "timeTable-V1": legacyTimetable } });
+    await inject(page, [
+      "js/utils/chooseCurrentSem.js",
+      "js/store/store.js",
+      "js/store/saveTimeTableDetails.js",
+      "js/utils/filterRepeated.js",
+      "js/next_class.js",
+    ]);
+    await delay(1200);
+    text = await page.evaluate(() => {
+      const el = document.getElementById("vrevamp-next-class");
+      return el ? el.textContent : null;
+    });
+    ok("legacy timetable + finished sem → stale message", !!text && /last semester/.test(text), text || "no card");
+    ok("no 'Done for the day' from the old timetable", !!text && !/Done for the day|No classes scheduled/.test(text));
+    await page.close();
+
+    // timetable stamped with the CURRENT semester → normal behaviour even
+    // though an old-sem calendar is still cached
+    const freshTimetable = { ...legacyTimetable, semester: "Fall Semester 2026-27", savedAt: fixed - 3600000 };
+    page = await newPage(browser);
+    await page.setContent("<body><div id='main-section'></div></body>");
+    await shim(page, { fixedMs: fixed, storage: { ...storage, "timeTable-V1": freshTimetable } });
+    await inject(page, [
+      "js/utils/chooseCurrentSem.js",
+      "js/store/store.js",
+      "js/store/saveTimeTableDetails.js",
+      "js/utils/filterRepeated.js",
+      "js/next_class.js",
+    ]);
+    await delay(1200);
+    text = await page.evaluate(() => {
+      const el = document.getElementById("vrevamp-next-class");
+      return el ? el.textContent : null;
+    });
+    ok("current-sem timetable renders normally", !!text && /Done for the day/.test(text), text || "no card");
+    await page.close();
+
+    // VTOP can render the registered semester with the dropdown still on the
+    // placeholder (seen live 2026-07-16): the blob then has savedAt but NO
+    // semester stamp. A save made during the current term must count as fresh
+    // even while an old-sem calendar is still cached; one made before the
+    // term boundary is stale.
+    for (const [label, savedAt, expectStale] of [
+      ["unstamped save from this term is fresh", fixed - 3600000, false],
+      ["unstamped save from before the term boundary is stale", new Date("2026-06-20T10:00:00+05:30").getTime(), true],
+    ]) {
+      const tt = { ...legacyTimetable, savedAt };
+      page = await newPage(browser);
+      await page.setContent("<body><div id='main-section'></div></body>");
+      await shim(page, { fixedMs: fixed, storage: { ...storage, "timeTable-V1": tt } });
+      await inject(page, [
+        "js/utils/chooseCurrentSem.js",
+        "js/store/store.js",
+        "js/store/saveTimeTableDetails.js",
+        "js/utils/filterRepeated.js",
+        "js/next_class.js",
+      ]);
+      await delay(1200);
+      text = await page.evaluate(() => {
+        const el = document.getElementById("vrevamp-next-class");
+        return el ? el.textContent : null;
+      });
+      ok(label, !!text && /last semester/.test(text) === expectStale, text || "no card");
+      await page.close();
+    }
   }
 
   await browser.close();

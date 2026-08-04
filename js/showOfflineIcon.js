@@ -20,13 +20,19 @@ const offlineIconSVG = `
 </svg>
 `;
 
-chrome.runtime.onMessage.addListener((request) => {
-  if (request.message === "showOfflineIcon") {
-    // check if offline button already exsits 
+/*
+ * Renders itself on load. This used to wait for a "showOfflineIcon" message
+ * that the worker broadcast once per completed request — thousands of wasted
+ * listener wake-ups per page load, to draw one icon. It only ever needed the
+ * DOM, and the #offlineIcon check below already makes it idempotent.
+ */
+const renderOfflineIcon = () => {
+    // check if offline button already exsits
     if (document.getElementById("offlineIcon")) {
       return;
     }
-    //  put the show offline icon at the bottom left corder of the page 
+    if (!document.body) return; // called before the document has a body
+    //  put the show offline icon at the bottom left corder of the page
     const offlineIcon = document.createElement("div");
     offlineIcon.id = "offlineIcon";
     offlineIcon.innerHTML = offlineIconSVG;
@@ -56,5 +62,14 @@ chrome.runtime.onMessage.addListener((request) => {
     });
 
     document.body.appendChild(offlineIcon);
-  }
-});
+};
+
+if (document.readyState === "loading")
+  document.addEventListener("DOMContentLoaded", renderOfflineIcon);
+else renderOfflineIcon();
+
+// NOTE: an onMessage listener for "showOfflineIcon" used to sit here "so a
+// re-render can still be requested explicitly". Nothing sends that message —
+// the worker's per-request broadcast of it was removed as the cause of the
+// listener storm described above — so it was one more no-op listener woken
+// by every message the worker does send.

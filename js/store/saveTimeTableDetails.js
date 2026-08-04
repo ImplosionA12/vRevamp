@@ -17,8 +17,10 @@
 
 const timeTableKey = "timeTable-V1"
 
-function saveTimeTable(header, data) {
-  saveData(timeTableKey, {header, data});
+// semester + savedAt let readers (next_class.js) detect a timetable saved
+// during a previous semester; old blobs without them are treated as legacy
+function saveTimeTable(header, data, semester) {
+  saveData(timeTableKey, {header, data, semester: semester || null, savedAt: Date.now()});
 }
 
 function getTimeTable(callback) {

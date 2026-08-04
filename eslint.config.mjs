@@ -19,6 +19,8 @@ const sharedNames = [
   // js/utils
   "chooseCurrentSemester",
   "semesterFallbackOrder",
+  "currentTermStartEstimate",
+  "semesterLooksStale",
   "filterRepeated",
   "filterRepeatedColumns",
   // js/captcha
@@ -26,6 +28,8 @@ const sharedNames = [
   "fill_captcha",
   // js/modules/dom-to-image.js
   "domtoimage",
+  // js/shared/ics.js — RFC 5545 helpers used by every .ics producer
+  "vrIcs",
   // js/timetable
   "extract_header",
   "extract_tbody_data",

@@ -14,11 +14,20 @@
     return d;
   };
 
+  // "YYYY-MM-DD" -> LOCAL midnight. new Date(iso) parses a bare ISO date as
+  // UTC midnight, so for any viewer west of Greenwich it lands on the
+  // previous local day — fmt() then printed the wrong date and weekday for
+  // every exam and holiday. Same hazard attendance_insights.js documents.
+  const dateOfIso = (iso) => {
+    const [y, m, d] = String(iso).split("-").map(Number);
+    return new Date(y, m - 1, d);
+  };
+
   const daysUntil = (iso) =>
-    Math.round((new Date(iso) - todayMidnight()) / DAY_MS);
+    Math.round((dateOfIso(iso) - todayMidnight()) / DAY_MS);
 
   const fmt = (iso) =>
-    new Date(iso).toLocaleDateString("en-IN", {
+    dateOfIso(iso).toLocaleDateString("en-IN", {
       weekday: "short",
       day: "numeric",
       month: "short",
@@ -76,7 +85,26 @@
 
     let added = 0;
 
-    if (calendar) {
+    // Data cached during a semester that has since ended must not render as
+    // if it were current ("only 0 classes skippable…" from last sem). Detect
+    // it via the semester name both caches carry (semesterLooksStale is in
+    // js/utils/chooseCurrentSem.js, loaded before this script).
+    const semName =
+      (summary && summary.semester) || (calendar && calendar.semester) || null;
+    const stale =
+      typeof semesterLooksStale === "function" &&
+      semesterLooksStale(semName, calendar);
+    if (stale) {
+      body.appendChild(
+        line(
+          `\u{1F4CC} vRevamp's cached data is from "${semName}", which looks over — open the Attendance and Time Table pages once so the new semester loads.`,
+          "#b8860b"
+        )
+      );
+      added++;
+    }
+
+    if (calendar && !stale) {
       [
         ["CAT-1", calendar.cat1],
         ["CAT-2", calendar.cat2],
@@ -105,7 +133,7 @@
         );
         added++;
       }
-    } else {
+    } else if (!calendar) {
       body.appendChild(
         line(
           "Open the Attendance page once so vRevamp can read the academic calendar.",
@@ -115,7 +143,7 @@
       added++;
     }
 
-    if (summary && Array.isArray(summary.subjects)) {
+    if (!stale && summary && Array.isArray(summary.subjects)) {
       const atRisk = summary.subjects.filter(
         (s) => typeof s.nextBunkable === "number" && s.nextBunkable <= 1
       );

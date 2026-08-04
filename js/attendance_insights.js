@@ -50,6 +50,15 @@
       d.getDate()
     ).padStart(2, "0")}`;
 
+  // "YYYY-MM-DD" -> local-time Date. new Date(iso) parses as UTC midnight,
+  // which shifts the weekday/day for viewers west of Greenwich — every
+  // weekday lookup must go through these.
+  const dateOfIso = (iso) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  };
+  const wdOfIso = (iso) => dateOfIso(iso).getDay();
+
   const normText = (s) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   const parseHtml = (html) =>
@@ -110,6 +119,9 @@
     parseHtml(html)
       .querySelectorAll("tr")
       .forEach((tr) => {
+        // a wrapper row around a nested table carries the whole register's
+        // text — it would match a date + a status and add a phantom entry
+        if (tr.querySelector("tr")) return;
         // join cells with a space: raw textContent glues adjacent cells
         // ("1" + "01-01-2026" -> "101-01-2026") and breaks the \b in the
         // date regexes
@@ -298,10 +310,16 @@
   const classifyDay = (text) => {
     // calendars write both Roman and digit forms ("CAT-II" / "CAT-2")
     const cat2 = /CAT\s*-?\s*(II|2)\b/i.test(text);
+    // labs sit no CATs but have their OWN FAT days, usually before the
+    // theory FATs — keep the two apart so lab math never counts a theory
+    // exam date. A day marked "Theory & Lab" flags both.
+    const isFat = /Final\s*Assessment\s*Test/i.test(text);
+    const labText = /\blab(oratory)?\b/i.test(text);
     return {
       cat1: !cat2 && /CAT\s*-?\s*(I|1)\b/i.test(text),
       cat2,
-      fat: /Final\s*Assessment\s*Test/i.test(text),
+      fat: isFat && (!labText || /\btheory\b/i.test(text)),
+      labFat: isFat && labText,
       holiday: /holiday/i.test(text),
       instructional:
         /Instructional\s*Day/i.test(text) && !/No\s*Instructional/i.test(text),
@@ -328,6 +346,9 @@
   // Day cells start with the day number and carry the colored label text
   const parseMonthGrid = (doc, monthDate, days) => {
     doc.querySelectorAll("td").forEach((td) => {
+      // a cell wrapping a nested grid matches the day regex with the whole
+      // month's text and would flag a bogus day with every label at once
+      if (td.querySelector("td")) return;
       const text = (td.textContent || "").trim();
       const dayMatch = /^(\d{1,2})\b/.exec(text);
       if (!dayMatch) return;
@@ -336,6 +357,7 @@
         !flags.cat1 &&
         !flags.cat2 &&
         !flags.fat &&
+        !flags.labFat &&
         !flags.holiday &&
         !flags.instructional
       )
@@ -384,27 +406,40 @@
     const cgOpt = landing.querySelector("#classGroupId option[value]");
     const classGroupId = cgOpt ? cgOpt.value : "COMB";
 
-    // month buttons: the dedicated endpoint first, then the legacy shape
-    const monthDates = new Set(collectMonthDates(landing));
+    // Month buttons: the dedicated per-semester endpoint is authoritative —
+    // the landing page's onclick dates can belong to whatever semester the
+    // page defaults to AND can include per-DAY links of the current month.
+    // Mixing the two sources (or per-day links) used to fetch the same month
+    // repeatedly and multiply-count every instructional day.
+    let monthDates = new Set();
     try {
       const monthsPage = parseHtml(
         await vtopPost("getDateForSemesterPreview", { semSubId, classGroupId })
       );
-      collectMonthDates(monthsPage).forEach((d) => monthDates.add(d));
+      monthDates = collectMonthDates(monthsPage);
     } catch (error) {
       /* older deployment */
     }
+    if (monthDates.size === 0) monthDates = collectMonthDates(landing);
     if (monthDates.size === 0) {
       const monthsPage = parseHtml(await vtopPost(menuUrl, { semSubId }));
-      collectMonthDates(monthsPage).forEach((d) => monthDates.add(d));
+      monthDates = collectMonthDates(monthsPage);
     }
     if (monthDates.size === 0)
       throw new Error("no month buttons found in calendar page");
 
-    const days = [];
+    // one fetch per calendar month, whatever shape the links took
+    // ("01-AUG-2026" vs "15-Aug-2026" are the same month)
+    const months = new Map();
     for (const dateStr of monthDates) {
       const monthDate = parseAnyDate(dateStr);
       if (!monthDate) continue;
+      const key = `${monthDate.getFullYear()}-${monthDate.getMonth()}`;
+      if (!months.has(key)) months.set(key, { dateStr, monthDate });
+    }
+
+    const days = [];
+    for (const { dateStr, monthDate } of months.values()) {
       const before = days.length;
       try {
         // current VTOP: dedicated grid endpoint with calDate
@@ -429,26 +464,44 @@
     }
     if (days.length === 0) throw new Error("no calendar day cells parsed");
 
+    // one record per date, flags OR-ed — a date must never appear twice in
+    // instructionalDays (each duplicate silently added a phantom class to
+    // "remaining" and every bunkable column)
+    const byIso = new Map();
+    days.forEach((d) => {
+      const prev = byIso.get(d.iso);
+      if (!prev) {
+        byIso.set(d.iso, { ...d });
+        return;
+      }
+      ["cat1", "cat2", "fat", "labFat", "holiday", "instructional"].forEach(
+        (f) => (prev[f] = prev[f] || d[f])
+      );
+    });
+    const dayList = [...byIso.values()];
+
     const firstIso = (flag) =>
-      days
+      dayList
         .filter((d) => d[flag])
         .map((d) => d.iso)
         .sort()[0] || null;
-    const instructionalDays = days
+    const instructionalDays = dayList
       .filter((d) => d.instructional)
       .map((d) => d.iso)
       .sort();
-    const holidays = [
-      ...new Set(days.filter((d) => d.holiday).map((d) => d.iso)),
-    ].sort();
+    const holidays = dayList
+      .filter((d) => d.holiday)
+      .map((d) => d.iso)
+      .sort();
 
     return {
-      version: 2,
+      version: 4,
       semester: semesterName,
       fetchedAt: Date.now(),
       cat1: firstIso("cat1"),
       cat2: firstIso("cat2"),
       fat: firstIso("fat"),
+      labFat: firstIso("labFat"),
       holidays,
       instructionalDays,
       lastInstructional: instructionalDays[instructionalDays.length - 1] || null,
@@ -459,8 +512,9 @@
     const key = CACHE_PREFIX + normText(semesterName);
     try {
       const cached = await chrome.storage.local.get(key);
-      // version check invalidates caches from before holidays were recorded
-      if (cached[key] && cached[key].version === 2) return cached[key];
+      // version check invalidates caches built before the duplicate-month /
+      // duplicate-day dedupe (those could hold multiply-counted class days)
+      if (cached[key] && cached[key].version === 4) return cached[key];
       const calendar = await fetchCalendar(semesterName);
       // drop caches of other semesters, then store this one
       const all = await chrome.storage.local.get(null);
@@ -506,11 +560,19 @@
     });
     const samples = {};
     Object.keys(perDate).forEach((iso) => {
-      const wd = new Date(iso).getDay();
+      const wd = wdOfIso(iso);
       (samples[wd] = samples[wd] || []).push(perDate[iso]);
     });
+    // a weekday the subject met on only ONCE across a 3+ week history is a
+    // one-off (makeup class / day-order swap), not a weekly meeting —
+    // projecting it forward inflates "remaining" and every bunkable number
+    const isos = Object.keys(perDate).sort();
+    const spanWeeks = isos.length
+      ? (dateOfIso(isos[isos.length - 1]) - dateOfIso(isos[0])) / (7 * 864e5)
+      : 0;
     const meetings = {};
     Object.keys(samples).forEach((wd) => {
+      if (samples[wd].length === 1 && spanWeeks >= 3) return;
       const freq = {};
       samples[wd].forEach((n) => (freq[n] = (freq[n] || 0) + 1));
       meetings[wd] = parseInt(
@@ -603,7 +665,7 @@
     calendar.instructionalDays.forEach((iso) => {
       if (iso <= todayIso) return;
       if (untilIso && iso >= untilIso) return;
-      count += meetings[new Date(iso).getDay()] || 0;
+      count += meetings[wdOfIso(iso)] || 0;
     });
     return count;
   };
@@ -617,7 +679,7 @@
     const todayIso = isoOf(new Date());
     let count = 0;
     const countDay = (iso) => {
-      if (meetings[new Date(iso).getDay()]) count += 1;
+      if (meetings[wdOfIso(iso)]) count += 1;
     };
     if (calendar) {
       calendar.instructionalDays.forEach((iso) => {
@@ -737,11 +799,17 @@
     const anchor = document.querySelector(".table-responsive");
     if (!anchor) return;
 
+    // below75 is computed from the exact ratio, not the displayed percent —
+    // a subject at 74.6% displays as 75% (VTOP-style ceil) but is still short
     const below = rowsData
-      .filter((r) => r.pct !== null && r.pct < 75)
+      .filter((r) => r.below75)
       .sort((a, b) => a.pct - b.pct);
     const tight = rowsData.filter(
-      (r) => r.pct >= 75 && typeof r.nextBunkable === "number" && r.nextBunkable <= 0
+      (r) =>
+        r.pct !== null &&
+        !r.below75 &&
+        typeof r.nextBunkable === "number" &&
+        r.nextBunkable <= 0
     );
     const accent = below.length ? "#c0392b" : tight.length ? "#b8860b" : "#2e7d32";
 
@@ -768,7 +836,9 @@
 
     below.forEach((r) =>
       addLine(
-        `\u{1F534} ${r.name}: ${r.pct}% — attend the next ${r.recover} ${r.unit} to reach 75%`,
+        r.canRecover
+          ? `\u{1F534} ${r.name}: ${r.pct}% — attend the next ${r.recover} ${r.unit} to reach 75%`
+          : `\u{1F534} ${r.name}: ${r.pct}% — can't reach 75% this sem even attending everything (max ${r.maxPct}%)`,
         "#c0392b"
       )
     );
@@ -787,14 +857,25 @@
         )
       );
     if (!below.length && !tight.length) {
+      // Rank on safeCount — the same never-dip number the table's "safe now"
+      // column shows. Ranking on nextBunkable instead named a subject by one
+      // metric while the column beside it showed the other.
       const withBuf = rowsData
-        .filter((r) => typeof r.nextBunkable === "number")
-        .sort((a, b) => a.nextBunkable - b.nextBunkable);
-      if (withBuf[0])
+        .filter((r) => typeof r.safeCount === "number")
+        .sort((a, b) => a.safeCount - b.safeCount || a.pct - b.pct);
+      const t = withBuf[0];
+      if (t) {
+        // both horizons on one line: skipping safeCount never drops you under
+        // 75%, nextBunkable only holds if you attend everything else
+        const ahead =
+          typeof t.nextBunkable === "number" && t.nextBunkable !== t.safeCount
+            ? ` (${t.nextBunkable} before ${t.nextExamLabel || "the next exam"} if you attend everything else)`
+            : "";
         addLine(
-          `\u{1F7E2} Lowest margin: ${withBuf[0].name} — ${withBuf[0].nextBunkable} ${withBuf[0].unit} skippable before ${withBuf[0].nextExamLabel || "the next exam"}`,
+          `\u{1F7E2} Tightest: ${t.name} — ${t.safeCount} ${t.unit} safe to skip right now${ahead}`,
           "#2e7d32"
         );
+      }
     }
 
     anchor.insertAdjacentElement("beforebegin", banner);
@@ -862,6 +943,12 @@
         warn.style.cssText = "color:#b8860b;font-size:11px;margin-top:2px;";
         subjCell.appendChild(warn);
       }
+      if (r.gapNote) {
+        const warn = document.createElement("div");
+        warn.textContent = `⚠ ${r.gapNote} — class skipped or not posted`;
+        warn.style.cssText = "color:#b8860b;font-size:11px;margin-top:2px;";
+        subjCell.appendChild(warn);
+      }
       // click-to-simulate: step +1 skip / +1 attend and watch the numbers
       if (typeof r.attended === "number" && r.total) {
         subjCell.style.cursor = "pointer";
@@ -876,9 +963,17 @@
           const a = r.attended + at * r.size;
           const t = r.total + (at + sk) * r.size;
           const p = (a / t) * 100;
+          // like the table's safe-now: capped at what actually remains
+          // (minus the sessions already simulated away)
+          const remainLeft =
+            typeof r.remainEntries === "number"
+              ? Math.max(0, r.remainEntries - (at + sk) * r.size)
+              : Infinity;
           const safe = Math.max(
             0,
-            Math.floor(Math.floor((4 * a - 3 * t) / 3) / r.size)
+            Math.floor(
+              Math.min(remainLeft, Math.floor((4 * a - 3 * t) / 3)) / r.size
+            )
           );
           status.textContent =
             ` ${sk} skipped, ${at} attended → ${a}/${t} = ${p.toFixed(1)}%` +
@@ -939,7 +1034,9 @@
       "attend all the other remaining classes. Past exams show what you " +
       'could have bunked back then; "none this sem" means the calendar has ' +
       'no such exam; "--" means the calendar could not be ' +
-      "read. Lab numbers are whole lab sessions, not hours. One-off " +
+      "read. Lab numbers are whole lab sessions, not hours; lab rows count " +
+      "toward the LAB FAT day (labs have no CATs — the theory FAT date is " +
+      "used only if the calendar marks no separate lab FAT). One-off " +
       "day-order swaps and unposted attendance are not visible here.";
     note.style.cssText = "color:#666;font-size:12px;margin-top:5px;";
     container.appendChild(note);
@@ -1057,6 +1154,7 @@
     // The student's actual timetable (if they've opened the timetable page)
     // gives the true weekly schedule; fall back to inferring it from history.
     const schedule = scheduleFromTimetable(await getSavedTimetable());
+    const timetableSaved = Object.keys(schedule).length > 0;
 
     const todayIso = isoOf(new Date());
     const rowsData = collected.map(({ s, history }) => {
@@ -1081,11 +1179,9 @@
           ? schedule[code][isLab ? "lab" : "theory"]
           : null;
       let meetings;
-      if (
-        sched &&
-        Object.keys(sched).length &&
-        timetableMatchesHistory(sched, history)
-      ) {
+      let inferred = false;
+      const hadSched = !!(sched && Object.keys(sched).length);
+      if (hadSched && timetableMatchesHistory(sched, history)) {
         if (isLab) {
           // timetable lab cells are hours (2 per session); history entries
           // per session vary by deployment — convert to history units
@@ -1098,6 +1194,7 @@
         }
       } else {
         meetings = weekdayMeetings(history);
+        inferred = true;
       }
       // The row's slot string ("L31+L32+L43+L44") knows the real weekly
       // schedule: L-slots come in 2-hour pairs, so 4 slots = 2 sessions/
@@ -1107,13 +1204,17 @@
         ? Math.floor((rowText.match(/\bL\d+\b/g) || []).length / 2)
         : 0;
       // next upcoming exam (label + date), for the forecast banner and the
-      // home-page notices card
+      // home-page notices card. Labs sit no CATs — their only exam is the
+      // lab FAT (theory FAT date as fallback when the calendar doesn't mark
+      // a separate lab day).
       const nextExam =
-        [
-          ["CAT-1", calendar && calendar.cat1],
-          ["CAT-2", calendar && calendar.cat2],
-          ["FAT", calendar && calendar.fat],
-        ]
+        (isLab
+          ? [["lab FAT", calendar && (calendar.labFat || calendar.fat)]]
+          : [
+              ["CAT-1", calendar && calendar.cat1],
+              ["CAT-2", calendar && calendar.cat2],
+              ["FAT", calendar && calendar.fat],
+            ])
           .filter(([, iso]) => iso && iso > todayIso)
           .sort((a, b) => (a[1] < b[1] ? -1 : 1))[0] || null;
       const upcoming = nextExam ? nextExam[1] : null;
@@ -1127,7 +1228,12 @@
               ) / size
             )
           : null;
-      const pct = total ? Math.round((attended / total) * 100) : null;
+      // VTOP's own table ceils the percentage (1/3 -> 34%) — display the
+      // same so the banner never seems to disagree with the row beside it;
+      // threshold checks use the exact ratio so ceil can't hide a shortfall
+      const ratio = total ? attended / total : null;
+      const pct = ratio === null ? null : Math.ceil(ratio * 100);
+      const below75 = ratio !== null && ratio < ATTENDANCE_MIN;
       const lastPosted = history.length
         ? history[history.length - 1].date
         : null;
@@ -1135,6 +1241,32 @@
         lastPosted && missedPostings(calendar, meetings, lastPosted) >= 2
           ? shortDate(lastPosted)
           : null;
+      // Scheduled class days INSIDE the posted range with no register entry:
+      // either the class didn't happen or the faculty never posted it. The
+      // percentage math stays correct either way (it only counts entries),
+      // but surface the dates so a too-good-looking register can be traced.
+      // Bounded by the first and last posted entries — courses register on
+      // different dates so earlier days prove nothing, and days after the
+      // last entry are the stale flag's territory.
+      const postedIsos = new Set(history.map((h) => isoOf(h.date)));
+      const gapDates = [];
+      if (calendar && history.length) {
+        const firstPosted = isoOf(history[0].date);
+        const lastPostedIso = isoOf(history[history.length - 1].date);
+        calendar.instructionalDays.forEach((dayIso) => {
+          if (dayIso <= firstPosted || dayIso >= lastPostedIso) return;
+          if ((meetings[wdOfIso(dayIso)] || 0) > 0 && !postedIsos.has(dayIso))
+            gapDates.push(dayIso);
+        });
+      }
+      const gapNote = gapDates.length
+        ? `no entry for ${gapDates.length} scheduled class day(s): ` +
+          gapDates
+            .slice(0, 3)
+            .map((d) => shortDate(dateOfIso(d)))
+            .join(", ") +
+          (gapDates.length > 3 ? "…" : "")
+        : null;
       const seenDays = Object.keys(meetings).length;
       const remainEntries = calendar
         ? countClassesUntil(calendar, meetings, null)
@@ -1166,20 +1298,31 @@
         let cum = 0;
         for (const iso of calendar.instructionalDays) {
           if (iso <= todayIso) continue;
-          cum += meetings[new Date(iso).getDay()] || 0;
+          cum += meetings[wdOfIso(iso)] || 0;
           if (attended / (total + cum) < ATTENDANCE_MIN) {
-            debarNote = `skip everything → <75% on ${shortDate(new Date(iso))}`;
+            debarNote = `skip everything → <75% on ${shortDate(dateOfIso(iso))}`;
             break;
           }
         }
         if (!debarNote) debarNote = "can't drop below 75% this sem";
       }
-      // Best case: attend every remaining class
-      const bestNote =
+      // Best case: attend every remaining class. When even that lands under
+      // 75%, "attend the next N to recover" is impossible advice — the
+      // banner says so instead.
+      const maxPct =
         remainEntries !== null && total
+          ? Math.round(
+              ((attended + remainEntries) / (total + remainEntries)) * 100
+            )
+          : null;
+      const canRecover =
+        maxPct === null ||
+        (attended + remainEntries) / (total + remainEntries) >= ATTENDANCE_MIN;
+      const bestNote =
+        maxPct !== null
           ? semOver
             ? `semester over — final ${pct}%`
-            : `attend all → ${Math.round(((attended + remainEntries) / (total + remainEntries)) * 100)}%`
+            : `attend all → ${maxPct}%`
           : null;
       return {
         name: subjectName(liveRowFor(s) || s.row),
@@ -1187,6 +1330,7 @@
         attended,
         total,
         size,
+        remainEntries,
         staleSince,
         debarNote,
         bestNote,
@@ -1194,26 +1338,35 @@
         partialNote:
           slotPairs > seenDays
             ? `register shows only ${seenDays} of ~${slotPairs} weekly lab day(s)`
-            : null,
+            : inferred && timetableSaved
+              ? (hadSched
+                  ? "saved timetable disagrees with this register"
+                  : "not in the saved timetable") +
+                ` — schedule guessed from ${seenDays} posted weekday(s)`
+              : null,
+        gapNote,
+        canRecover,
+        maxPct,
         nextBunkable,
         nextExamLabel: nextExam ? nextExam[0] : null,
         pct,
+        below75,
         // attendToTarget works in history entries (hours for labs) — show
         // whole sessions like every other number
-        recover:
-          pct !== null && pct < 75
-            ? Math.ceil(attendToTarget(attended, total) / size)
-            : 0,
+        recover: below75 ? Math.ceil(attendToTarget(attended, total) / size) : 0,
         unit: isLab ? "lab(s)" : "class(es)",
-        held: total,
+        // whole sessions for labs, matching every other displayed number
+        // (this deployment posts one entry per session, but older ones post
+        // per hour — total is in raw entries)
+        held: Math.floor(total / size),
         remaining:
           remainEntries !== null
             ? `${Math.floor(remainEntries / size)}${unit}`
             : "--",
         safeNow: `${Math.floor(safeNowEntries / size)}${unit}`,
-        cat1: bunkCell(calendar, calendar && calendar.cat1, attended, total, meetings, history, size, unit),
-        cat2: bunkCell(calendar, calendar && calendar.cat2, attended, total, meetings, history, size, unit),
-        fat: bunkCell(calendar, calendar && calendar.fat, attended, total, meetings, history, size, unit),
+        cat1: isLab ? "no CATs for labs" : bunkCell(calendar, calendar && calendar.cat1, attended, total, meetings, history, size, unit),
+        cat2: isLab ? "no CATs for labs" : bunkCell(calendar, calendar && calendar.cat2, attended, total, meetings, history, size, unit),
+        fat: bunkCell(calendar, calendar && (isLab ? calendar.labFat || calendar.fat : calendar.fat), attended, total, meetings, history, size, unit),
       };
     });
 

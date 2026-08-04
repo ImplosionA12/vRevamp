@@ -11,6 +11,7 @@
       "css": ["css/table.css", "css/nav-custom-div.css"],
       "js": [
         "js/modules/dom-to-image.js",
+        "js/shared/ics.js",
         "js/utils/chooseCurrentSem.js",
         "js/utils/filterRepeated.js",
 
@@ -34,7 +35,6 @@
         "js/course_page.js",
         "js/da_upload.js",
         "js/exam_schedule.js",
-        "js/navbarcc.js",
         "js/navbarap.js",
         "js/grade_pages.js",
         "js/cgpa_simulator.js",
@@ -44,9 +44,7 @@
       "matches": [
         "*://web.vitap.ac.in/*",
         "*://vtop.vitap.ac.in/*",
-        "*://vtopcc.vit.ac.in/vtop/*",
-        "*://vtop.vitap.ac.in/*",
-        "*://vtop.vitap.ac.in/vtop/*"
+        "*://vtopcc.vit.ac.in/vtop/*"
       ]
     },
     {
@@ -78,7 +76,8 @@
     "*://vtop.vit.ac.in/*",
     "*://vtopcc.vit.ac.in/vtop/*",
     "*://vtop.vitap.ac.in/*",
-    "*://vtop.vitap.ac.in/vtop/*"
+    "*://web.vitap.ac.in/*",
+    "https://calendar.google.com/*"
   ],
   "icons": {
     "128": "assets/icons/img_128.png",
@@ -98,7 +97,10 @@
     "storage",
     "tabs",
     "identity",
-    "cookies"
+    "cookies",
+    "alarms",
+    "notifications",
+    "scripting"
   ],
   "update_url": "https://clients2.google.com/service/update2/crx",
 

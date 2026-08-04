@@ -58,12 +58,8 @@ function getPlaceholder() {
     return para;
 }
 
-function getBlockText(b1, b2) {
-    if (b1.length == 0 && b2.length == 0) return "";
-    if (b1.length == b2.length) return b1;
-    if (b1.length > b2.length) return addBlocks(b2, b1);
-    return addBlocks(b1, b2);
-}
+// NOTE: getBlockText() was here. Its only reference was a commented-out line
+// in parsersTimeTable.js — filterRepeatedColumns() calls addBlocks() directly.
 
 function addBlocks(b1, b2) {
     // check if b1 has only "-" character repeated using regex

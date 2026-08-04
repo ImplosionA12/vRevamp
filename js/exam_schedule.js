@@ -60,8 +60,16 @@ const exam_rows_of_group = (table, groupIndex, cols) => {
     const row = table.rows[i];
     if (row.children[0] && row.children[0].className === "panelHead-secondary")
       break; // next exam-type group
-    const cell = (idx) =>
-      idx >= 0 && row.cells[idx] ? row.cells[idx].textContent.trim() : "";
+    // read around vRevamp's own 📅 links — they live inside the date cell,
+    // and their text must not pollute the parsed values
+    const cell = (idx) => {
+      if (idx < 0 || !row.cells[idx]) return "";
+      if (!row.cells[idx].querySelector(".vrevamp-gcal-link"))
+        return row.cells[idx].textContent.trim();
+      const clone = row.cells[idx].cloneNode(true);
+      clone.querySelectorAll(".vrevamp-gcal-link").forEach((n) => n.remove());
+      return clone.textContent.trim();
+    };
     const date = cell(cols.date);
     if (!/^\d{1,2}-[A-Za-z]{3,4}-\d{4}$/.test(date)) continue; // header/blank
     exams.push({
@@ -81,19 +89,8 @@ const exam_rows_of_group = (table, groupIndex, cols) => {
 };
 
 const build_exam_ics = (exams) => {
-  const now = new Date();
-  const stamp =
-    `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}` +
-    `${String(now.getUTCDate()).padStart(2, "0")}T` +
-    `${String(now.getUTCHours()).padStart(2, "0")}` +
-    `${String(now.getUTCMinutes()).padStart(2, "0")}` +
-    `${String(now.getUTCSeconds()).padStart(2, "0")}`;
-  let ics =
-    "BEGIN:VCALENDAR\n" +
-    "VERSION:2.0\n" +
-    "PRODID:-//vRevamp//iCal Generator//EN\n" +
-    "CALSCALE:GREGORIAN\n\n";
-  let events = 0;
+  const dtstamp = vrIcs.stamp();
+  const blocks = [];
   for (const exam of exams) {
     const d = exam.date.split("-");
     const times = exam.time.split("-");
@@ -101,20 +98,28 @@ const build_exam_ics = (exams) => {
     const end = exam_time_to_24h(times[1] || "");
     if (!start || !end || !EXAM_MONTHS[d[1]]) continue; // no time published yet
     const day = `${d[2]}${EXAM_MONTHS[d[1]]}${d[0].padStart(2, "0")}`;
-    ics +=
-      "BEGIN:VEVENT\n" +
-      `UID:${stamp}-${exam.code}@vitap.ac.in\n` +
-      `DTSTAMP;TZID=Asia/Kolkata:${stamp}\n` +
-      `DTSTART;TZID=Asia/Kolkata:${day}T${start}00\n` +
-      `DTEND;TZID=Asia/Kolkata:${day}T${end}00\n` +
-      `SUMMARY:${exam.code}:${exam.title}\n` +
-      `DESCRIPTION:Slot : ${exam.slot || "-"}; Reporting : ${exam.reporting || "-"}; ` +
-      `Seat Location : ${exam.seatLoc || "-"}; Seat Number : ${exam.seatNo || "-"}\n` +
-      `LOCATION:${exam.venue}\n` +
-      "END:VEVENT\n\n";
-    events++;
+    blocks.push([
+      // date + start + slot keep a course's THEORY and LAB exams apart: a UID
+      // of just the course code made them the same event, and importing the
+      // file silently dropped one of the two.
+      `UID:${vrIcs.uid("vrevamp-exam", exam.code, day, start, exam.slot)}`,
+      `DTSTAMP:${dtstamp}`,
+      `DTSTART;TZID=Asia/Kolkata:${day}T${start}00`,
+      `DTEND;TZID=Asia/Kolkata:${day}T${end}00`,
+      `SUMMARY:${vrIcs.esc(`${exam.code}: ${exam.title}`)}`,
+      `DESCRIPTION:${vrIcs.esc(
+        `Slot: ${exam.slot || "-"}\n` +
+          `Session: ${exam.session || "-"}\n` +
+          `Reporting: ${exam.reporting || "-"}\n` +
+          `Seat: ${exam.seatLoc || "-"} No. ${exam.seatNo || "-"}`
+      )}`,
+      exam.venue ? `LOCATION:${vrIcs.esc(exam.venue)}` : "",
+    ]);
   }
-  return { ics: ics + "END:VCALENDAR", events };
+  return {
+    ics: vrIcs.calendar("-//vRevamp//iCal Generator//EN", blocks),
+    events: blocks.length,
+  };
 };
 
 const EXAM_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the exam
@@ -122,10 +127,12 @@ const EXAM_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the exam
 const exam_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Fresh Google token via the worker at click time (chrome.identity refreshes
-// silently once consent exists — the token stored at popup-login expires in
-// ~1 h). Falls back to the stored token where messaging isn't available.
-// Shared with da_upload.js, hence the window guard.
+// silently once consent exists). The worker replies { token, error } — the
+// error is kept so the buttons can say WHY no consent window appeared (most
+// often: the Chrome profile itself has no Google account signed in).
+// Shared with da_upload.js / timetable_ics.js, hence the window guard.
 if (typeof window.vrGoogleToken !== "function") {
+  window.vrGoogleAuthError = null;
   window.vrGoogleToken = (opts) =>
     new Promise((resolve) => {
       const fallback = () =>
@@ -137,15 +144,69 @@ if (typeof window.vrGoogleToken !== "function") {
             interactive: !!(opts && opts.interactive),
             stale: (opts && opts.stale) || null,
           },
-          (t) => {
-            if (chrome.runtime.lastError || t === undefined) return fallback();
-            resolve(t || null);
+          (resp) => {
+            if (chrome.runtime.lastError || resp === undefined) return fallback();
+            if (resp && typeof resp === "object") {
+              window.vrGoogleAuthError = resp.error || null;
+              return resolve(resp.token || null);
+            }
+            resolve(resp || null); // worker from before the update: bare token
           }
         );
       } catch {
         fallback();
       }
     });
+  // the sign-in failure, phrased for the button status lines
+  window.vrGoogleAuthHint = () => {
+    const e = window.vrGoogleAuthError || "";
+    if (/bad client id|invalid_client|deleted_client/i.test(e))
+      return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
+    if (/not signed in/i.test(e))
+      return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
+    if (/did not approve|access|denied|closed|cancel/i.test(e))
+      return "the Google consent window was closed — click again and allow access";
+    return e
+      ? `Google sign-in failed: ${e}`
+      : "Google sign-in failed — allow the consent window, then retry";
+  };
+}
+
+// Chrome-native reminders via the worker (chrome.alarms + notifications) —
+// needs no Google account at all. Shared with da_upload.js (window guard).
+if (typeof window.vrLocalReminders !== "function") {
+  window.vrLocalReminders = (tag, reminders) =>
+    new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          { message: "schedule_local_reminders", tag, reminders },
+          (n) => {
+            if (chrome.runtime.lastError) return resolve(null);
+            resolve(typeof n === "number" ? n : null);
+          }
+        );
+      } catch {
+        resolve(null);
+      }
+    });
+}
+
+// One-tap "add to Google Calendar": a calendar.google.com/render?action=
+// TEMPLATE URL opens the user's own calendar with the event prefilled — the
+// student just presses Save. No extension OAuth client and no consent flow,
+// so it works for EVERY user with zero setup (the upstream OAuth client id
+// baked into the manifest is dead — "bad client id", seen live 2026-07-16 —
+// which killed the ✉️ Calendar-API path for everyone). `start`/`end` are
+// compact local times (YYYYMMDDTHHMMSS), pinned to IST via ctz.
+// Shared with da_upload.js, hence the window guard.
+if (typeof window.vrGcalTemplateUrl !== "function") {
+  window.vrGcalTemplateUrl = (ev) =>
+    "https://calendar.google.com/calendar/render?action=TEMPLATE" +
+    `&text=${encodeURIComponent(ev.title)}` +
+    `&dates=${ev.start}/${ev.end}` +
+    "&ctz=Asia/Kolkata" +
+    `&details=${encodeURIComponent(ev.details || "")}` +
+    (ev.location ? `&location=${encodeURIComponent(ev.location)}` : "");
 }
 
 // "04-May-2026" -> "2026-05-04" (null when unparseable / no month match)
@@ -256,6 +317,55 @@ let exam_schedule_sync = () => {
     console.warn("vRevamp exam schedule: cache", error);
   }
 
+  // per-exam 📅 one-tap links (added before the group buttons below so the
+  // group-head innerText is still just the exam type)
+  try {
+    const now = new Date();
+    const todayIso =
+      `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-` +
+      String(now.getDate()).padStart(2, "0");
+    let examType = "";
+    for (const row of table.rows) {
+      const head = row.children[0];
+      if (head && head.className === "panelHead-secondary") {
+        examType = head.innerText.trim();
+        continue;
+      }
+      const cell = (idx) =>
+        idx >= 0 && row.cells[idx] ? row.cells[idx].textContent.trim() : "";
+      const iso = exam_date_iso(cell(cols.date));
+      const times = cell(cols.time).split("-");
+      const start = exam_time_to_24h(times[0] || "");
+      const end = exam_time_to_24h(times[1] || "");
+      if (!iso || !start || !end || iso < todayIso) continue; // past / no time
+      const dateCell = row.cells[cols.date];
+      if (!dateCell || dateCell.querySelector(".vrevamp-gcal-link")) continue;
+      const day = iso.replace(/-/g, "");
+      const link = document.createElement("a");
+      link.className = "vrevamp-gcal-link";
+      link.textContent = "📅 add";
+      link.title =
+        "one tap: opens Google Calendar with this exam prefilled — just press Save (no sign-in setup)";
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.style.cssText = "display:block;font-size:11px;white-space:nowrap;";
+      link.href = window.vrGcalTemplateUrl({
+        title: `${examType} exam: ${cell(cols.code)} — ${cell(cols.title)}`,
+        start: `${day}T${start}00`,
+        end: `${day}T${end}00`,
+        details:
+          `Slot: ${cell(cols.slot) || "-"}   Session: ${cell(cols.session) || "-"}\n` +
+          `Reporting: ${cell(cols.reporting) || "-"}\n` +
+          `Venue: ${cell(cols.venue) || "-"}   Seat: ${cell(cols.seatLoc) || "-"} · No. ${cell(cols.seatNo) || "-"}\n\n` +
+          "Tip: add an Email notification to this event (or set one as your Google Calendar default) to get exam reminders mailed to you.",
+        location: cell(cols.venue),
+      });
+      dateCell.appendChild(link);
+    }
+  } catch (error) {
+    console.warn("vRevamp exam schedule: gcal links", error);
+  }
+
   for (let i = 0; i < table.rows.length; i++) {
     const head = table.rows[i].children[0];
     if (!head || head.className !== "panelHead-secondary") continue;
@@ -277,7 +387,7 @@ let exam_schedule_sync = () => {
         const a = document.createElement("a");
         a.setAttribute(
           "href",
-          "data:text/plain;charset=utf-8," + encodeURIComponent(ics)
+          "data:text/calendar;charset=utf-8," + encodeURIComponent(ics)
         );
         const sem = document.querySelector("#semesterSubId");
         const semName = sem
@@ -296,39 +406,94 @@ let exam_schedule_sync = () => {
     };
     head.appendChild(button);
 
-    // 🔔 one Google Calendar event per upcoming exam in this group, with an
-    // email + popup reminder 24 h before (same sign-in as the DA reminders)
+    // upcoming exams of this group that have a published date + time window
+    const upcoming_exams = () => {
+      const now = new Date();
+      const todayIso =
+        `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-` +
+        String(now.getDate()).padStart(2, "0");
+      return exam_rows_of_group(table, groupIndex, cols).filter((exam) => {
+        const iso = exam_date_iso(exam.date);
+        const times = exam.time.split("-");
+        return (
+          iso && iso >= todayIso &&
+          exam_time_to_24h(times[0] || "") && exam_time_to_24h(times[1] || "")
+        );
+      });
+    };
+
+    // 🔔 Chrome desktop notifications 1 day and 2 h before each upcoming
+    // exam — pure chrome.alarms, works with zero Google sign-in
     const bell = document.createElement("button");
-    bell.innerText = " 🔔 email me before each exam ";
+    bell.innerText = " 🔔 notify me before each exam ";
+    bell.title =
+      "Chrome notification 1 day and 2 h before each exam — no sign-in needed";
     bell.className = "btn btn-primary";
     bell.style.marginLeft = "1%";
     bell.style.background = "rgb(73,117,182)";
     bell.onclick = async () => {
       try {
-        const now = new Date();
-        const todayIso =
-          `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-` +
-          String(now.getDate()).padStart(2, "0");
-        const upcoming = exam_rows_of_group(table, groupIndex, cols).filter((exam) => {
-          const iso = exam_date_iso(exam.date);
-          const times = exam.time.split("-");
-          return (
-            iso && iso >= todayIso &&
-            exam_time_to_24h(times[0] || "") && exam_time_to_24h(times[1] || "")
-          );
-        });
+        const upcoming = upcoming_exams();
         if (upcoming.length === 0) {
           exam_status(bell, "no upcoming exams with a published time in this group", false);
+          return;
+        }
+        const reminders = [];
+        upcoming.forEach((exam) => {
+          const iso = exam_date_iso(exam.date);
+          const start = exam_time_to_24h(exam.time.split("-")[0] || "");
+          const startMs = new Date(
+            `${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30`
+          ).getTime();
+          const title = `${exam_type} exam: ${exam.code}${exam.title ? ` — ${exam.title}` : ""}`;
+          const body =
+            `${exam.date} · ${exam.time} (reporting ${exam.reporting || "-"})\n` +
+            `Venue: ${exam.venue || "-"} · Seat: ${exam.seatLoc || "-"} No. ${exam.seatNo || "-"}`;
+          reminders.push({ when: startMs - 24 * 3600 * 1000, title: `Tomorrow — ${title}`, body });
+          reminders.push({ when: startMs - 2 * 3600 * 1000, title: `In 2 hours — ${title}`, body });
+        });
+        bell.disabled = true;
+        const n = await window.vrLocalReminders(`exam:${exam_type}`, reminders);
+        bell.disabled = false;
+        exam_status(
+          bell,
+          n === null
+            ? "couldn't schedule — reload the extension (chrome://extensions) and retry"
+            : n === 0
+              ? "every exam here is under 2 h away — nothing left to schedule"
+              : `✓ ${n} Chrome notification(s) scheduled (1 day & 2 h before each exam) — no sign-in needed`,
+          n > 0
+        );
+      } catch (error) {
+        console.warn("vRevamp exam schedule:", error);
+        exam_status(bell, "failed — refresh and try again", false);
+      }
+    };
+    head.appendChild(bell);
+
+    // ✉️ optional: one Google Calendar event per upcoming exam with an email
+    // (+popup) reminder 24 h before — this one does need Google consent
+    const mail = document.createElement("button");
+    mail.innerText = " ✉️ email me instead (Google) ";
+    mail.title = "Google Calendar event per exam with an email 24 h before — needs one-time Google consent";
+    mail.className = "btn btn-primary";
+    mail.style.marginLeft = "1%";
+    mail.style.background = "rgb(73,117,182)";
+    mail.onclick = async () => {
+      try {
+        const upcoming = upcoming_exams();
+        if (upcoming.length === 0) {
+          exam_status(mail, "no upcoming exams with a published time in this group", false);
           return;
         }
         let token = await window.vrGoogleToken({});
         // never consented yet — one interactive consent window, right now
         if (!token) token = await window.vrGoogleToken({ interactive: true });
         if (!token) {
-          exam_status(bell, "sign in with Google — allow the consent window (or use the vRevamp popup once), then retry", false);
+          exam_status(mail, window.vrGoogleAuthHint(), false);
           return;
         }
-        bell.disabled = true;
+        mail.disabled = true;
         let done = 0;
         let refreshed = false;
         for (let i = 0; i < upcoming.length; i++) {
@@ -343,16 +508,16 @@ let exam_schedule_sync = () => {
             }
           }
           if (r.status === 401) {
-            exam_status(bell, "Google session expired — sign in again from the vRevamp popup", false);
-            bell.disabled = false;
+            exam_status(mail, "Google session expired — click again to re-consent", false);
+            mail.disabled = false;
             return;
           }
           if (r.ok) done++;
           await exam_sleep(400);
         }
-        bell.disabled = false;
+        mail.disabled = false;
         exam_status(
-          bell,
+          mail,
           done > 0
             ? `✓ ${done} reminder(s) set — email 24 h before each exam`
             : "couldn't create the reminders — try again",
@@ -360,10 +525,10 @@ let exam_schedule_sync = () => {
         );
       } catch (error) {
         console.warn("vRevamp exam schedule:", error);
-        exam_status(bell, "failed — refresh and try again", false);
+        exam_status(mail, "failed — refresh and try again", false);
       }
     };
-    head.appendChild(bell);
+    head.appendChild(mail);
   }
 };
 

@@ -673,7 +673,15 @@
         document.querySelectorAll("table").length +
         ":" +
         (document.getElementById(PANEL_ID) ? 1 : 0);
-      if (sig === lastSig && document.getElementById(PANEL_ID)) return;
+      // `&& document.getElementById(PANEL_ID)` used to be part of this
+      // condition, which made the short-circuit unreachable on every page
+      // that has no panel — i.e. all of VTOP except the grade pages. The
+      // observer watches document.body/subtree for the whole session, so
+      // buildPanel() (findGradeTable + parseCredits + parseCgpaDetails, each
+      // a walk over every table and row on the page) re-ran on every quiet
+      // tick forever. The panel's presence is already the third field of
+      // `sig`, so losing it to a re-render still forces a rebuild.
+      if (sig === lastSig) return;
       lastSig = sig;
       try {
         buildPanel();

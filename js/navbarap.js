@@ -32,22 +32,25 @@ const nav_bar_change = () => {
 	span.id = "navbar";
 	span.innerHTML = `
     <span class="navbar-text px-0 px-sm-2 mx-0 mx-sm-1 text-light" ></span>
-
-    <button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${curriculum}].click();" id="nav_short">Curriculum</button>
-
-    <button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${marks}].click();" id="nav_short">Marks View</button>
-
-    <button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${attendance}].click()" id="nav_short">Attendance</button>
-
-    <button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${course_page}].click()" id="nav_short">Course Page</button>
-
-    <button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${da_upload}].click()" id="nav_short">DA Upload</button>
-
     `;
-	if (time_table)
-		span.innerHTML += `<button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${time_table}].click()" id="nav_short">Time Table</button>`;
-	else
-		span.innerHTML += `<button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${calendar}].click()" id="nav_short">Calendar</button>`;
+	// A menu entry the student's role doesn't have (My Curriculum is the
+	// usual one) left its index `undefined`, and the template still emitted
+	// the button — so clicking it ran `[undefined].click()` and threw in the
+	// page. `if (time_table)` had the same shape of bug from the other end:
+	// a legitimate index of 0 is falsy, which silently swapped Time Table
+	// for Calendar. Only emit a button whose target index actually resolved.
+	const navButton = (index, label) => {
+		if (typeof index !== "number") return;
+		span.innerHTML += `<button class="btn btn-primary border-primary shadow-none" type="button" style="background: rgba(13,110,253,0);border-style: none;" onclick="Array.from(document.getElementsByTagName('a')).filter((e) => e.dataset.url)[${index}].click()" id="nav_short">${label}</button>`;
+	};
+	navButton(curriculum, "Curriculum");
+	navButton(marks, "Marks View");
+	navButton(attendance, "Attendance");
+	navButton(course_page, "Course Page");
+	navButton(da_upload, "DA Upload");
+	// Time Table when the menu has it, Calendar as the stand-in when it doesn't
+	if (typeof time_table === "number") navButton(time_table, "Time Table");
+	else navButton(calendar, "Calendar");
 	nav[0].insertBefore(span, nav[0].children[0]);
 
 	let buttons = document.querySelectorAll("[id=nav_short]");
@@ -70,8 +73,11 @@ let flag = false;
 chrome.runtime.onMessage.addListener((request) => {
 	if (request.message === "nav_bar_change") {
 		try {
+			// optional chaining like the load-time copy below: on pages
+			// without that element this threw on EVERY nav_bar_change message
+			// and filled the console, and the throw skipped the navbar build
 			if (
-				document.getElementsByClassName("btn-group dropend")[0].style
+				document.getElementsByClassName("btn-group dropend")[0]?.style
 					.backgroundColor === "red"
 			) {
 				document.getElementsByClassName("btn-group dropend")[0].remove();

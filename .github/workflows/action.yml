@@ -1,20 +1,47 @@
 name: Build Chrome extension
 
+# NOTE: this targeted `main` until 2026-07-25 while the repo's default branch
+# is `master`, so no workflow here had ever run — neither the linter nor the
+# 160-check verification suite. Keep this in sync with the default branch.
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
 
 jobs:
-  build-extension:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify content-script features
+        run: npm test
+
+  build-extension:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Pack extension
-        run: zip -r extension-${{ github.sha }}.zip . -x ".git/*" -x ".github/*" -x "testing/*"
+        run: bash .github/pack.sh extension-${{ github.sha }}.zip
         shell: bash
 
       - name: Upload extension archive

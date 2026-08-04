@@ -15,15 +15,24 @@ const change_time_table = () => {
   const extracted_children = extract_tbody_data(tbody_table.children);
   const merged_data = filterRepeatedColumns(extractedHeader, extracted_children)
   const childrenDataArr = merged_data;
-  saveTimeTable(extractedHeader, childrenDataArr);
+  const semEl = document.getElementById("semesterSubId");
+  const semesterName =
+    semEl && semEl.selectedIndex >= 0
+      ? (semEl.options[semEl.selectedIndex].innerText || "").trim()
+      : null;
+  saveTimeTable(extractedHeader, childrenDataArr, semesterName);
   displayTableData(extractedHeader, childrenDataArr)
 };
 
 function displayTableData(headerData, childrenData) {
-  // creating the table head
-  headerData.splice(0, 1); // remove the first element which is just "starttime-endtime[1,4,9,16,25];"
-
-  const table = createTable(headerData, childrenData);
+  // Drop the leading "starttime-endtime" junk column. This used to splice()
+  // the caller's array in place — and change_time_table() passes the SAME
+  // array to saveTimeTable() one line earlier, so the render was mutating
+  // data that was mid-flight to storage. It survives only because
+  // chrome.storage serializes its argument at call time; reordering those
+  // two lines, or awaiting anything between them, would have silently
+  // persisted a timetable missing its first column. Copy instead.
+  const table = createTable(headerData.slice(1), childrenData);
   insertTable(table);
 }
 
@@ -34,9 +43,12 @@ function createTable(header, bodyData) {
   const tBody = document.createElement("tbody");
   const dayIndex = (new Date()).getDay();
   for (let i = 0; i < bodyData.length; i++) {
-    let { day, theory: theoryDataArr, lab: labDataArr } = bodyData[i];
-    theoryDataArr.splice(0, 1); // remove the first element which is just starttime-endtime 
-    labDataArr.splice(0, 1); // remove the first element which is just starttime-endtime
+    const { day, theory, lab } = bodyData[i];
+    // slice, not splice: bodyData belongs to the caller (and, on the live
+    // page, to the blob being saved) — see displayTableData above. Index 0
+    // is the same starttime-endtime placeholder.
+    const theoryDataArr = theory.slice(1);
+    const labDataArr = lab.slice(1);
     const tr = createTr(theoryDataArr, labDataArr);
     const day_td = _create_td_element(day, "day-block");
     tr.insertBefore(day_td, tr.children[0]);

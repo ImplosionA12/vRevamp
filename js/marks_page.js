@@ -105,7 +105,10 @@ chrome.runtime.onMessage.addListener((request) => {
       flagAttendanceRisk().catch((error) =>
         console.warn("vRevamp attendance flag:", error)
       );
-      saveMarksPage(document.querySelector(".box-body").outerHTML);
+      // .box-body is absent on some layouts; dereferencing it unguarded threw
+      // past the catch below into console.error on every marks message
+      const box = document.querySelector(".box-body");
+      if (box) saveMarksPage(box.outerHTML);
     } catch (error) {
       console.error(error);
     }
