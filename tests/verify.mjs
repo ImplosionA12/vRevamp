@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
+import vm from "node:vm";
 
 // repo root, resolved relative to this test file so it runs anywhere
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -254,6 +255,258 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* =============== Grade calculator on the Grade History page =============== */
+  console.log("\n=== grade calculator (Grade History page) ===");
+  {
+    // Real-shaped history: a header row, a "Grade Point" column that must NOT
+    // be mistaken for "Grade", CSE1005 taken TWICE (F then re-registered as B)
+    // so the repeated-code keying is exercised, and a P grade that is off the
+    // 10-point scale. Official CGPA box says 8.50 over 27 credits.
+    const html = `<body><div class="row">
+      <table><tbody>
+        <tr><td>Credits Registered</td><td>Credits Earned</td><td>CGPA</td></tr>
+        <tr><td>30</td><td>27</td><td>8.5</td></tr>
+      </tbody></table>
+      <table><tbody>
+        <tr><th>Sl.No.</th><th>Exam Held</th><th>Course Code</th><th>Course Title</th>
+            <th>Credits</th><th>Grade</th><th>Grade Point</th></tr>
+        <tr><td>1</td><td>Jul-2025</td><td>CSE1005</td><td>Data Structures</td>
+            <td>4.0</td><td>F</td><td>0</td></tr>
+        <tr><td>2</td><td>Jan-2026</td><td>CSE1005</td><td>Data Structures</td>
+            <td>4.0</td><td>B</td><td>8</td></tr>
+        <tr><td>3</td><td>Jan-2026</td><td>MAT2001</td><td>Applied Calculus</td>
+            <td>3.0</td><td>A</td><td>9</td></tr>
+        <tr><td>4</td><td>Jan-2026</td><td>STS1001</td><td>Soft Skills</td>
+            <td>1.0</td><td>P</td><td>-</td></tr>
+      </tbody></table>
+    </div></body>`;
+    const page = await newPage(browser);
+    await page.setContent(html);
+    await shim(page);
+    await inject(page, ["js/shared/click.js", "js/grade_history_calc.js"]);
+    await page.evaluate(() => window.__dispatch("exam_grade"));
+    await delay(700); // build is debounced 400ms
+
+    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vrevamp-gradehist-calc")));
+
+    const sels = await page.evaluate(() =>
+      [...document.querySelectorAll("select.vrevamp-gh-select")].map((s) => ({
+        value: s.value,
+        disabled: s.disabled,
+        // the select must sit in the same cell as the grade it belongs to
+        cellText: s.parentElement.textContent.replace(/\s+/g, ""),
+      }))
+    );
+    ok("one select per history row (4)", sels.length === 4, String(sels.length));
+    ok(
+      "selects read the Grade column, not Grade Point",
+      sels.length === 4 &&
+        sels[0].value === "F" && sels[1].value === "B" && sels[2].value === "A",
+      JSON.stringify(sels.map((s) => s.value))
+    );
+    ok(
+      "off-scale P grade is preserved and disabled",
+      sels.length === 4 && sels[3].value === "P" && sels[3].disabled === true,
+      JSON.stringify(sels[3] || null)
+    );
+
+    const bodyText = () =>
+      page.evaluate(() => document.getElementById("vrevamp-gradehist-body").textContent);
+    let text = await bodyText();
+    ok("baseline is the page's official CGPA (8.50)", /Current CGPA:\s*8\.50/.test(text), text.slice(0, 120));
+    ok("counts 3 of 4 rows towards the CGPA", /3 of 4 rows/.test(text), text.slice(0, 200));
+
+    // change the FAILED attempt (row 1, F) to B: delta = (8-0)*4 = +32
+    // projected = (8.5*27 + 32)/27 = 9.685 -> 9.69
+    await page.evaluate(() => {
+      const sel = document.querySelectorAll("select.vrevamp-gh-select")[0];
+      sel.value = "B";
+      sel.dispatchEvent(new Event("change"));
+    });
+    text = await bodyText();
+    ok("projected CGPA after F->B on the first attempt = 9.69", /Projected CGPA:\s*9\.69/.test(text), text.slice(0, 200));
+    ok("change shown as +1.19", /Change:\s*\+1\.19/.test(text), text.slice(0, 200));
+    ok(
+      "only the changed row is tinted",
+      await page.evaluate(() => {
+        const rows = [...document.querySelectorAll("tr[data-vrevamp-gh]")];
+        return rows.filter((r) => r.style.background).length === 1;
+      })
+    );
+
+    // The reported complaint: "where is the CGPA change visible? it's not."
+    // The summary panel renders AFTER the table, which on a real transcript is
+    // 29 rows below the dropdown just changed — correct, and off screen. The
+    // projected CGPA now also rides in a fixed bar that stays with the user.
+    const bar = await page.evaluate(() => {
+      const b = document.getElementById("vrevamp-gh-bar");
+      if (!b) return null;
+      const cs = getComputedStyle(b);
+      return {
+        text: b.textContent.replace(/\s+/g, " ").trim(),
+        position: cs.position,
+        zIndex: cs.zIndex,
+        hasReset: !!b.querySelector('[data-vr-action="gh-reset"]'),
+        resetType: (b.querySelector('[data-vr-action="gh-reset"]') || {}).type,
+      };
+    });
+    ok(
+      "the projected CGPA follows the user in a fixed bar",
+      !!bar && bar.position === "fixed" && /8\.50/.test(bar.text) && /9\.69/.test(bar.text),
+      JSON.stringify(bar)
+    );
+    ok(
+      "the bar sits BELOW VTOP's own overlays (z-index < 1000)",
+      !!bar && Number(bar.zIndex) < 1000,
+      String(bar && bar.zIndex)
+    );
+    ok(
+      "its reset is a delegated type=button, not a per-element handler",
+      !!bar && bar.hasReset && bar.resetType === "button",
+      JSON.stringify(bar)
+    );
+
+    // and it must go away again when there is nothing to report
+    await page.evaluate(() => {
+      const b = document.querySelector('[data-vr-action="gh-reset"]');
+      b.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await delay(200);
+    ok(
+      "reset clears the bar and the tints",
+      await page.evaluate(
+        () =>
+          !document.getElementById("vrevamp-gh-bar") &&
+          [...document.querySelectorAll("tr[data-vrevamp-gh]")].every((r) => !r.style.background)
+      )
+    );
+
+    // put the change back for the assertions that follow
+    await page.evaluate(() => {
+      const sel = document.querySelectorAll("select.vrevamp-gh-select")[0];
+      sel.value = "B";
+      sel.dispatchEvent(new Event("change"));
+    });
+
+    // the SECOND CSE1005 attempt must be independent of the first
+    await page.evaluate(() => {
+      const sel = document.querySelectorAll("select.vrevamp-gh-select")[1];
+      sel.value = "S";
+      sel.dispatchEvent(new Event("change"));
+    });
+    text = await bodyText();
+    // +32 from row 1, plus (10-8)*4 = +8 from row 2 -> (229.5+40)/27 = 9.981
+    ok(
+      "repeated course code keeps the two attempts independent (9.98)",
+      /Projected CGPA:\s*9\.98/.test(text),
+      text.slice(0, 200)
+    );
+
+    await page.evaluate(() => {
+      [...document.querySelectorAll("#vrevamp-gradehist-body button")]
+        .find((b) => /Reset changes/.test(b.textContent))
+        .click();
+    });
+    text = await bodyText();
+    ok("reset restores the baseline", !/Projected CGPA/.test(text) && /3 of 4 rows/.test(text), text.slice(0, 160));
+    ok(
+      "reset clears every select and tint",
+      await page.evaluate(() => {
+        const sels = [...document.querySelectorAll("select.vrevamp-gh-select")];
+        const rows = [...document.querySelectorAll("tr[data-vrevamp-gh]")];
+        return sels[0].value === "F" && sels[1].value === "B" &&
+          rows.every((r) => !r.style.background);
+      })
+    );
+    await page.close();
+  }
+
+  /* ===== Grade calculator: nested table must not steal the detection ===== */
+  console.log("\n=== grade calculator: nested table inside the history table ===");
+  {
+    // Shape taken from the live VIT-AP page, which nests a small qualifying
+    // table inside the real history table. Counting rows with
+    // querySelectorAll("tr") let the parent claim its child's rows, and the
+    // old "skip a table that contains a qualifying table" rule then threw the
+    // real table away and left the nested one as the winner.
+    const page = await newPage(browser);
+    await page.setContent(`<body><div class="row"><table id="outer"><tbody>
+      <tr><th>Sl.No.</th><th>Course Code</th><th>Course Title</th><th>Course Type</th>
+          <th>Credits</th><th>Grade</th><th>Exam Month</th><th>Detail View</th></tr>
+      <tr><td>1</td><td>CSE1005</td><td>Data Structures</td><td>Theory Only</td>
+          <td>4.0</td><td>A</td><td>Jul-2025</td><td>view</td></tr>
+      <tr><td>2</td><td>MAT2001</td><td>Applied Calculus</td><td>Theory Only</td>
+          <td>3.0</td><td>B</td><td>Jan-2026</td><td>view</td></tr>
+      <tr><td>3</td><td>PHY1001</td><td>Engineering Physics</td><td>Embedded Theory</td>
+          <td>3.0</td><td>S</td><td>Jan-2026</td><td>view</td></tr>
+      <tr><td colspan="8"><table id="inner"><tbody>
+        <tr><td>Jul-2025</td><td>CHY1008</td><td>4.0</td><td>B</td></tr>
+        <tr><td>Jan-2026</td><td>CHY1008</td><td>4.0</td><td>S</td></tr>
+      </tbody></table></td></tr>
+    </tbody></table></div></body>`);
+    await shim(page);
+    await inject(page, ["js/shared/click.js", "js/grade_history_calc.js"]);
+    await delay(700);
+    const picked = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll("tr[data-vrevamp-gh]")];
+      return {
+        n: rows.length,
+        table: rows.length ? rows[0].closest("table").id : null,
+        codes: rows.map((r) => r.children[1] && r.children[1].textContent.trim()),
+      };
+    });
+    ok(
+      "picks the outer 3-row history table, not the nested 2-row one",
+      picked.n === 3 && picked.table === "outer",
+      JSON.stringify(picked)
+    );
+    ok(
+      "reads all three courses",
+      JSON.stringify(picked.codes) === JSON.stringify(["CSE1005", "MAT2001", "PHY1001"]),
+      JSON.stringify(picked.codes)
+    );
+    // (9*4 + 8*3 + 10*3)/10 = 9.0
+    const text = await page.evaluate(() =>
+      document.getElementById("vrevamp-gradehist-body").textContent
+    );
+    ok("CGPA computed over the outer table = 9.00", /Current CGPA:\s*9\.00/.test(text), text.slice(0, 140));
+    await page.close();
+  }
+
+  /* ====== Grade calculator: no CGPA box -> computed baseline, flagged ====== */
+  console.log("\n=== grade calculator: history with no CGPA box ===");
+  {
+    // (9*4 + 8*2)/6 = 8.666 -> 8.67, and the note must admit it's computed
+    const page = await newPage(browser);
+    await page.setContent(`<body><div class="row"><table><tbody>
+      <tr><th>Exam Held</th><th>Course Code</th><th>Credits</th><th>Grade</th></tr>
+      <tr><td>Jul-2025</td><td>CSE1005</td><td>4.0</td><td>A</td></tr>
+      <tr><td>Jul-2025</td><td>MAT2001</td><td>2.0</td><td>B</td></tr>
+    </tbody></table></div></body>`);
+    await shim(page);
+    await inject(page, ["js/shared/click.js", "js/grade_history_calc.js"]);
+    await delay(700);
+    let text = await page.evaluate(() => {
+      const el = document.getElementById("vrevamp-gradehist-body");
+      return el ? el.textContent : null;
+    });
+    ok("computed baseline CGPA = 8.67", !!text && /Current CGPA:\s*8\.67/.test(text), (text || "").slice(0, 120));
+    await page.evaluate(() => {
+      const sel = document.querySelectorAll("select.vrevamp-gh-select")[1];
+      sel.value = "S";
+      sel.dispatchEvent(new Event("change"));
+    });
+    text = await page.evaluate(() => document.getElementById("vrevamp-gradehist-body").textContent);
+    // (52 + (10-8)*2)/6 = 9.333 -> 9.33
+    ok("projected from the computed baseline = 9.33", /Projected CGPA:\s*9\.33/.test(text), text.slice(0, 200));
+    ok(
+      "says the figure is computed, not VTOP's official CGPA",
+      /No CGPA box on this page/.test(text),
+      text.slice(0, 260)
+    );
+    await page.close();
+  }
+
   /* ============ CGPA simulator: grade table missing entirely ============ */
   console.log("\n=== CGPA simulator: no grade table detected (fallback) ===");
   {
@@ -429,6 +682,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
       "js/utils/filterRepeated.js",
+      "js/shared/click.js",
       "js/shared/ics.js",
       "js/timetable_ics.js",
     ]);
@@ -517,6 +771,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
       "js/utils/filterRepeated.js",
+      "js/shared/click.js",
       "js/shared/ics.js",
       "js/timetable_ics.js",
     ]);
@@ -624,6 +879,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
       "js/utils/filterRepeated.js",
+      "js/shared/click.js",
       "js/shared/ics.js",
       "js/timetable_ics.js",
     ]);
@@ -801,11 +1057,31 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       JSON.stringify(auto)
     );
 
-    // partial auto-import (e.g. one editor never loaded): counts + the
-    // panel appears so the user can finish by hand
+    // A SECOND import must warn first. The TEMPLATE route cannot delete the
+    // previous run — no extended property to find it by, no token to delete it
+    // with — so re-running silently adds a complete second copy. Verified on
+    // the real calendar 2026-08-09: 35 distinct classes in one week, most of
+    // them present three times, from three runs that each reported success.
     await page.evaluate(() => {
       window.__autoImportSaves = 2;
     });
+    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await delay(500);
+    const warned = await page.evaluate(() => ({
+      note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
+      sent: (window.__sent || []).filter((m) => m && m.message === "gcal_template_import").length,
+    }));
+    ok(
+      "a second import warns about duplicating instead of silently doing it",
+      /already imported/.test(warned.note) &&
+        /second copy/.test(warned.note) &&
+        warned.sent === 2, // still 2 — this click imported nothing
+      JSON.stringify(warned)
+    );
+
+    // clicking again is the confirmation, and then it proceeds as before:
+    // partial auto-import (e.g. one editor never loaded) counts what saved and
+    // shows the panel so the rest can be finished by hand
     await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
     await delay(800);
     const partial = await page.evaluate(() => ({
@@ -839,6 +1115,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       window.__renders = 0;
       window.getTimeTable = (cb) => cb(null);
       window.extract_header = () => ["h0", "h1"];
+      window.extract_lab_header = () => ["h0", "h1"];
       window.extract_tbody_data = () => [];
       window.filterRepeatedColumns = (h, c) => c;
       window.filterRepeated = (x) => x;
@@ -1640,9 +1917,30 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // real navigations on a routed origin: sessionStorage works and persists
     // across loads (about:blank/setContent documents deny it)
     const pages = {
-      "/picker": "<body><div class='card'>Student</div><div class='card'>Employee</div></body>",
+      // the real role picker: it already ships #stdForm, hidden, so "the form
+      // exists" is TRUE here and must not be enough to trigger a reload
+      "/picker":
+        "<body><div class='card'>Student</div><div class='card'>Employee</div>" +
+        "<div class='card'>Parent</div><div class='card'>Alumni</div>" +
+        "<form id='stdForm' style='display:none'><input id='uname'></form></body>",
+      // the LIVE /vtop/login as of 2026-08-09: VTOP swapped its image captcha
+      // for invisible Google reCAPTCHA, so the page carries a hidden gResponse,
+      // no captcha image, and no #stdForm at all. Nothing is missing here — a
+      // reload would only flicker a healthy page.
+      "/recaptcha":
+        "<body><h4>VTOP Login</h4><form><input name='_csrf' type='hidden' value='x'>" +
+        "<input name='username' type='text'><input name='password' type='password'>" +
+        "<input name='gResponse' type='hidden'><button>Submit</button></form></body>",
       "/empty": "<body>   </body>",
       "/captcha": "<body><form><img class='form-control' alt='captcha'></form></body>",
+      // the case the retry exists for: login form up, captcha image missing
+      "/nocaptcha":
+        "<body><form id='stdForm'><input id='uname'><input type='password'>" +
+        "<button>Sign In</button></form></body>",
+      // the OTP step must never be reloaded — a code has already been sent
+      "/otp":
+        "<body><form id='stdForm'>An OTP has been sent to your registered email." +
+        "<input id='otpValue' maxlength='6'><button>Verify OTP</button></form></body>",
     };
     const page = await newPage(browser);
     await page.route("https://vtop.test/**", (route) => {
@@ -1671,18 +1969,80 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.goto("https://vtop.test/picker");
     await page.addScriptTag({ content: trapReloads });
     await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await page.evaluate(() => sessionStorage.removeItem("vrevamp_login_reloads"));
+    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
     const picker = await state();
-    ok("role-picker login page is NOT reloaded", picker.reloads === 0, `reloads=${picker.reloads}`);
+    ok(
+      "role-picker home page is NOT reloaded (hidden #stdForm doesn't count)",
+      picker.reloads === 0,
+      `reloads=${picker.reloads}`
+    );
 
-    // genuinely empty page: reload allowed, but capped at 2 per tab
+    // The reCAPTCHA login page — the one a student actually sees in 2026.
+    // "No captcha visible" is not a fault here, it is what invisible reCAPTCHA
+    // looks like, and the old instinct ("no captcha => reload") would flicker a
+    // page that is completely healthy.
+    await page.goto("https://vtop.test/recaptcha");
+    await page.addScriptTag({ content: trapReloads });
+    await page.evaluate(() => sessionStorage.removeItem("vrevamp_login_reloads"));
+    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    const recap = await state();
+    ok(
+      "reCAPTCHA login page is NOT reloaded (invisible captcha is not a missing one)",
+      recap.reloads === 0 && recap.counter === null,
+      JSON.stringify(recap)
+    );
+
+    // genuinely empty page: reload allowed, but capped per tab
     await page.goto("https://vtop.test/empty");
     await page.addScriptTag({ content: trapReloads });
-    for (let i = 0; i < 4; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    for (let i = 0; i < 8; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
     const empty = await state();
     ok(
-      "empty page retried at most twice",
-      empty.reloads === 2 && empty.counter === "2",
+      "empty page retried, capped at 5 per tab",
+      empty.reloads === 5 && empty.counter === "5",
       `reloads=${empty.reloads} counter=${empty.counter}`
+    );
+
+    // the cap is per TAB, so it survives navigation — clear it to test the
+    // next scenario from a clean slate rather than a spent budget
+    const resetCounter = () =>
+      page.evaluate(() => sessionStorage.removeItem("vrevamp_login_reloads"));
+
+    // the behaviour asked for on 2026-08-06: login form up, captcha missing
+    await page.goto("https://vtop.test/nocaptcha");
+    await page.addScriptTag({ content: trapReloads });
+    await resetCounter();
+    await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    const broken = await state();
+    ok(
+      "login form with no captcha IS reloaded",
+      broken.reloads === 1,
+      `reloads=${broken.reloads}`
+    );
+
+    // ...but it must stop, not flicker forever
+    await page.goto("https://vtop.test/nocaptcha");
+    await page.addScriptTag({ content: trapReloads });
+    await resetCounter();
+    for (let i = 0; i < 9; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    const brokenCapped = await state();
+    ok(
+      "captcha-less login retry is capped, never an infinite loop",
+      brokenCapped.reloads === 5,
+      `reloads=${brokenCapped.reloads}`
+    );
+
+    // the OTP step has no captcha BY DESIGN — reloading it would bin the code
+    await page.goto("https://vtop.test/otp");
+    await page.addScriptTag({ content: trapReloads });
+    await resetCounter();
+    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    const otp = await state();
+    ok(
+      "OTP step is never reloaded",
+      otp.reloads === 0,
+      `reloads=${otp.reloads}`
     );
 
     // captcha present: counter resets so the next broken load can retry again
@@ -1732,7 +2092,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             <td>R2C2</td><td>9</td></tr>
       </table></body>`);
     await shim(page, { fixedMs: fixedExam });
-    await inject(page, ["js/shared/ics.js", "js/exam_schedule.js"]);
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
     const btns = await page.evaluate(() =>
@@ -1958,6 +2318,295 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ===== exam buttons survive a restored page snapshot (live 2026-08-07) ===== */
+  console.log("\n=== exam schedule: buttons survive an innerHTML restore ===");
+  {
+    // Live symptom: the 🔔 button was on screen and a real click landed on it
+    // (proven with a capture listener) yet nothing happened at all — no note,
+    // no console error.
+    //
+    // Two causes, both fixed by js/shared/click.js:
+    //   1. the button defaulted to type="submit", so a click inside one of
+    //      VTOP's forms submitted the form and re-rendered the page;
+    //   2. handlers were per-element (`btn.onclick`), and properties do not
+    //      survive an innerHTML round-trip — which is all this page does
+    //      (saveExamSchedulePage here, `$("#main-section").html(response)` in
+    //      VTOP itself). Every round-trip left a pixel-perfect dead clone.
+    //
+    // The guards then disagreed with the breakage instead of repairing it: a
+    // `dataset` flag serialises, so it came back on the dead clones and blocked
+    // their own re-injection. The invariant now is stronger than "it re-binds":
+    // a restored clone is live ALREADY, because the handler sits on `document`
+    // and the identity is an attribute that survives exactly as the clone does.
+    const fixedExam = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const page = await newPage(browser);
+    await page.setContent(`<body><div id="main-section">
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <table class="customTable">
+        <tr><td>General (Semester)</td></tr>
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>TH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>CB-324</td>
+            <td>R3C1</td><td>5</td></tr>
+      </table></div></body>`);
+    await shim(page, { fixedMs: fixedExam });
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+    await page.evaluate(() => window.__dispatch("exam_schedule"));
+    await delay(300);
+
+    const firstPass = await page.evaluate(() => ({
+      bells: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
+      bound: document.querySelectorAll("[data-vr-action]").length,
+      // the submit bug: a type="submit" button inside a VTOP form navigates
+      // instead of running its handler
+      types: [...document.querySelectorAll("[data-vr-action]")].map((b) => b.type),
+      // must NOT outrank VTOP's own chrome: an earlier fix set z-index 1100 to
+      // clear the BlockUI overlay and ended up drawing these buttons on top of
+      // the site's open sidebar menu
+      zIndex: (() => {
+        const b = [...document.querySelectorAll("button")].find((x) => /notify me/.test(x.textContent));
+        return b ? getComputedStyle(b).zIndex : null;
+      })(),
+    }));
+    ok("first pass injects three delegated buttons", firstPass.bells === 1 && firstPass.bound === 3,
+      JSON.stringify(firstPass));
+    ok(
+      "none of them can submit the VTOP form they sit in",
+      firstPass.types.length === 3 && firstPass.types.every((t) => t === "button"),
+      JSON.stringify(firstPass.types)
+    );
+    ok(
+      "buttons do not stack above the site's own overlays",
+      firstPass.zIndex === "auto" || Number(firstPass.zIndex) <= 1011,
+      String(firstPass.zIndex)
+    );
+
+    // the exact break: snapshot the page (buttons included) and restore it,
+    // which is what saveExamSchedulePage / VTOP's .html(response) effectively do
+    const afterRestore = await page.evaluate(async () => {
+      const section = document.getElementById("main-section");
+      const snapshot = section.innerHTML; // the identity serialises with it
+      section.innerHTML = snapshot;
+      const b = [...document.querySelectorAll("button")].find((x) => /notify me/.test(x.textContent));
+      // NO message is dispatched here: the whole point is that the clone needs
+      // no repair. This is the click that used to do nothing at all.
+      b.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const note = document.querySelector(".vrevamp-exam-note");
+      return {
+        action: b ? b.dataset.vrAction : null,
+        type: b ? b.type : null,
+        note: note ? note.textContent : null,
+      };
+    });
+    ok(
+      "a clone restored from innerHTML is live with no re-injection at all",
+      afterRestore.action === "exam-bell" &&
+        afterRestore.type === "button" &&
+        !!afterRestore.note &&
+        /scheduled/.test(afterRestore.note),
+      JSON.stringify(afterRestore)
+    );
+
+    // the SPA message fires again — it must not stack a second set beside the
+    // (perfectly good) restored one
+    await page.evaluate(() => window.__dispatch("exam_schedule"));
+    await delay(300);
+    const repaired = await page.evaluate(() => ({
+      bells: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
+      bound: document.querySelectorAll("[data-vr-action]").length,
+    }));
+    ok("a later sync adds no duplicates beside the restored set",
+      repaired.bells === 1 && repaired.bound === 3, JSON.stringify(repaired));
+    await page.close();
+  }
+
+  /* ============ the fourth way a button can silently do nothing ============ */
+  console.log("\n=== injected buttons: a click eaten by VTOP's BlockUI overlay ===");
+  {
+    // Delegation fixes the button that is never wired up. It does not fix the
+    // button that is never aimed at: jQuery BlockUI, which VTOP raises for every
+    // AJAX call, covers the viewport with div.blockUI.blockOverlay at z-index
+    // 1000 — and leaves one of them at opacity ~0.001, invisible but fully
+    // click-intercepting. The click still reaches our listener on `document`,
+    // but event.target is the overlay, so closest("[data-vr-action]") finds
+    // nothing and the button is as dead as it ever was. Only a real (trusted)
+    // mouse click at a coordinate reproduces this; element.click() dispatches
+    // straight at the element and sails past the overlay, which is why every
+    // earlier test in this file missed it.
+    const fixedExam = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const page = await newPage(browser);
+    await page.setContent(`<body><div id="main-section">
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <table class="customTable">
+        <tr><td>General (Semester)</td></tr>
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>TH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>CB-324</td>
+            <td>R3C1</td><td>5</td></tr>
+      </table></div></body>`);
+    await shim(page, { fixedMs: fixedExam });
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+    await page.evaluate(() => window.__dispatch("exam_schedule"));
+    await delay(300);
+
+    // VTOP's overlay, reproduced with the exact classes and stacking it uses
+    const aim = await page.evaluate(() => {
+      const overlay = document.createElement("div");
+      overlay.className = "blockUI blockOverlay";
+      overlay.style.cssText =
+        "position:fixed;inset:0;z-index:1000;background:#000;opacity:0.001;";
+      document.body.appendChild(overlay);
+      const bell = [...document.querySelectorAll("button")].find((b) =>
+        /notify me/.test(b.textContent)
+      );
+      const r = bell.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    ok(
+      "the overlay really is what the click would hit",
+      await page.evaluate(
+        (p) => {
+          const hit = document.elementFromPoint(p.x, p.y);
+          return !!hit && hit.classList.contains("blockOverlay");
+        },
+        aim
+      )
+    );
+
+    await page.mouse.click(aim.x, aim.y);
+    await delay(400);
+    const pierced = await page.evaluate(() => {
+      const note = document.querySelector(".vrevamp-exam-note");
+      return note ? note.textContent : null;
+    });
+    ok(
+      "the click is re-aimed through the overlay and the handler runs",
+      !!pierced && /scheduled/.test(pierced),
+      pierced || "no note — the overlay still eats it"
+    );
+
+    // and the piercing must stay narrow: an overlay click nowhere near one of
+    // our buttons is still just a click on the overlay
+    const stray = await page.evaluate(() => {
+      document.querySelectorAll(".vrevamp-exam-note").forEach((n) => n.remove());
+      window.__reminders = {};
+      return true;
+    });
+    await page.mouse.click(5, 5);
+    await delay(300);
+    ok(
+      "a click elsewhere on the overlay is not re-aimed at anything",
+      stray &&
+        (await page.evaluate(
+          () =>
+            !document.querySelector(".vrevamp-exam-note") &&
+            Object.keys(window.__reminders || {}).length === 0
+        ))
+    );
+    await page.close();
+  }
+
+  /* ====== the two defects that had no coverage: submit + the DOM race ====== */
+  console.log("\n=== exam schedule: inside a <form>, and injected before the DOM lands ===");
+  {
+    const fixedExam = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const EXAM_TABLE = `
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <table class="customTable">
+        <tr><td>General (Semester)</td></tr>
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>TH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>CB-324</td>
+            <td>R3C1</td><td>5</td></tr>
+      </table>`;
+
+    // Defect 1: VTOP wraps its content in forms. A button that defaults to
+    // type="submit" submits that form on click — the page navigates and the
+    // handler's effect is gone before the user can see it. Every fixture in
+    // this file used to omit the <form>, which is exactly why 299 green tests
+    // never noticed. The form here reports any submit instead of navigating.
+    {
+      const page = await newPage(browser);
+      await page.setContent(
+        `<body><div id="main-section"><form id="stdForm" action="/vtop/submitted">${EXAM_TABLE}</form></div></body>`
+      );
+      await shim(page, { fixedMs: fixedExam });
+      await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+      await page.evaluate(() => window.__dispatch("exam_schedule"));
+      await delay(300);
+      const result = await page.evaluate(async () => {
+        window.__submits = 0;
+        document.getElementById("stdForm").addEventListener("submit", (e) => {
+          window.__submits++;
+          e.preventDefault(); // keep the harness on this page either way
+        });
+        const b = [...document.querySelectorAll("button")].find((x) => /notify me/.test(x.textContent));
+        b.click();
+        await new Promise((r) => setTimeout(r, 300));
+        const note = document.querySelector(".vrevamp-exam-note");
+        return { submits: window.__submits, note: note ? note.textContent : null };
+      });
+      ok(
+        "🔔 inside a VTOP form does not submit it",
+        result.submits === 0,
+        `submits=${result.submits}`
+      );
+      ok(
+        "and it schedules the reminders instead",
+        !!result.note && /scheduled/.test(result.note),
+        String(result.note)
+      );
+      await page.close();
+    }
+
+    // Defect 2: the trigger is chrome.webRequest.onCompleted — it fires when
+    // the response ARRIVES, not when VTOP's success callback has written it in.
+    // A single immediate sync therefore ran against a page with no schedule
+    // table at all, found nothing, and never tried again: buttons never
+    // appeared. Here the table lands 1.2 s after the message, as it does live.
+    {
+      const page = await newPage(browser);
+      await page.setContent(`<body><div id="main-section"></div></body>`);
+      await shim(page, { fixedMs: fixedExam });
+      await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+      await page.evaluate(() => window.__dispatch("exam_schedule"));
+      const immediately = await page.evaluate(
+        () => document.querySelectorAll("[data-vr-action]").length
+      );
+      await page.evaluate((html) => {
+        setTimeout(() => {
+          document.getElementById("main-section").innerHTML = html;
+        }, 1200);
+      }, EXAM_TABLE);
+      await delay(3000);
+      const eventually = await page.evaluate(() => ({
+        buttons: document.querySelectorAll("[data-vr-action]").length,
+        bells: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
+      }));
+      ok(
+        "nothing to inject into when the message arrives (the live race)",
+        immediately === 0,
+        `buttons=${immediately}`
+      );
+      ok(
+        "the retry catches the table VTOP writes 1.2 s later",
+        eventually.buttons === 3 && eventually.bells === 1,
+        JSON.stringify(eventually)
+      );
+      await page.close();
+    }
+  }
+
   /* ============ exam .ics: RFC 5545 conformance regressions ============ */
   console.log("\n=== exam .ics: UID collision + TEXT escaping (RFC 5545) ===");
   {
@@ -1983,7 +2632,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             <td>R1C2</td><td>9</td></tr>
       </table></body>`);
     await shim(page, { fixedMs: new Date("2026-04-01T09:00:00+05:30").getTime() });
-    await inject(page, ["js/shared/ics.js", "js/exam_schedule.js"]);
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
     await page.evaluate(() =>
@@ -2181,7 +2830,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await shim(page, { fixedMs: fixed, storage: {} });
     // token lives in chrome.storage.sync (shim maps all areas to one store)
     await page.evaluate(() => (window.__storage.token = "tok123"));
-    await inject(page, ["js/da_upload.js"]);
+    await inject(page, ["js/shared/click.js", "js/da_upload.js"]);
     await page.evaluate(() => window.__dispatch("da_upload"));
     await delay(800);
 
@@ -2296,6 +2945,42 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "message re-fire does not duplicate the dues column",
       dupe.headCells === 8 && dupe.dues === 1,
       JSON.stringify(dupe)
+    );
+
+    // The same clone problem the exam buttons had. These two sit in a cell of
+    // VTOP's own class table, which VTOP rewrites with .html(response) and we
+    // snapshot for the offline viewer — so their state cannot live in a closure
+    // over `upcoming`/`meta` any more than their handler could live on the
+    // element. Restore the table from its own markup and click the clone: no
+    // re-injection, no second round of fetches, and the reminders must still be
+    // the right ones for THIS course.
+    const restored = await page.evaluate(async () => {
+      window.__reminders = {};
+      // undo the earlier click in this fixture: a scheduled button disables
+      // itself, and `disabled` is an attribute — it serialises into the clone
+      // (correctly: an already-scheduled course stays scheduled)
+      const first = document.querySelector('[data-vr-action="da-bell"]');
+      first.disabled = false;
+      first.textContent = "🔔 remind me";
+      const t = document.querySelector("table.customTable");
+      t.innerHTML = t.innerHTML;
+      const bell = document.querySelector('[data-vr-action="da-bell"]');
+      bell.click();
+      await new Promise((r) => setTimeout(r, 400));
+      return {
+        text: bell.textContent,
+        keys: Object.keys(window.__reminders || {}),
+        count: (window.__reminders["da:MGT1029"] || []).length,
+        title: ((window.__reminders["da:MGT1029"] || [])[0] || {}).title,
+      };
+    });
+    ok(
+      "a DA button restored from innerHTML still knows its own course",
+      restored.count === 2 &&
+        restored.keys.length === 1 &&
+        /MGT1029 — Digital Assessment-2/.test(restored.title || "") &&
+        /✓ 2 reminder/.test(restored.text),
+      JSON.stringify(restored)
     );
     await page.close();
   }
@@ -2574,6 +3259,1463 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       });
       ok(label, !!text && /last semester/.test(text) === expectStale, text || "no card");
       await page.close();
+    }
+  }
+
+  /* ============ next-class widget: labs use the LAB time grid ============ */
+  console.log("\n=== next-class widget: lab times (own grid, not theory's) ===");
+  {
+    // Real VIT-AP columns, read off the live timetable 2026-08-04: the last
+    // theory column is 18:00-18:50 while the LAB column for the same position
+    // is 17:40-18:30. L35 was rendering at 18:00 — 20 minutes late — because
+    // only the theory header row was ever saved.
+    const fixed = new Date("2026-08-04T16:00:00+05:30").getTime();
+    const wd = new Date(fixed).getDay();
+    const code = DAY_CODES[wd];
+    const header = ["Start - End", "17:00 - 17:50", "18:00 - 18:50"];
+    const headerLab = ["Start - End", "16:40 - 17:30", "17:40 - 18:30"];
+    const mk = (withLabHeader) => ({
+      header,
+      ...(withLabHeader ? { headerLab } : {}),
+      data: [
+        {
+          day: code,
+          theory: ["", "", ""],
+          lab: ["", "", "L35-SWE2009-ELA-321-CB-ALL"],
+        },
+      ],
+    });
+
+    const render = async (tt) => {
+      const p = await newPage(browser);
+      await p.setContent("<body><div id='main-section'></div></body>");
+      await shim(p, { fixedMs: fixed, storage: { "timeTable-V1": tt } });
+      await inject(p, [
+        "js/store/store.js",
+        "js/store/saveTimeTableDetails.js",
+        "js/utils/filterRepeated.js",
+        "js/next_class.js",
+      ]);
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1200);
+      const t = await p.evaluate(() => {
+        const el = document.getElementById("vrevamp-next-class");
+        return el ? el.textContent : null;
+      });
+      await p.close();
+      return t;
+    };
+
+    const fixedText = await render(mk(true));
+    ok("lab shows its LAB start 17:40", !!fixedText && /at 17:40/.test(fixedText), fixedText || "no card");
+    ok("lab does NOT show the theory column's 18:00", !!fixedText && !/at 18:00/.test(fixedText), fixedText || "");
+    ok("countdown follows the lab start (1 h 40 min)", !!fixedText && /in 1 h 40 min/.test(fixedText), fixedText || "");
+
+    const legacyText = await render(mk(false));
+    ok(
+      "legacy save without headerLab degrades to the theory time, not a crash",
+      !!legacyText && /at 18:00/.test(legacyText),
+      legacyText || "no card"
+    );
+  }
+
+  /* =================== login OTP: webmail scanner =================== */
+  console.log("\n=== login OTP scanner (webmail tab) ===");
+  {
+    // Drives js/otp/mail_scan.js the way the service worker does: set the page
+    // text to what a webmail tab renders, send vrevamp_scan_otp, read the code.
+    const scan = async (bodyText, ignore = []) => {
+      const p = await newPage(browser);
+      await p.setContent("<body></body>");
+      await p.evaluate((t) => { document.body.innerText = t; }, bodyText);
+      await shim(p, {});
+      await inject(p, ["js/otp/mail_scan.js"]);
+      const out = await p.evaluate(
+        (ig) =>
+          new Promise((resolve) => {
+            const l = window.__listeners[window.__listeners.length - 1];
+            l({ message: "vrevamp_scan_otp", ignore: ig }, {}, resolve);
+          }),
+        ignore
+      );
+      await p.close();
+      return out && out.code;
+    };
+    // same, but keeps the rendered age the scanner worked out
+    const scanFull = async (bodyText, ignore = []) => {
+      const p = await newPage(browser);
+      await p.setContent("<body></body>");
+      await p.evaluate((t) => { document.body.innerText = t; }, bodyText);
+      await shim(p, {});
+      await inject(p, ["js/otp/mail_scan.js"]);
+      const out = await p.evaluate(
+        (ig) =>
+          new Promise((resolve) => {
+            const l = window.__listeners[window.__listeners.length - 1];
+            l({ message: "vrevamp_scan_otp", ignore: ig }, {}, resolve);
+          }),
+        ignore
+      );
+      await p.close();
+      return out;
+    };
+
+    const inbox =
+      "Inbox\nVIT VTOP  Your OTP for VTOP login is 481920. Valid for 10 minutes.  10:32 AM\n" +
+      "Amazon  Your order 3391 has shipped  09:14 AM\n© 2026 VIT University";
+
+    ok("reads the OTP out of rendered mail text", (await scan(inbox)) === "481920",
+      String(await scan(inbox)));
+
+    ok(
+      "already-used code is skipped (stale mail never refilled)",
+      (await scan(inbox, ["481920"])) === null,
+      String(await scan(inbox, ["481920"]))
+    );
+
+    ok(
+      "a newer code wins once the old one is ignored",
+      (await scan(
+        "VTOP one time password: 778812\n" + inbox,
+        ["481920"]
+      )) === "778812"
+    );
+
+    ok(
+      "copyright year next to OTP wording is not mistaken for a code",
+      (await scan("Your OTP is expired. © 2026 VIT")) === null,
+      String(await scan("Your OTP is expired. © 2026 VIT"))
+    );
+
+    ok(
+      "digits with no OTP wording anywhere are ignored",
+      (await scan("Call 9876543210 or reference 445566 for details")) === null,
+      String(await scan("Call 9876543210 or reference 445566 for details"))
+    );
+
+    ok(
+      "6-digit VTOP code beats an unrelated short number nearby",
+      (await scan("Ref 12 — verification code 902133 for VTOP")) === "902133",
+      String(await scan("Ref 12 — verification code 902133 for VTOP"))
+    );
+
+    /* ---- the live failure: an open Gmail thread reads OLDEST FIRST ---- */
+    // Reproduces the 2026-08-06 report verbatim. Every VTOP login mail lands
+    // in one conversation, Gmail renders it oldest-to-newest, and the scanner
+    // filled the TOP code — a months-old, long-expired OTP.
+    const mail = (time, ago, code) =>
+      `noreply.sdc@vitap.ac.in\n${time} (${ago})\nto me\n` +
+      "🔐 VTOP Login Verification\nOne-Time Password Request\n\nDear VITian,\n" +
+      "Use the OTP below to complete your login.\n\nYour One-Time Password\n\n" +
+      `${code}\n⏱ Expires in 3 minutes\n\nRegards,\nVTOP Team\n\n`;
+    const thread =
+      "VTOP Login OTP Needed\n" +
+      mail("11:02 PM", "2 hours ago", "233266") +
+      mail("12:31 AM", "13 minutes ago", "915298") +
+      mail("12:43 AM", "1 minute ago", "039837") +
+      mail("12:43 AM", "just now", "363453");
+
+    const live = await scanFull(thread);
+    ok(
+      "open thread: takes the NEWEST OTP, not the topmost",
+      live.code === "363453",
+      JSON.stringify(live)
+    );
+    ok(
+      "the 2-hour-old code at the top of the thread is not filled",
+      live.code !== "233266",
+      String(live.code)
+    );
+    ok("reports the winning mail's age", live.ageMin === 0, String(live.ageMin));
+
+    const aged = await scanFull(
+      "VTOP Login OTP Needed\n" + mail("9:00 PM", "4 hours ago", "778812")
+    );
+    ok(
+      "a stale-only thread still reports how old it is (caller warns)",
+      aged.code === "778812" && aged.ageMin === 240,
+      JSON.stringify(aged)
+    );
+
+    ok(
+      "newest wins even when the freshest code sits at the top",
+      (await scanFull(
+        "VTOP Login OTP Needed\n" +
+          mail("12:44 AM", "just now", "111333") +
+          mail("11:02 PM", "2 hours ago", "233266")
+      )).code === "111333",
+      "inbox-list order"
+    );
+
+    ok(
+      "no rendered ages (Outlook pane): falls back to the LAST match",
+      (await scanFull(
+        "VTOP one time password: 100001\nVTOP one time password: 200002"
+      )).code === "200002",
+      "no-age fallback"
+    );
+
+    /* ---- only noreply.sdc@vitap.ac.in is trusted ---- */
+    const other =
+      "security@github.com\n1 minute ago\nYour verification code is 654321\n\n";
+    ok(
+      "another service's fresher code is ignored, VTOP's is taken",
+      (await scanFull(other + mail("12:43 AM", "5 minutes ago", "363453"))).code ===
+        "363453",
+      JSON.stringify(await scanFull(other + mail("12:43 AM", "5 minutes ago", "363453")))
+    );
+    ok(
+      "a mailbox with no VTOP mail at all yields nothing",
+      (await scanFull(other)).code === null,
+      JSON.stringify(await scanFull(other))
+    );
+    ok(
+      "no address rendered anywhere → sender rule not enforced (Outlook pane)",
+      (await scanFull("Your one time password is 442211")).code === "442211",
+      "lenient when no address is present"
+    );
+
+    /* ---- multiple Google accounts: which mailbox am I looking at? ---- */
+    // The browser is signed into a personal AND a student account, so the
+    // caller has to tell "the mail hasn't arrived" apart from "wrong mailbox".
+    ok(
+      "personal mailbox reports no VTOP mail present",
+      (await scanFull(other)).sawVtop === false,
+      JSON.stringify(await scanFull(other))
+    );
+    ok(
+      "student mailbox reports VTOP mail present even before a fresh code",
+      (await scanFull(mail("11:02 PM", "2 hours ago", "233266"))).sawVtop === true,
+      JSON.stringify(await scanFull(mail("11:02 PM", "2 hours ago", "233266")))
+    );
+
+    /* ---- Gmail INBOX LIST: display name only, snippet truncated ---- */
+    // Verbatim from the 2026-08-06 report. The list renders "noreply.sdc"
+    // with no address at all, and cuts the preview off before the digits.
+    const inboxList =
+      "Inbox (1,147) - ruthvik.24mic7159@vitapstudent.ac.in\n" +
+      "noreply.sdc 9\tVTOP Login OTP Needed - 🔐 VTOP Login Verification " +
+      "One-Time Password Request Dear VITian, Use the OTP below...\t1:04 AM\n" +
+      "VTAPP Convenor\tReg: Call for V-TAPP 2026, T-Shirt Design - Dear Students,\t6:46 PM\n";
+    const listed = await scanFull(inboxList);
+    ok(
+      "inbox list: display name 'noreply.sdc' counts as VTOP mail present",
+      listed.sawVtop === true,
+      JSON.stringify(listed)
+    );
+    ok(
+      "inbox list: no code invented from a truncated preview",
+      listed.code === null,
+      JSON.stringify(listed)
+    );
+
+    /* ---- dating a message when Gmail has stopped saying "x minutes ago" ---- */
+    // A code that can't be dated is refused by the caller, so a bare clock
+    // time in the header has to be enough. Built inside the page so the
+    // browser's clock and timezone are the ones doing the arithmetic.
+    const clockScan = async (minutesAgo, extra = "") => {
+      const p = await newPage(browser);
+      await p.setContent("<body></body>");
+      await p.evaluate(
+        ({ mins, extra }) => {
+          const d = new Date(Date.now() - mins * 60000);
+          const ampm = d.getHours() >= 12 ? "PM" : "AM";
+          const h = d.getHours() % 12 || 12;
+          const mm = String(d.getMinutes()).padStart(2, "0");
+          document.body.innerText =
+            `noreply.sdc@vitap.ac.in\n${h}:${mm} ${ampm}\nto me\n` +
+            `${extra}Your One-Time Password\n\n915298\n`;
+        },
+        { mins: minutesAgo, extra }
+      );
+      await shim(p, {});
+      await inject(p, ["js/otp/mail_scan.js"]);
+      const out = await p.evaluate(
+        () =>
+          new Promise((resolve) => {
+            const l = window.__listeners[window.__listeners.length - 1];
+            l({ message: "vrevamp_scan_otp", ignore: [] }, {}, resolve);
+          })
+      );
+      await p.close();
+      return out;
+    };
+
+    const fresh = await clockScan(1);
+    ok(
+      "a bare clock time dates a fresh message",
+      fresh.code === "915298" && fresh.ageMin <= 2,
+      JSON.stringify(fresh)
+    );
+    const old = await clockScan(90);
+    ok(
+      "a bare clock time dates an old message as old",
+      old.ageMin >= 88 && old.ageMin <= 92,
+      JSON.stringify(old)
+    );
+    const maybe = await clockScan(1, "This code may expire. Maybe check soon.\n");
+    ok(
+      "the word 'maybe' is not read as the month May",
+      maybe.ageMin <= 2,
+      JSON.stringify(maybe)
+    );
+    const dated = await scanFull(
+      "noreply.sdc@vitap.ac.in\nAug 5, 2026\nto me\nYour One-Time Password\n\n233266\n"
+    );
+    ok(
+      "a message headed by a DATE is old, never a live 3-minute code",
+      dated.ageMin > 1000,
+      JSON.stringify(dated)
+    );
+
+    /* ---- auto-open: click VTOP's row so its body renders ---- */
+    // Gmail only puts a message body in the DOM once the mail is opened, so
+    // the scanner opens it — but ONLY when the login page asks.
+    const gmailRows =
+      "<body><table>" +
+      "<tr class='zA'><td>noreply.sdc</td>" +
+      "<td class='xY'>VTOP Login OTP Needed - One-Time Password Request. Use the OTP below</td>" +
+      "<td>1:04 AM</td></tr>" +
+      "<tr class='zA'><td>VTAPP Convenor</td>" +
+      "<td class='xY'>Call for V-TAPP T-Shirt Design</td><td>6:46 PM</td></tr>" +
+      "</table></body>";
+
+    const openRun = async (autoOpen) => {
+      const p = await newPage(browser);
+      await p.setContent(gmailRows);
+      await shim(p, {});
+      await p.evaluate(() => {
+        window.__clicked = [];
+        document.querySelectorAll("td").forEach((td) =>
+          td.addEventListener("click", (e) =>
+            window.__clicked.push(e.currentTarget.textContent.slice(0, 24))
+          )
+        );
+      });
+      await inject(p, ["js/otp/mail_scan.js"]);
+      const out = await p.evaluate(
+        (ao) =>
+          new Promise((resolve) => {
+            const l = window.__listeners[window.__listeners.length - 1];
+            l({ message: "vrevamp_scan_otp", ignore: [], autoOpen: ao }, {}, resolve);
+          }),
+        autoOpen
+      );
+      const clicked = await p.evaluate(() => window.__clicked);
+      await p.close();
+      return { out, clicked };
+    };
+
+    const opened = await openRun(true);
+    ok(
+      "auto-open clicks VTOP's row",
+      opened.clicked.length === 1 && /VTOP Login OTP/.test(opened.clicked[0]),
+      JSON.stringify(opened.clicked)
+    );
+    ok("auto-open reports back that it opened it", opened.out.opened === true, JSON.stringify(opened.out));
+    ok(
+      "the unrelated row is never clicked",
+      !opened.clicked.some((c) => /T-Shirt/.test(c)),
+      JSON.stringify(opened.clicked)
+    );
+
+    const untouched = await openRun(false);
+    ok(
+      "without autoOpen the scanner clicks nothing at all",
+      untouched.clicked.length === 0 && untouched.out.opened === false,
+      JSON.stringify(untouched)
+    );
+  }
+
+  /* ============ login OTP: filling the VTOP login form ============ */
+  console.log("\n=== login OTP autofill (VTOP login page) ===");
+  {
+    // Drives js/vtop_otp.js against a stand-in login form with the worker
+    // stubbed out, so the field-detection and never-submit rules are pinned
+    // even though the real page can only be exercised by hand.
+    const LOGIN_NAMED = `<body><form id="lf">
+      <input id="uname" maxlength="20">
+      <input id="pwd" type="password" maxlength="20">
+      <input id="captchaStr" maxlength="6">
+      <input id="otpValue" maxlength="6">
+      <button id="submitBtn" type="submit">Submit</button>
+    </form></body>`;
+    // same page, but nothing is called "otp" — forces the fallback heuristic
+    const LOGIN_UNNAMED = LOGIN_NAMED.replace('id="otpValue"', 'id="authCode"');
+    // VTOP's real OTP step: "Verify OTP" is a plain button, NOT type=submit,
+    // so Enter in the field did nothing until findSubmit() learned to match
+    // it by label.
+    const LOGIN_VERIFY = `<body><form id="lf">
+      <input id="otpValue" maxlength="6" placeholder="Enter OTP sent to your email">
+      <button id="verifyBtn" type="button">Verify OTP</button>
+    </form></body>`;
+
+    const boot = async (html, reply, seed, wait) => {
+      const p = await newPage(browser);
+      await p.setContent(html);
+      await shim(p, { storage: seed || {} });
+      await p.evaluate((r) => {
+        window.__asked = [];
+        window.__submits = 0;
+        window.__inputEvents = 0;
+        document
+          .getElementById("lf")
+          .addEventListener("submit", (e) => {
+            e.preventDefault();
+            window.__submits++;
+          });
+        document.querySelectorAll("input").forEach((el) =>
+          el.addEventListener("input", () => window.__inputEvents++)
+        );
+        window.chrome.runtime.sendMessage = (m, cb) => {
+          window.__asked.push(m);
+          if (m && m.message === "vrevamp_get_otp") {
+            cb(r);
+            return;
+          }
+          if (cb) cb(undefined);
+        };
+      }, reply);
+      await inject(p, ["js/vtop_otp.js"]);
+      await delay(wait || 1500);
+      return p;
+    };
+
+    {
+      const p = await boot(LOGIN_NAMED, { code: "481920", ageMin: 0 });
+      const s = await p.evaluate(() => ({
+        otp: document.getElementById("otpValue").value,
+        captcha: document.getElementById("captchaStr").value,
+        user: document.getElementById("uname").value,
+        submits: window.__submits,
+        focused: document.activeElement && document.activeElement.id,
+        inputs: window.__inputEvents,
+        note: document.querySelector("#lf div span")
+          ? document.querySelector("#lf div span").textContent
+          : "",
+        used: window.__storage["vrevamp_otp_used"],
+      }));
+      ok("fills the named OTP field", s.otp === "481920", JSON.stringify(s));
+      ok("leaves the captcha and username alone", s.captcha === "" && s.user === "", JSON.stringify(s));
+      ok("NEVER submits the login form", s.submits === 0, `submits=${s.submits}`);
+      ok("focuses Submit so the last press stays human", s.focused === "submitBtn", String(s.focused));
+      ok("fires an input event VTOP's validators can see", s.inputs >= 1, String(s.inputs));
+      ok("says what it filled", /Filled 481920/.test(s.note), s.note);
+      ok("remembers the code as used", JSON.stringify(s.used) === '["481920"]', JSON.stringify(s.used));
+      await p.close();
+    }
+
+    {
+      const p = await boot(LOGIN_UNNAMED, { code: "550132", ageMin: 1 });
+      const s = await p.evaluate(() => ({
+        otp: document.getElementById("authCode").value,
+        captcha: document.getElementById("captchaStr").value,
+        pwd: document.getElementById("pwd").value,
+      }));
+      ok("finds the OTP box even when it isn't called 'otp'", s.otp === "550132", JSON.stringify(s));
+      ok("fallback never picks the captcha or password box", s.captcha === "" && s.pwd === "", JSON.stringify(s));
+      await p.close();
+    }
+
+    {
+      // an expired code must NOT be typed: it would spend a login attempt on
+      // a certain rejection, and VTOP locks accounts after enough of those
+      const p = await boot(LOGIN_NAMED, { code: "915298", ageMin: 13, needsSignIn: true });
+      const s = await p.evaluate(() => ({
+        otp: document.getElementById("otpValue").value,
+        note: document.querySelector("#lf div span").textContent,
+        used: window.__storage["vrevamp_otp_used"],
+        signInShown: [...document.querySelectorAll("#lf div button")].some(
+          (b) => b.textContent.includes("Sign in to Gmail") && !b.hidden
+        ),
+      }));
+      ok("a 13-min-old code is NOT filled", s.otp === "", JSON.stringify(s));
+      ok(
+        "sign-in stays offered even when a (stale) code was found",
+        s.signInShown === true,
+        JSON.stringify(s)
+      );
+      ok("tells you to press Resend OTP", /expired.*Resend OTP/.test(s.note), s.note);
+      ok("an unfilled code isn't burned as used", s.used === undefined, JSON.stringify(s.used));
+      await p.close();
+    }
+
+    {
+      const p = await boot(LOGIN_NAMED, { code: "363453", ageMin: 0 });
+      const s = await p.evaluate(() => document.getElementById("otpValue").value);
+      ok("a fresh code still fills", s === "363453", s);
+      await p.close();
+    }
+
+    {
+      // The boundary. Sources FLOOR the age — Gmail renders "3 minutes ago"
+      // for anything from 3:00 to 3:59 — so age 3 is already past VTOP's
+      // 3-minute window, while age 2 can still be as young as 2:00.
+      const at2 = await boot(LOGIN_NAMED, { code: "111222", ageMin: 2 });
+      const v2 = await at2.evaluate(() => document.getElementById("otpValue").value);
+      ok("age 2 is still live and fills", v2 === "111222", v2);
+      await at2.close();
+
+      const at3 = await boot(LOGIN_NAMED, { code: "333444", ageMin: 3 }, {}, 5000);
+      const s3 = await at3.evaluate(() => ({
+        otp: document.getElementById("otpValue").value,
+        note: document.querySelector("#lf div span").textContent,
+      }));
+      ok("age 3 is expired and is NOT filled", s3.otp === "", JSON.stringify(s3));
+      ok(
+        "and it promises to fill the resent one",
+        /Resend OTP, I'll fill the new one/.test(s3.note),
+        s3.note
+      );
+      await at3.close();
+    }
+
+    {
+      // The watch has to outlast VTOP's ~180 s Resend cooldown, or it gives up
+      // exactly when it is about to become useful. Checked by reading the
+      // constant rather than waiting five minutes in a test.
+      const src = read("js/vtop_otp.js");
+      const giveUp = Number((src.match(/GIVE_UP_MS = (\d+)/) || [])[1]);
+      ok("the watch outlasts the Resend cooldown", giveUp >= 240000, String(giveUp));
+    }
+
+    {
+      // the real OTP page: Verify OTP must be focused so Enter submits
+      const p = await boot(LOGIN_VERIFY, { code: "363453", ageMin: 0 });
+      const s = await p.evaluate(() => ({
+        otp: document.getElementById("otpValue").value,
+        focused: document.activeElement && document.activeElement.id,
+      }));
+      ok("'Verify OTP' (not type=submit) is found and focused", s.focused === "verifyBtn", JSON.stringify(s));
+      ok("code still fills on the real OTP markup", s.otp === "363453", JSON.stringify(s));
+      await p.close();
+    }
+
+    {
+      // An UNDATED code must not be filled. Twice on 2026-08-06 an undated
+      // one turned out to be hours old, and a 3-minute code that can't be
+      // dated is a coin flip that costs a login attempt when it loses.
+      const p = await boot(LOGIN_NAMED, { code: "233266", ageMin: null }, {}, 5000);
+      const s = await p.evaluate(() => ({
+        otp: document.getElementById("otpValue").value,
+        note: document.querySelector("#lf div span").textContent,
+        used: window.__storage["vrevamp_otp_used"],
+      }));
+      ok("an undated code is NOT filled", s.otp === "", JSON.stringify(s));
+      ok("says why, and what to do about it", /undated code/.test(s.note), s.note);
+      ok("an unfilled code isn't burned as used", s.used === undefined, JSON.stringify(s.used));
+      await p.close();
+    }
+
+    {
+      // signed into the personal account only: say so instead of counting up
+      const p = await boot(LOGIN_NAMED, { code: null, sawVtop: false }, {}, 18000);
+      const s = await p.evaluate(() => document.querySelector("#lf div span").textContent);
+      ok("wrong Google account is named, not just 'waiting'", /student account/.test(s), s);
+      await p.close();
+    }
+
+    {
+      // VTOP's mail is in the tab but the code isn't rendered — the Gmail
+      // inbox list. Rather than telling the user to go and click it, ask the
+      // mail tab to open it. Requested ONCE per run, never repeatedly.
+      const p = await boot(LOGIN_NAMED, { code: null, sawVtop: true }, {}, 8000);
+      const s = await p.evaluate(() => ({
+        opens: window.__asked.filter((m) => m.autoOpen === true).length,
+        polls: window.__asked.length,
+      }));
+      ok("code not rendered → asks the mail tab to open it", s.opens === 1, JSON.stringify(s));
+      ok("the open is requested once, not every poll", s.opens < s.polls, JSON.stringify(s));
+      await p.close();
+    }
+
+    {
+      // the mail tab reports it opened the message
+      const p = await boot(LOGIN_NAMED, { code: null, sawVtop: true, opened: true }, {}, 6000);
+      const s = await p.evaluate(() => document.querySelector("#lf div span").textContent);
+      ok("says it opened the mail and is reading it", /Opened the OTP mail/.test(s), s);
+      await p.close();
+    }
+
+    {
+      // auto-open didn't take (Gmail markup moved): fall back to telling the
+      // user, rather than sitting on "waiting" for the full 90 s
+      const p = await boot(LOGIN_NAMED, { code: null, sawVtop: true, opened: false }, {}, 15000);
+      const s = await p.evaluate(() => document.querySelector("#lf div span").textContent);
+      ok("auto-open failed → asks the user to open it", /Open the newest/.test(s), s);
+      await p.close();
+    }
+
+    {
+      // Gmail tab open since before the extension reloaded: its content
+      // script is orphaned and answers nothing. Blaming the Google account
+      // there was a lie — and it must keep polling so an F5 fixes it live.
+      const p = await boot(LOGIN_NAMED, { error: "mail-tab-stale" }, {}, 7000);
+      const s = await p.evaluate(() => ({
+        note: document.querySelector("#lf div span").textContent,
+        polls: window.__asked.length,
+      }));
+      ok("stale mail tab → says to reload Gmail, not 'wrong account'", /Reload your Gmail tab/.test(s.note), s.note);
+      ok("and keeps polling so F5 recovers it", s.polls > 1, JSON.stringify(s));
+      await p.close();
+    }
+
+    {
+      const p = await boot(LOGIN_NAMED, { error: "no-mail-tab" });
+      const s = await p.evaluate(() => ({
+        otp: document.getElementById("otpValue").value,
+        note: document.querySelector("#lf div span").textContent,
+        asks: window.__asked.length,
+      }));
+      ok("no webmail tab open → asks the user to open one", /Open your student mail/.test(s.note), s.note);
+      ok("nothing typed into the form when there's no code", s.otp === "", s.otp);
+      ok("stops asking instead of polling for 90 s", s.asks === 1, String(s.asks));
+      await p.close();
+    }
+
+    {
+      // a code filled earlier must not be auto-refilled from a stale mail...
+      const p = await boot(LOGIN_NAMED, { code: null }, { vrevamp_otp_used: ["111111"] });
+      const auto = await p.evaluate(() => window.__asked[0].ignore);
+      ok("automatic run skips codes already used", JSON.stringify(auto) === '["111111"]', JSON.stringify(auto));
+
+      // ...and a manual click does NOT clear that list. An earlier version
+      // did, on the theory that a failed captcha leaves the same OTP valid —
+      // and that is exactly what put a long-dead code back in the box.
+      await p.evaluate(() => {
+        window.__asked = [];
+        document.querySelector("#lf div button").click();
+      });
+      await delay(300);
+      const manual = await p.evaluate(() => window.__asked[0].ignore);
+      ok(
+        "clicking the button still skips used codes",
+        JSON.stringify(manual) === '["111111"]',
+        JSON.stringify(manual)
+      );
+      await p.close();
+    }
+
+    {
+      // 3 attempts at POLL_MS=3000 apart, so ~6 s of real time
+      const p = await boot(LOGIN_NAMED, { error: "forbidden" }, {}, 8000);
+      const s = await p.evaluate(() => ({
+        note: document.querySelector("#lf div span").textContent,
+        asks: window.__asked.length,
+      }));
+      ok("a broken worker is reported, not spun on", /Extension error/.test(s.note), s.note);
+      ok("gives up after 3 tries, not 90 s", s.asks === 3, String(s.asks));
+      await p.close();
+    }
+
+    {
+      const p = await newPage(browser);
+      await p.setContent(LOGIN_NAMED);
+      await shim(p, {});
+      await inject(p, ["js/vtop_otp.js"]);
+      await delay(900);
+      const kind = await p.evaluate(() => {
+        const b = document.querySelector("#lf div button");
+        return b ? b.type : null;
+      });
+      ok("its own button is type=button (can't submit the form)", kind === "button", String(kind));
+      await p.close();
+    }
+
+    /* ---- the Gmail sign-in button is opt-in, and invisible without a client ---- */
+    {
+      // GMAIL_CLIENT_ID blank -> the worker never sets needsSignIn -> an
+      // install that could never complete the flow is never offered it.
+      const p = await boot(LOGIN_NAMED, { code: null, sawVtop: false }, {}, 5000);
+      const shown = await p.evaluate(() =>
+        [...document.querySelectorAll("#lf div button")].some(
+          (b) => b.textContent.includes("Sign in to Gmail") && !b.hidden
+        )
+      );
+      ok("no client id configured → no sign-in button at all", shown === false, String(shown));
+      await p.close();
+    }
+
+    {
+      const p = await newPage(browser);
+      await p.setContent(LOGIN_NAMED);
+      await shim(p, {});
+      await p.evaluate(() => {
+        window.__signins = 0;
+        window.__signedIn = false;
+        window.chrome.runtime.sendMessage = (m, cb) => {
+          if (m.message === "vrevamp_get_otp")
+            return cb({ code: null, sawVtop: false, needsSignIn: !window.__signedIn });
+          if (m.message === "vrevamp_gmail_signin") {
+            window.__signins++;
+            window.__signedIn = true;
+            return cb({ ok: true });
+          }
+          return cb(undefined);
+        };
+      });
+      await inject(p, ["js/vtop_otp.js"]);
+      await delay(1200);
+      const offered = await p.evaluate(() =>
+        [...document.querySelectorAll("#lf div button")].some(
+          (b) => b.textContent.includes("Sign in to Gmail") && !b.hidden
+        )
+      );
+      ok("client id configured + no consent yet → button offered", offered === true, String(offered));
+
+      await p.evaluate(() =>
+        [...document.querySelectorAll("#lf div button")]
+          .find((b) => b.textContent.includes("Sign in to Gmail"))
+          .click()
+      );
+      await delay(500);
+      const after = await p.evaluate(() => ({
+        signins: window.__signins,
+        stillOffered: [...document.querySelectorAll("#lf div button")].some(
+          (b) => b.textContent.includes("Sign in to Gmail") && !b.hidden
+        ),
+      }));
+      ok("clicking it runs the consent flow once", after.signins === 1, JSON.stringify(after));
+      ok("and it goes away once consent is granted", after.stillOffered === false, JSON.stringify(after));
+      await p.close();
+    }
+
+  }
+
+  /* ====== service worker: boots, and reads an OTP out of a Gmail body ====== */
+  console.log("\n=== service worker: startup + Gmail-API OTP extraction ===");
+  {
+    // Boot background.js with ONLY the chrome namespaces manifest.json grants.
+    // A worker that throws on startup answers no messages at all, which is
+    // indistinguishable from a code bug from the content script's side — and
+    // is exactly what had to be ruled out by hand on 2026-08-06.
+    const manifest = JSON.parse(read("manifest.json"));
+    const granted = new Set(manifest.permissions || []);
+    const evt = () => ({ addListener: () => {}, removeListener: () => {} });
+    const nsProxy = (seed = {}) =>
+      new Proxy({ ...seed }, {
+        get(t, k) {
+          if (k in t) return t[k];
+          if (typeof k === "string" && /^on[A-Z]/.test(k)) return (t[k] = evt());
+          return (t[k] = (...a) => {
+            const cb = a[a.length - 1];
+            if (typeof cb === "function") return cb(undefined);
+            return Promise.resolve(undefined);
+          });
+        },
+      });
+
+    const chromeStub = {
+      runtime: nsProxy({ lastError: null, getManifest: () => manifest, id: "test" }),
+    };
+    if (manifest.action) chromeStub.action = nsProxy();
+    for (const p of granted) {
+      if (p === "storage") chromeStub.storage = { local: nsProxy(), session: nsProxy(), sync: nsProxy() };
+      else chromeStub[p] = nsProxy();
+    }
+    const missing = [];
+    const guarded = new Proxy(chromeStub, {
+      get(t, k) {
+        if (!(k in t) && typeof k === "string") { missing.push(k); return undefined; }
+        return t[k];
+      },
+    });
+
+    const ctx = vm.createContext({
+      chrome: guarded, console, setTimeout, clearTimeout, setInterval, clearInterval,
+      fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+      URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, atob, btoa,
+    });
+    ctx.self = ctx;
+    ctx.globalThis = ctx;
+
+    let booted = true;
+    let bootError = "";
+    try {
+      vm.runInContext(read("service_worker/background.js"), ctx, { filename: "background.js" });
+    } catch (e) {
+      booted = false;
+      bootError = `${e.constructor.name}: ${e.message}`;
+    }
+    ok("service worker boots with only its granted permissions", booted, bootError);
+    ok(
+      "no chrome namespace used that the manifest doesn't permit",
+      missing.length === 0,
+      [...new Set(missing)].join(", ")
+    );
+
+    const extract = ctx.__vrevampOtpFromMailText;
+    if (typeof extract !== "function") {
+      ok("worker exposes the Gmail OTP extractor", false, "missing");
+    } else {
+      // the real mail body, as the Gmail API hands it back
+      const body =
+        "🔐 VTOP Login Verification\nOne-Time Password Request\n\nDear VITian,\n" +
+        "Use the OTP below to complete your login. This code is valid for a " +
+        "limited time only.\n\nYour One-Time Password\n\n915298\n" +
+        "⏱ Expires in 3 minutes\n\nRegards,\nVTOP Team\n" +
+        "Copyright © 2026 Software Development Cell, VIT-AP University, " +
+        "Andhra Pradesh-522241.";
+      ok("reads the code from a Gmail message body", extract(body, []) === "915298", String(extract(body, [])));
+      ok("skips a code already used", extract(body, ["915298"]) === null, String(extract(body, ["915298"])));
+      ok(
+        "the copyright year is not mistaken for a code",
+        extract("Your OTP expired. Copyright © 2026 VIT-AP", []) === null,
+        String(extract("Your OTP expired. Copyright © 2026 VIT-AP", []))
+      );
+      ok(
+        "a 6-digit code beats other numbers in the same mail",
+        extract("Reference 4471 — your one time password is 778812", []) === "778812",
+        String(extract("Reference 4471 — your one time password is 778812", []))
+      );
+    }
+  }
+
+  console.log("\n=== service worker: vrevamp_get_otp message handling ===");
+  {
+    // The startup test above proves background.js LOADS. This one drives the
+    // message it exists to answer, because every bug found on 2026-08-06 lived
+    // past startup: a `const` read one branch too early (a ReferenceError that
+    // only fires when no mail tab is open), and a `return` that put the whole
+    // Gmail-API route behind the mail tab it was written to make unnecessary.
+    const manifest = JSON.parse(read("manifest.json"));
+
+    // opts: { tabs, token, messages, sendMessage }
+    const bootWorker = (opts = {}) => {
+      const calls = { executeScript: [], sendMessage: [] };
+      const listeners = [];
+      const evt = () => ({ addListener: () => {}, removeListener: () => {} });
+      const nsProxy = (seed = {}) =>
+        new Proxy({ ...seed }, {
+          get(t, k) {
+            if (k in t) return t[k];
+            if (typeof k === "string" && /^on[A-Z]/.test(k)) return (t[k] = evt());
+            return (t[k] = (...a) => {
+              const cb = a[a.length - 1];
+              if (typeof cb === "function") return cb(undefined);
+              return Promise.resolve(undefined);
+            });
+          },
+        });
+
+      const store = {};
+      if (opts.token) store.vrevamp_gmail_token = opts.token;
+
+      const chromeStub = {
+        runtime: nsProxy({
+          lastError: null,
+          id: "test",
+          getManifest: () => manifest,
+          onMessage: {
+            addListener: (fn) => listeners.push(fn),
+            removeListener: () => {},
+          },
+        }),
+        storage: {
+          local: nsProxy({
+            get: (keys) => {
+              const out = {};
+              for (const k of [].concat(keys)) if (k in store) out[k] = store[k];
+              return Promise.resolve(out);
+            },
+            set: (obj) => (Object.assign(store, obj), Promise.resolve()),
+            remove: (keys) => {
+              for (const k of [].concat(keys)) delete store[k];
+              return Promise.resolve();
+            },
+          }),
+          session: nsProxy(),
+          sync: nsProxy(),
+        },
+        tabs: nsProxy({
+          query: () => Promise.resolve(opts.tabs || []),
+          sendMessage: (tabId, msg) => {
+            calls.sendMessage.push(tabId);
+            return (opts.sendMessage || (() => Promise.reject(new Error("no receiver"))))(
+              tabId,
+              msg,
+              calls
+            );
+          },
+        }),
+        scripting: nsProxy({
+          executeScript: (arg) => {
+            calls.executeScript.push(arg);
+            return Promise.resolve([]);
+          },
+        }),
+        identity: nsProxy({
+          getRedirectURL: () => "https://ext.chromiumapp.org/",
+          // no consent granted: the silent flow is what really happens here
+          launchWebAuthFlow: () => Promise.reject(new Error("no consent")),
+        }),
+      };
+      for (const p of manifest.permissions || []) {
+        if (!chromeStub[p]) chromeStub[p] = nsProxy();
+      }
+      if (manifest.action) chromeStub.action = nsProxy();
+
+      const ctx = vm.createContext({
+        chrome: chromeStub,
+        console,
+        setTimeout,
+        clearTimeout,
+        setInterval,
+        clearInterval,
+        fetch:
+          opts.fetch ||
+          (() =>
+            Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })),
+        URL,
+        URLSearchParams,
+        TextEncoder,
+        TextDecoder,
+        structuredClone,
+        atob,
+        btoa,
+      });
+      ctx.self = ctx;
+      ctx.globalThis = ctx;
+      vm.runInContext(read("service_worker/background.js"), ctx, {
+        filename: "background.js",
+      });
+
+      const ask = (request) =>
+        new Promise((resolve) => {
+          let settled = false;
+          const done = (r) => {
+            if (settled) return;
+            settled = true;
+            resolve(r);
+          };
+          const sender = { url: "https://vtop.vitap.ac.in/vtop/login" };
+          for (const fn of listeners) {
+            try {
+              fn(request, sender, done);
+            } catch (e) {
+              done({ error: `THREW ${e.constructor.name}: ${e.message}` });
+            }
+          }
+          setTimeout(() => done({ error: "no response" }), 2000);
+        });
+
+      return { ask, calls, store };
+    };
+
+    // 1. No mail tab, no Gmail consent. The honest answer is "open your mail",
+    //    plus the sign-in button that makes the tab unnecessary. Before the
+    //    fix this branch read `needsSignIn` above its own `const` and the user
+    //    was told "Extension error" instead.
+    {
+      const { ask } = bootWorker({ tabs: [] });
+      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      ok(
+        "no mail tab open → 'no-mail-tab', not a ReferenceError",
+        r && r.error === "no-mail-tab",
+        JSON.stringify(r)
+      );
+      ok(
+        "and the sign-in escape hatch is offered there",
+        !!(r && r.needsSignIn),
+        JSON.stringify(r)
+      );
+    }
+
+    // 2. Signed in to the Gmail API, no mail sent yet, and no mail tab open at
+    //    all. That combination has to keep the caller polling: the API route
+    //    does not need a tab, so reporting "no-mail-tab" would kill the watch
+    //    of the one user for whom everything is set up correctly.
+    {
+      const { ask } = bootWorker({
+        tabs: [],
+        token: { token: "live", exp: Date.now() + 3600000 },
+        fetch: () =>
+          Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+      });
+      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      ok(
+        "signed in + no mail yet → keeps polling, no error",
+        !!r && !r.error && r.code === null,
+        JSON.stringify(r)
+      );
+    }
+
+    // 3. A mail tab whose content script was orphaned by an extension reload.
+    //    It answers nothing on the first ask; the scanner is injected and the
+    //    second ask succeeds — no "press F5 over there" for the user to miss.
+    {
+      let asked = 0;
+      const { ask, calls } = bootWorker({
+        tabs: [{ id: 7, url: "https://mail.google.com/mail/u/0/#inbox" }],
+        sendMessage: () => {
+          asked += 1;
+          if (asked === 1) return Promise.reject(new Error("Receiving end does not exist"));
+          return Promise.resolve({ code: "424242", ageMin: 1, sawVtop: true, host: "mail.google.com" });
+        },
+      });
+      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      ok(
+        "orphaned mail tab is re-injected instead of being called stale",
+        calls.executeScript.length === 1,
+        JSON.stringify(calls.executeScript)
+      );
+      ok(
+        "and the code comes back on the retry — 424242",
+        !!r && r.code === "424242",
+        JSON.stringify(r)
+      );
+      ok(
+        "the file injected is the scanner itself",
+        calls.executeScript[0] &&
+          (calls.executeScript[0].files || []).includes("js/otp/mail_scan.js"),
+        JSON.stringify(calls.executeScript[0])
+      );
+    }
+
+    // 4. A tab that cannot be reached even after injection is still reported
+    //    as stale rather than silently swallowed.
+    {
+      const { ask } = bootWorker({
+        tabs: [{ id: 9, url: "https://mail.google.com/mail/u/0/#inbox" }],
+        sendMessage: () => Promise.reject(new Error("Receiving end does not exist")),
+      });
+      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      ok(
+        "unreachable mail tab still reports 'mail-tab-stale'",
+        !!r && r.error === "mail-tab-stale",
+        JSON.stringify(r)
+      );
+    }
+
+    // 5. The sender check still holds: only a VTOP page may trigger a mail read.
+    {
+      const { ask } = bootWorker({ tabs: [] });
+      const r = await new Promise((resolve) => {
+        const listenersRan = ask({ message: "vrevamp_get_otp", ignore: [] });
+        resolve(listenersRan);
+      });
+      ok("a VTOP sender is accepted", !!r && r.error !== "forbidden", JSON.stringify(r));
+    }
+  }
+
+  /* ====== Google Calendar import: finding Save, and letting the user press it ====== */
+  console.log("\n=== timetable → Google Calendar: the Save button, and pacing ===");
+  {
+    // Reported symptom: "the calendar is reloaded with each subject before we
+    // can see it and click Add, so it doesn't work." Two causes.
+    const swSrc = read("service_worker/background.js");
+    const at = swSrc.indexOf("const gcalClickSave");
+    const clickSaveSrc = swSrc.slice(at, swSrc.indexOf("\n};", at) + 3);
+
+    // Cause 1: Google Calendar's Save is a <div role="button">, not a <button>.
+    // The old search was querySelectorAll("button"), so it found nothing on a
+    // perfectly ordinary editor and reported "no-button" for every class.
+    {
+      const page = await newPage(browser);
+      // Modelled on the LIVE editor (checked 2026-08-09): Save is a real
+      // <button aria-label="Save">, and Google tears the editor down once the
+      // event is written. The div[role=button] beside it is the defensive case.
+      await page.setContent(`<body>
+        <button aria-label="Save" id="save">Save</button>
+        <div role="button" aria-label="Close">Close</div>
+        <span>Saved</span>
+      </body>`);
+      const out = await page.evaluate(
+        `(async () => {
+           ${clickSaveSrc}
+           window.__clicked = null;
+           document.getElementById("save").addEventListener("click", () => {
+             window.__clicked = "save";
+             document.getElementById("save").remove(); // Google closes the editor
+           });
+           const r = await gcalClickSave();
+           return { r, clicked: window.__clicked };
+         })()`
+      );
+      ok(
+        "Save is clicked, and 'saved' waits for the editor to actually close",
+        out.r === "saved" && out.clicked === "save",
+        JSON.stringify(out)
+      );
+
+      // The failure that matters: the click lands but the editor never goes
+      // away. Reporting "saved" there would be a lie, and the worker would
+      // close the tab on a write that never happened.
+      await page.setContent(`<body><button aria-label="Save" id="s">Save</button></body>`);
+      const stuck = await page.evaluate(
+        `(async () => { ${clickSaveSrc} return await gcalClickSave(); })()`
+      );
+      ok(
+        "a Save that changes nothing reports 'stuck', never 'saved'",
+        stuck === "stuck",
+        String(stuck)
+      );
+
+      await page.setContent(`<body><span>Saved</span><div role="button">Cancel</div></body>`);
+      const none = await page.evaluate(
+        `(async () => { ${clickSaveSrc} return await gcalClickSave(); })()`
+      );
+      ok(
+        "a page with no Save still reports no-button ('Saved' is not a control)",
+        none === "no-button",
+        String(none)
+      );
+      await page.close();
+    }
+
+    // Cause 2: when it cannot press Save, the import used to open, fail and
+    // close three tabs in a row — fast enough that nobody could reach for Save
+    // by hand. A "no-button" is structural: it will fail identically on all 40
+    // classes, so it must stop after ONE.
+    const manifest = JSON.parse(read("manifest.json"));
+    const bootGcal = (opts = {}) => {
+      const listeners = [];
+      const created = [];
+      const removed = [];
+      const tabs = new Map();
+      // Whether the prefilled editor is still on screen in that tab. This, not
+      // the URL, is what the worker now asks about: the 2026 Calendar UI opens
+      // a TEMPLATE as an overlay on /calendar/u/0/r and never puts "eventedit"
+      // in the address bar, so the URL is byte-identical before and after a
+      // save. Reading it was why every event was declared saved instantly.
+      const editors = new Map();
+      let nextId = 100;
+      const evt = () => ({ addListener: () => {}, removeListener: () => {} });
+      const nsProxy = (seed = {}) =>
+        new Proxy({ ...seed }, {
+          get(t, k) {
+            if (k in t) return t[k];
+            if (typeof k === "string" && /^on[A-Z]/.test(k)) return (t[k] = evt());
+            return (t[k] = (...a) => {
+              const cb = a[a.length - 1];
+              if (typeof cb === "function") return cb(undefined);
+              return Promise.resolve(undefined);
+            });
+          },
+        });
+      const chromeStub = {
+        runtime: nsProxy({
+          lastError: null,
+          id: "test",
+          getManifest: () => manifest,
+          onMessage: { addListener: (fn) => listeners.push(fn), removeListener: () => {} },
+        }),
+        storage: { local: nsProxy(), session: nsProxy(), sync: nsProxy() },
+        tabs: nsProxy({
+          create: ({ url, active }) => {
+            const id = nextId++;
+            created.push({ id, url, active });
+            // live shape: the TEMPLATE link redirects into /eventedit, and
+            // leaves it again once Google has written the event
+            tabs.set(id, {
+              id,
+              status: "complete",
+              url: "https://calendar.google.com/calendar/u/0/r/eventedit?text=x",
+            });
+            editors.set(id, true);
+            if (opts.onCreate) opts.onCreate(created.length - 1, id, { tabs, editors });
+            return Promise.resolve({ id });
+          },
+          // callback form (waitTabComplete) and promise form (waitGcalSaved)
+          get: (id, cb) => {
+            const t = tabs.get(id);
+            if (cb) {
+              cb(t);
+              return undefined;
+            }
+            return t ? Promise.resolve(t) : Promise.reject(new Error("No tab with id"));
+          },
+          remove: (id) => (removed.push(id), tabs.delete(id), Promise.resolve()),
+          sendMessage: () => Promise.resolve(),
+        }),
+        scripting: nsProxy({
+          executeScript: ({ target, func }) =>
+            Promise.resolve([
+              {
+                result:
+                  func && func.name === "gcalEditorOpen"
+                    ? !!editors.get(target.tabId)
+                    : opts.saveResult || "no-button",
+              },
+            ]),
+        }),
+      };
+      for (const p of manifest.permissions || []) if (!chromeStub[p]) chromeStub[p] = nsProxy();
+      if (manifest.action) chromeStub.action = nsProxy();
+      const ctx = vm.createContext({
+        chrome: chromeStub, console, setTimeout, clearTimeout, setInterval, clearInterval,
+        fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+        URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, atob, btoa,
+      });
+      ctx.self = ctx;
+      ctx.globalThis = ctx;
+      vm.runInContext(swSrc, ctx, { filename: "background.js" });
+      const ask = (request) =>
+        new Promise((resolve) => {
+          let settled = false;
+          const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+          const sender = { tab: { id: 1 }, url: "https://vtop.vitap.ac.in/vtop/content" };
+          for (const fn of listeners) { try { fn(request, sender, done); } catch (e) { done({ error: String(e) }); } }
+          setTimeout(() => done({ error: "no response" }), 25000);
+        });
+      return { ask, created, removed, tabs };
+    };
+
+    {
+      const urls = ["u1", "u2", "u3", "u4", "u5"].map(
+        (u) => `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${u}`
+      );
+      const { ask, created } = bootGcal({ saveResult: "no-button" });
+      const r = await ask({ message: "gcal_template_import", urls });
+      ok(
+        "an unpressable Save stops after ONE tab, not a strobe of them",
+        created.length === 1 && r && r.saved === 0 && r.lastError === "no-button",
+        JSON.stringify({ tabs: created.length, r })
+      );
+    }
+
+    // The guided path: one FOREGROUND tab at a time, and the next does not open
+    // until this one is saved. This is the answer to "we can't see it and click
+    // Add" — the pacing belongs to the student, not to a timer.
+    {
+      const urls = ["a", "b", "c"].map(
+        (u) => `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${u}`
+      );
+      const { ask, created, removed } = bootGcal({
+        // the student presses Save: the overlay closes, URL unchanged
+        onCreate: (_i, id, { tabs, editors }) =>
+          setTimeout(() => {
+            editors.set(id, false);
+            const t = tabs.get(id);
+            if (t) t.url = "https://calendar.google.com/calendar/u/0/r/week";
+          }, 100),
+      });
+      const r = await ask({ message: "gcal_guided_import", urls });
+      ok(
+        "guided import saves each event the student presses Save on",
+        r && r.saved === 3 && r.total === 3 && !r.stopped,
+        JSON.stringify(r)
+      );
+      ok(
+        "and every tab is opened in the foreground, one at a time, then closed",
+        created.length === 3 && created.every((c) => c.active === true) && removed.length === 3,
+        JSON.stringify({ created, removed })
+      );
+    }
+
+    // Closing the tab is how you cancel. Opening more tabs at someone who is
+    // closing them is the exact behaviour being fixed here.
+    {
+      const urls = ["a", "b", "c"].map(
+        (u) => `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${u}`
+      );
+      const { ask, created } = bootGcal({
+        onCreate: (i, id, { tabs, editors }) =>
+          setTimeout(() => {
+            if (i === 1) {
+              tabs.delete(id); // student closes the second one
+              return;
+            }
+            editors.set(id, false); // saved
+            const t = tabs.get(id);
+            if (t) t.url = "https://calendar.google.com/calendar/u/0/r/week";
+          }, 100),
+      });
+      const r = await ask({ message: "gcal_guided_import", urls });
+      ok(
+        "closing the tab stops the run and reports what was already saved",
+        r && r.saved === 1 && r.stopped === "closed" && created.length === 2,
+        JSON.stringify({ r, tabs: created.length })
+      );
+    }
+  }
+
+  /* ====== Google Calendar: the token that makes "push all" possible ====== */
+  console.log("\n=== Google Calendar token: launchWebAuthFlow, not the dead client ===");
+  {
+    // The whole reason the timetable import degrades to pressing Save once per
+    // class is that its only token route was getAuthToken on
+    // manifest.oauth2.client_id — upstream's dead client. The Gmail OTP feature
+    // already proved the working shape (a Web-application client + a
+    // chromiumapp.org redirect via launchWebAuthFlow); this wires Calendar to
+    // the same one, so every existing API path starts working untouched.
+    const manifest = JSON.parse(read("manifest.json"));
+    const swSrc = read("service_worker/background.js");
+
+    const bootAuth = (opts = {}) => {
+      const listeners = [];
+      const store = { ...(opts.store || {}) };
+      const calls = { webAuth: [], getAuthToken: 0 };
+      const evt = () => ({ addListener: () => {}, removeListener: () => {} });
+      const nsProxy = (seed = {}) =>
+        new Proxy({ ...seed }, {
+          get(t, k) {
+            if (k in t) return t[k];
+            if (typeof k === "string" && /^on[A-Z]/.test(k)) return (t[k] = evt());
+            return (t[k] = (...a) => {
+              const cb = a[a.length - 1];
+              if (typeof cb === "function") return cb(undefined);
+              return Promise.resolve(undefined);
+            });
+          },
+        });
+      const chromeStub = {
+        runtime: nsProxy({
+          lastError: null,
+          id: "test",
+          getManifest: () => manifest,
+          onMessage: { addListener: (fn) => listeners.push(fn), removeListener: () => {} },
+        }),
+        storage: {
+          local: nsProxy({
+            get: (keys) => {
+              const out = {};
+              for (const k of [].concat(keys)) if (k in store) out[k] = store[k];
+              return Promise.resolve(out);
+            },
+            set: (obj) => (Object.assign(store, obj), Promise.resolve()),
+            remove: (keys) => {
+              for (const k of [].concat(keys)) delete store[k];
+              return Promise.resolve();
+            },
+          }),
+          session: nsProxy(),
+          sync: nsProxy({ set: () => Promise.resolve() }),
+        },
+        tabs: nsProxy(),
+        scripting: nsProxy(),
+        identity: nsProxy({
+          getRedirectURL: () => "https://test-ext-id.chromiumapp.org/",
+          launchWebAuthFlow: ({ url }) => {
+            calls.webAuth.push(url);
+            return opts.webAuth
+              ? opts.webAuth(url)
+              : Promise.resolve(
+                  "https://test-ext-id.chromiumapp.org/#access_token=CAL-TOKEN&expires_in=3600"
+                );
+          },
+          getAuthToken: (o, cb) => {
+            calls.getAuthToken += 1;
+            cb(opts.legacyToken || undefined);
+          },
+          removeCachedAuthToken: (o, cb) => cb && cb(),
+        }),
+      };
+      for (const p of manifest.permissions || []) if (!chromeStub[p]) chromeStub[p] = nsProxy();
+      if (manifest.action) chromeStub.action = nsProxy();
+      const ctx = vm.createContext({
+        chrome: chromeStub, console, setTimeout, clearTimeout, setInterval, clearInterval,
+        fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+        URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, atob, btoa,
+      });
+      ctx.self = ctx;
+      ctx.globalThis = ctx;
+      // opts.noClient blanks the pasted constant, so the "not configured yet"
+      // guarantee stays testable now that the shipped build HAS an id in it
+      const src = opts.noClient
+        ? swSrc.replace(/const CALENDAR_CLIENT_ID = .*;/, 'const CALENDAR_CLIENT_ID = "";')
+        : swSrc;
+      vm.runInContext(src, ctx, { filename: "background.js" });
+      const ask = (request) =>
+        new Promise((resolve) => {
+          let settled = false;
+          const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+          const sender = { tab: { id: 1 }, url: "https://vtop.vitap.ac.in/vtop/content" };
+          for (const fn of listeners) { try { fn(request, sender, done); } catch (e) { done({ error: String(e) }); } }
+          setTimeout(() => done({ error: "no response" }), 8000);
+        });
+      return { ask, calls, store };
+    };
+
+    // The shipped build is configured — this is the line that decides whether
+    // a student presses Save forty times or clicks once, so it gets an
+    // assertion rather than a comment.
+    ok(
+      "the build ships a Calendar client id (Calendar API path is live)",
+      /const CALENDAR_CLIENT_ID = (?!"")\S/.test(swSrc),
+      (swSrc.match(/const CALENDAR_CLIENT_ID = .*/) || ["missing"])[0]
+    );
+
+    // Unconfigured: nothing changes. The no-sign-in TEMPLATE paths are still
+    // the ones that run, so leaving the constant blank cannot regress anyone.
+    {
+      const { ask, calls } = bootAuth({ noClient: true });
+      const r = await ask({ message: "get_google_token" });
+      ok(
+        "with no Calendar client id, the legacy getAuthToken route still runs",
+        calls.getAuthToken === 1 && calls.webAuth.length === 0 && r && r.token === null,
+        JSON.stringify({ calls, r })
+      );
+    }
+
+    // Configured: a real token, from our own client, for every caller at once.
+    {
+      const { ask, calls, store } = bootAuth({
+        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com" },
+      });
+      const r = await ask({ message: "get_google_token", interactive: true });
+      const url = calls.webAuth[0] || "";
+      ok(
+        "a Calendar client id switches the token route to launchWebAuthFlow",
+        r && r.token === "CAL-TOKEN" && calls.getAuthToken === 0,
+        JSON.stringify({ r, legacyCalls: calls.getAuthToken })
+      );
+      ok(
+        "and it asks for calendar.events against OUR client, on the chromiumapp redirect",
+        url.includes("client_id=999-cal.apps.googleusercontent.com") &&
+          url.includes(encodeURIComponent("https://www.googleapis.com/auth/calendar.events")) &&
+          url.includes(encodeURIComponent("https://test-ext-id.chromiumapp.org/")),
+        url
+      );
+      ok(
+        "the token is cached with an expiry, so the next click is silent",
+        !!store.vrevamp_calendar_token &&
+          store.vrevamp_calendar_token.token === "CAL-TOKEN" &&
+          store.vrevamp_calendar_token.exp > Date.now(),
+        JSON.stringify(store.vrevamp_calendar_token)
+      );
+    }
+
+    // The failure this setup actually produces: consent refused because
+    // calendar.events was never added to the consent screen, or the Calendar
+    // API is not enabled on the project. Reporting that as "you closed the
+    // window" sends someone hunting through Chrome instead of Cloud Console.
+    {
+      const { ask } = bootAuth({
+        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com" },
+        webAuth: () =>
+          Promise.resolve(
+            "https://test-ext-id.chromiumapp.org/#error=invalid_scope&error_description=Some+requested+scopes+were+invalid"
+          ),
+      });
+      const r = await ask({ message: "get_google_token", interactive: true });
+      ok(
+        "a refused scope is reported in Google's own words, not as a closed window",
+        r && r.token === null && /invalid|scope/i.test(r.error || ""),
+        JSON.stringify(r)
+      );
+    }
+
+    // A 401 mid-import must not be answered with the same dead token forever.
+    {
+      let issued = 0;
+      const { ask } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_calendar_token: { token: "OLD", exp: Date.now() + 3600000 },
+        },
+        webAuth: () =>
+          Promise.resolve(
+            `https://test-ext-id.chromiumapp.org/#access_token=FRESH${++issued}&expires_in=3600`
+          ),
+      });
+      const cached = await ask({ message: "get_google_token" });
+      const fresh = await ask({ message: "get_google_token", stale: "OLD", interactive: true });
+      ok(
+        "a cached token is reused, and `stale` forces a fresh one",
+        cached && cached.token === "OLD" && fresh && fresh.token === "FRESH1",
+        JSON.stringify({ cached: cached && cached.token, fresh: fresh && fresh.token })
+      );
     }
   }
 

@@ -58,7 +58,21 @@
       return null;
     // saved header keeps repeated time columns; filterRepeated collapses them
     // so index i aligns with the de-duplicated theory/lab rows
-    const header = filterRepeated(timetable.header);
+    // Collapse repeated time columns by the SAME kept indices for both grids,
+    // so headerLab[i] still describes the column theory header[i] describes.
+    // (filterRepeated(headerLab) on its own could drop different positions and
+    // silently shift every lab time by a column.)
+    const seen = new Set();
+    const keep = [];
+    timetable.header.forEach((h, i) => {
+      if (seen.has(h)) return;
+      seen.add(h);
+      keep.push(i);
+    });
+    const header = keep.map((i) => timetable.header[i]);
+    const rawLab = Array.isArray(timetable.headerLab) ? timetable.headerLab : [];
+    const headerLab = keep.map((i) => rawLab[i]);
+
     const today = new Date().getDay();
     const row = timetable.data.find((r) => dayToNum(r.day) === today);
     if (!row) return [];
@@ -66,10 +80,17 @@
     const lab = Array.isArray(row.lab) ? row.lab : [];
     const classes = [];
     for (let i = 1; i < header.length; i++) {
-      const range = parseRange(header[i]);
-      if (!range) continue;
-      const info = parseCell(theory[i]) || parseCell(lab[i]);
+      const fromTheory = parseCell(theory[i]);
+      const fromLab = fromTheory ? null : parseCell(lab[i]);
+      const info = fromTheory || fromLab;
       if (!info) continue;
+      // A lab must take its own grid's time. Falling back to the theory column
+      // (legacy saves have no headerLab) is what showed L35 as 18:00 when it
+      // really starts at 17:40.
+      const range = parseRange(
+        fromLab ? headerLab[i] || header[i] : header[i]
+      );
+      if (!range) continue;
       classes.push({ ...range, ...info });
     }
     classes.sort((a, b) => a.start - b.start);

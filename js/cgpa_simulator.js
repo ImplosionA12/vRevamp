@@ -444,6 +444,7 @@
     tabs.style.cssText = "margin-bottom:8px;";
     [["gpa", "Semester GPA"], ["cgpa", "Cumulative CGPA"]].forEach(([m, label]) => {
       const btn = document.createElement("button");
+      btn.type = "button"; // never submit the enclosing VTOP form
       btn.textContent = label;
       const active = mode === m;
       btn.style.cssText =
@@ -518,6 +519,7 @@
 
     if (Object.keys(overrides).length) {
       const reset = document.createElement("button");
+      reset.type = "button"; // never submit the enclosing VTOP form
       reset.textContent = "↺ Reset changes";
       reset.style.cssText =
         "cursor:pointer;margin-top:8px;padding:4px 10px;border:1px solid #aaa;" +
@@ -633,6 +635,7 @@
       const dbgBar = document.createElement("div");
       dbgBar.style.cssText = "margin-top:8px;";
       const dbg = document.createElement("button");
+      dbg.type = "button"; // never submit the enclosing VTOP form
       dbg.textContent = "Copy debug info";
       dbg.style.cssText =
         "cursor:pointer;padding:3px 9px;border:1px solid #bbb;border-radius:3px;" +

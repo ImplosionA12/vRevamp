@@ -5,6 +5,13 @@
 //   header: ["Start - End", "08:00 - 08:50", "09:00 - 09:50", ...]
 //           (NOT de-duplicated: repeated time columns are still present;
 //            filterRepeated(header) collapses them to align with the rows)
+//   headerLab: same shape, but the LAB grid's times for the same columns
+//           ["Start - End", "08:00 - 08:50", "08:50 - 09:40", ...]. Labs do
+//           not share the theory grid — the column whose theory time is
+//           18:00-18:50 is 17:40-18:30 for labs — so a reader must take lab
+//           cells' times from here, never from `header`. Absent on timetables
+//           saved before 2026-08-04; readers fall back to `header` and are
+//           correct again once the Time Table page is opened once.
 //   data:  [
 //     {
 //       "day": "TUE",   // 3-letter code
@@ -19,8 +26,14 @@ const timeTableKey = "timeTable-V1"
 
 // semester + savedAt let readers (next_class.js) detect a timetable saved
 // during a previous semester; old blobs without them are treated as legacy
-function saveTimeTable(header, data, semester) {
-  saveData(timeTableKey, {header, data, semester: semester || null, savedAt: Date.now()});
+function saveTimeTable(header, data, semester, headerLab) {
+  saveData(timeTableKey, {
+    header,
+    headerLab: Array.isArray(headerLab) ? headerLab : [],
+    data,
+    semester: semester || null,
+    savedAt: Date.now(),
+  });
 }
 
 function getTimeTable(callback) {

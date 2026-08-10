@@ -12,6 +12,7 @@ const change_time_table = () => {
 
   const tbody_table = parent_table.children[0]; // the first element is the <tbody> with data
   const extractedHeader = extract_header(tbody_table.children);
+  const extractedLabHeader = extract_lab_header(tbody_table.children);
   const extracted_children = extract_tbody_data(tbody_table.children);
   const merged_data = filterRepeatedColumns(extractedHeader, extracted_children)
   const childrenDataArr = merged_data;
@@ -20,7 +21,12 @@ const change_time_table = () => {
     semEl && semEl.selectedIndex >= 0
       ? (semEl.options[semEl.selectedIndex].innerText || "").trim()
       : null;
-  saveTimeTable(extractedHeader, childrenDataArr, semesterName);
+  saveTimeTable(
+    extractedHeader,
+    childrenDataArr,
+    semesterName,
+    extractedLabHeader
+  );
   displayTableData(extractedHeader, childrenDataArr)
 };
 

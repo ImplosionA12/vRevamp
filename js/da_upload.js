@@ -40,6 +40,9 @@ if (typeof window.vrGoogleToken !== "function") {
   // the sign-in failure, phrased for the button status lines
   window.vrGoogleAuthHint = () => {
     const e = window.vrGoogleAuthError || "";
+    // a Cloud Console checkbox, not anything the student can click past
+    if (/invalid_scope|accessNotConfigured|not enabled|has not been used/i.test(e))
+      return "Google refused the scope — in Cloud Console enable the Google Calendar API and add calendar.events under Data Access, then retry";
     if (/bad client id|invalid_client|deleted_client/i.test(e))
       return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
     if (/not signed in/i.test(e))
@@ -159,6 +162,104 @@ const parse_da_detail = (doc) => {
   return { course_code, course_title, items };
 };
 
+/*
+ * The two 2026-layout due buttons, registered once for the life of the page
+ * (js/shared/click.js). They are top-level and stateless on purpose: everything
+ * they need arrives on the clicked button as a data-* attribute.
+ *
+ * These buttons sit in a cell of VTOP's OWN class table — a node VTOP rewrites
+ * wholesale with `$(…).html(response)` on every navigation, and one we
+ * snapshot and restore ourselves for the offline viewer. Both leave a
+ * pixel-perfect clone of the button behind. A per-element handler does not
+ * survive that (properties do not serialise) and neither does a closure over
+ * `upcoming`/`meta`: the clone would either do nothing at all, or worse, report
+ * on the course that happened to be there when it was built. A data attribute
+ * survives precisely as long as the button it is written on, which is the only
+ * lifetime that is ever correct here.
+ */
+const vr_da_payload = (button) => {
+  try {
+    const info = JSON.parse(button.dataset.vrDues || "null");
+    return info && Array.isArray(info.dues) ? info : null;
+  } catch {
+    return null;
+  }
+};
+
+// Two Chrome notifications per un-submitted due: the evening before (6 PM, i.e.
+// the due day's 8 AM anchor less 14 h) and 8 AM on the day itself.
+const vr_da_reminders = (info) => {
+  const reminders = [];
+  info.dues.forEach((a) => {
+    const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/u);
+    if (!m || !DA_MONTHS[m[2]]) return;
+    const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
+    const dueDay = new Date(`${iso}T08:00:00+05:30`).getTime();
+    const title = `DA due: ${info.code} — ${a.title}`;
+    const body = `${info.title}\nDue ${a.due} — not uploaded yet`;
+    reminders.push({ when: dueDay - 14 * 3600 * 1000, title: `Tomorrow — ${title}`, body });
+    reminders.push({ when: dueDay, title: `Today — ${title}`, body });
+  });
+  return reminders;
+};
+
+window.vrDelegate("da-bell", async (btn) => {
+  const info = vr_da_payload(btn);
+  if (!info) {
+    btn.textContent = "couldn't read this row — refresh";
+    return;
+  }
+  btn.disabled = true;
+  const n = await window.vrLocalReminders(`da:${info.key}`, vr_da_reminders(info));
+  btn.textContent =
+    n === null ? "failed — retry" : n === 0 ? "already due" : `✓ ${n} reminder(s)`;
+  btn.disabled = n > 0;
+});
+
+window.vrDelegate("da-mail", async (mailBtn) => {
+  const info = vr_da_payload(mailBtn);
+  if (!info) {
+    mailBtn.textContent = "couldn't read this row — refresh";
+    return;
+  }
+  // fresh token at click time — a stored one expires in ~1 h
+  let token = await window.vrGoogleToken({});
+  if (!token) token = await window.vrGoogleToken({ interactive: true });
+  if (!token) {
+    // never alert(): a modal dialog blocks the page's event loop, and this one
+    // fires on a button the student may be clicking once per course
+    mailBtn.textContent = "sign-in needed";
+    mailBtn.title = window.vrGoogleAuthHint();
+    return;
+  }
+  mailBtn.disabled = true;
+  mailBtn.textContent = "…";
+  let done = 0;
+  let refreshed = false;
+  for (let i = 0; i < info.dues.length; i++) {
+    const a = info.dues[i];
+    const r = await create_email_reminder(a.due, info.code, a.title, info.title, token);
+    if (r.status === 401 && !refreshed) {
+      // token died mid-flight — invalidate it, mint a fresh one, retry
+      refreshed = true;
+      token = await window.vrGoogleToken({ stale: token });
+      if (token) {
+        i--; // redo this assignment with the fresh token
+        continue;
+      }
+    }
+    if (r.status === 401) {
+      mailBtn.textContent = "sign-in expired — click again";
+      mailBtn.disabled = false;
+      return;
+    }
+    if (r.ok) done++;
+    await sleep(400);
+  }
+  mailBtn.textContent = done > 0 ? `✓ ${done} email(s)` : "failed — retry";
+  mailBtn.disabled = done > 0;
+});
+
 // 2026 layout: class table is Sl.No / Class Nbr / Course Code / Course Title /
 // Course Type / Faculty Name / Dashboard. Adds an "Upcoming Dues" column with
 // the nearest un-submitted due date and a 🔔 button that creates calendar
@@ -239,87 +340,32 @@ let da_page_2026 = async () => {
     const span = document.createElement("span");
     span.textContent = `${upcoming[0].due} (${days} day(s) left)`;
     cell.appendChild(span);
+    // Everything both buttons need, written onto the buttons themselves. See
+    // the handlers above for why this is an attribute and not a closure.
+    const payload = JSON.stringify({
+      key: meta.course_code || classId,
+      code: meta.course_code,
+      title: meta.course_title,
+      dues: upcoming.map((a) => ({ due: a.due, title: a.title })),
+    });
+
     // 🔔 Chrome notifications for every upcoming due of this course — 6 PM
     // the evening before and 8 AM on the due day. No Google sign-in.
-    const btn = document.createElement("button");
+    const btn = window.vrButton("da-bell", "🔔 remind me", { vrDues: payload });
     btn.className = "vrevamp-da-remind";
-    btn.textContent = "🔔 remind me";
     btn.title =
       "Chrome notification the evening before (6 PM) and the morning of (8 AM) each due — no sign-in needed";
     btn.style.cssText =
       "display:inline-block;margin-top:4px;font-size:11px;cursor:pointer;";
     cell.appendChild(btn);
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      const reminders = [];
-      upcoming.forEach((a) => {
-        const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
-        if (!m || !DA_MONTHS[m[2]]) return;
-        const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
-        const dueDay = new Date(`${iso}T08:00:00+05:30`).getTime();
-        const title = `DA due: ${meta.course_code} — ${a.title}`;
-        const body = `${meta.course_title}\nDue ${a.due} — not uploaded yet`;
-        reminders.push({ when: dueDay - 14 * 3600 * 1000, title: `Tomorrow — ${title}`, body });
-        reminders.push({ when: dueDay, title: `Today — ${title}`, body });
-      });
-      const n = await window.vrLocalReminders(
-        `da:${meta.course_code || classId}`,
-        reminders
-      );
-      btn.textContent =
-        n === null
-          ? "failed — retry"
-          : n === 0
-            ? "already due"
-            : `✓ ${n} reminder(s)`;
-      btn.disabled = n > 0;
-    });
 
     // ✉ optional Google Calendar events with an email 24 h before each due
-    const mailBtn = document.createElement("button");
+    const mailBtn = window.vrButton("da-mail", "✉ email", { vrDues: payload });
     mailBtn.className = "vrevamp-da-remind";
-    mailBtn.textContent = "✉ email";
     mailBtn.title = `Google Calendar event per upcoming due, email ${DA_REMINDER_LEAD_MIN / 60} h before — needs one-time Google consent`;
     mailBtn.style.cssText =
       "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;cursor:pointer;";
     cell.appendChild(mailBtn);
-    mailBtn.addEventListener("click", async () => {
-      // fresh token at click time — a stored one expires in ~1 h
-      let token = await window.vrGoogleToken({});
-      if (!token) token = await window.vrGoogleToken({ interactive: true });
-      if (!token) {
-        alert("vRevamp: " + window.vrGoogleAuthHint());
-        return;
-      }
-      mailBtn.disabled = true;
-      mailBtn.textContent = "…";
-      let done = 0;
-      let refreshed = false;
-      for (let i = 0; i < upcoming.length; i++) {
-        const a = upcoming[i];
-        const r = await create_email_reminder(
-          a.due, meta.course_code, a.title, meta.course_title, token
-        );
-        if (r.status === 401 && !refreshed) {
-          refreshed = true;
-          token = await window.vrGoogleToken({ stale: token });
-          if (token) {
-            i--; // redo this assignment with the fresh token
-            continue;
-          }
-        }
-        if (r.status === 401) {
-          alert("vRevamp: Google session expired — click again to re-consent.");
-          mailBtn.textContent = "sign-in needed";
-          mailBtn.disabled = false;
-          return;
-        }
-        if (r.ok) done++;
-        await sleep(400);
-      }
-      mailBtn.textContent = done > 0 ? `✓ ${done} email(s)` : "failed — retry";
-      mailBtn.disabled = done > 0;
-    });
 
     // 📅 one-tap: prefilled Google Calendar event per upcoming due — opens
     // in a new tab, the student just presses Save. No sign-in setup at all.
@@ -534,6 +580,7 @@ let da_page = async () => {
       if (token.token != null) {
         // console.log(token.token);
         var btn = document.createElement("button");
+        btn.type = "button"; // never submit the enclosing VTOP form
         btn.innerHTML = `
                       <svg xmlns="http://www.w3.org/2000/svg" data-name="Layer 1" viewBox="0 0 141.7 141.7" width="24" height="24"><path fill="#fff" d="M95.8,45.9H45.9V95.8H95.8Z"/><path fill="#34a853" d="M95.8,95.8H45.9v22.5H95.8Z"/><path fill="#4285f4" d="M95.8,23.4H30.9a7.55462,7.55462,0,0,0-7.5,7.5V95.8H45.9V45.9H95.8Z"/><path fill="#188038" d="M23.4,95.8v15a7.55462,7.55462,0,0,0,7.5,7.5h15V95.8Z"/><path fill="#fbbc04" d="M118.3,45.9H95.8V95.8h22.5Z"/><path fill="#1967d2" d="M118.3,45.9v-15a7.55462,7.55462,0,0,0-7.5-7.5h-15V45.9Z"/><path fill="#ea4335" d="M95.8,118.3l22.5-22.5H95.8Z"/><polygon fill="#2a83f8" points="77.916 66.381 75.53 63.003 84.021 56.868 87.243 56.868 87.243 85.747 82.626 85.747 82.626 62.772 77.916 66.381"/><path fill="#2a83f8" d="M67.29834,70.55785A7.88946,7.88946,0,0,0,70.78,64.12535c0-4.49-4-8.12-8.94-8.12a8.77525,8.77525,0,0,0-8.74548,6.45379l3.96252,1.58258a4.41779,4.41779,0,0,1,4.473-3.51635,4.138,4.138,0,1,1,.06256,8.24426v.00513h-.0559l-.00666.00061-.00964-.00061H59.15v3.87677h2.70642L61.88,72.65a4.70514,4.70514,0,1,1,0,9.37,5.35782,5.35782,0,0,1-3.96588-1.69354,4.59717,4.59717,0,0,1-.80408-1.2442l-.69757-1.69946L52.23005,79c.62,4.33,4.69,7.68,9.61,7.68,5.36,0,9.7-3.96,9.7-8.83A8.63346,8.63346,0,0,0,67.29834,70.55785Z"/></svg><span>Sync assignments with Google Calendar</span>`;
         btn.style = `display: flex;align-items: center;gap: 1rem;font-family: inherit;justify-content: space-around;color: #535353;font-size: 13px;font-weight: 500;margin: 8px auto;cursor: pointer;background-color: white;border-radius: 32px;transition: all 0.2s ease-in-out;padding: 6px 10px;border: 1px solid rgba(0, 0, 0, 0.25);`;
