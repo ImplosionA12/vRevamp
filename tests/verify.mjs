@@ -10,6 +10,49 @@ const read = (p) => readFileSync(`${SRC}/${p}`, "utf8");
 
 let pass = 0,
   fail = 0;
+/*
+ * Read the bunk table by HEADER NAME, never by column index.
+ *
+ * The table decides its own columns now: a CAT column in which every row is
+ * "no CATs for labs" or a retrospective is dropped rather than drawn, because
+ * on the live page two of seven columns carried nothing a student could act
+ * on. That makes a positional read wrong the moment a fixture changes shape —
+ * which is how eighteen assertions failed at once while every number in them
+ * was still correct.
+ *
+ * Returns the legacy positional layout so existing assertions keep reading the
+ * way they did, with `null` where a column was dropped, plus the extras at the
+ * named indices below. (Extra properties on an array do not survive
+ * page.evaluate serialisation, hence indices rather than keys.)
+ */
+const B = { subject: 0, held: 1, remaining: 2, safeNow: 3, cat1: 4, cat2: 5, fat: 6, now: 7, title: 8, headers: 9 };
+const READ_BUNK = `(() => {
+  const c = document.getElementById("vrevamp-bunk-table-container");
+  if (!c) return null;
+  const trs = [...c.querySelectorAll("tr")];
+  if (!trs.length) return null;
+  const heads = [...trs[0].children].map((th) => th.textContent.trim().toLowerCase());
+  const at = (cells, name) => {
+    const i = heads.indexOf(name);
+    return i === -1 || !cells[i] ? null : cells[i].textContent;
+  };
+  return trs.slice(1).map((tr) => {
+    const cells = [...tr.children];
+    return [
+      cells[0] ? cells[0].textContent : "",
+      at(cells, "held"),
+      at(cells, "left this sem"),
+      at(cells, "safe to skip now"),
+      at(cells, "bunkable before cat-1"),
+      at(cells, "bunkable before cat-2"),
+      at(cells, "bunkable before fat"),
+      at(cells, "now"),
+      cells[0] ? cells[0].getAttribute("title") || "" : "",
+      heads.join(" | "),
+    ];
+  });
+})()`;
+
 const ok = (name, cond, extra = "") => {
   console.log(`${cond ? "  ✅" : "  ❌"} ${name}${extra ? " — " + extra : ""}`);
   cond ? pass++ : fail++;
@@ -62,6 +105,44 @@ const initScript = (fixedMs, storageSeed) => `
         if (m && m.message === "get_google_token") {
           const t = window.__storage.token || null;
           if (cb) cb({ token: t, error: t ? null : (window.__storage.google_error || "OAuth2 not granted or revoked.") });
+          return;
+        }
+        if (m && m.message === "set_reminder_email") {
+          const a = String((m && m.address) || "").trim();
+          if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(a)) {
+            if (cb) cb({ ok: false, error: "that doesn't look like an email address" });
+            return;
+          }
+          window.__storage.vrevamp_reminder_email = a;
+          if (cb) cb({ ok: true, address: a });
+          return;
+        }
+        if (m && m.message === "send_mail") {
+          // relay mode with nobody to write to yet: the worker answers
+          // need_address and the page must ask, not fail
+          // (no backticks in this comment - the whole shim is a template literal)
+          if (window.__mailNeedsAddress && !m.to && !window.__storage.vrevamp_reminder_email) {
+            if (cb) cb({ ok: false, to: null, error: "need_address" });
+            return;
+          }
+          // worker emulation for the direct-Gmail send: __mailError seeds a
+          // failure (e.g. "gmail_send_scope"), otherwise the mail "arrives"
+          // and is recorded so its subject/body can be asserted
+          (window.__mails = window.__mails || []).push(m);
+          if (cb)
+            cb(
+              window.__mailError
+                ? { ok: false, to: null, error: window.__mailError }
+                : {
+                    ok: true,
+                    // the worker echoes back the address it actually used, so
+                    // the button can name it — students routinely have two
+                    // Google accounts and guess wrong about which one was used
+                    to: m.to || window.__storage.vrevamp_reminder_email ||
+                      window.__mailTo || "student@vitapstudent.ac.in",
+                    error: null,
+                  }
+            );
           return;
         }
         if (m && m.message === "gcal_template_import") {
@@ -684,6 +765,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/utils/filterRepeated.js",
       "js/shared/click.js",
       "js/shared/ics.js",
+      "js/shared/google_auth.js",
       "js/timetable_ics.js",
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
@@ -773,6 +855,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/utils/filterRepeated.js",
       "js/shared/click.js",
       "js/shared/ics.js",
+      "js/shared/google_auth.js",
       "js/timetable_ics.js",
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
@@ -881,6 +964,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/utils/filterRepeated.js",
       "js/shared/click.js",
       "js/shared/ics.js",
+      "js/shared/google_auth.js",
       "js/timetable_ics.js",
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
@@ -1217,6 +1301,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, [
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
+      "js/shared/vtop.js",
       "js/attendance_insights.js",
     ]);    await page.evaluate(() => window.__dispatch("view_attendance"));
     await delay(2500);
@@ -1230,12 +1315,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ok("MAT2001 (60%) flagged below with recover count", !!banner && /MAT2001[\s\S]*60% — attend the next \d+/.test(banner));
     ok("CSE1005 (80%) NOT in below list", !!banner && !/CSE1005: 80% — attend/.test(banner));
 
-    const table = await page.evaluate(() => {
-      const c = document.getElementById("vrevamp-bunk-table-container");
-      if (!c) return null;
-      const rows = [...c.querySelectorAll("tbody tr, tr")].map((tr) => [...tr.children].map((td) => td.textContent));
-      return rows;
-    });
+    const table = await page.evaluate(READ_BUNK);
     ok("bunk table rendered", !!table, table ? table.length + " rows" : "none");
     // held column should be 10 for both (8+2, 6+4)
     const heldVals = table ? table.filter((r) => /CSE1005|MAT2001/.test(r[0])).map((r) => r[1]) : [];
@@ -1398,6 +1478,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, [
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
+      "js/shared/vtop.js",
       "js/attendance_insights.js",
     ]);
     await page.evaluate(() => window.__dispatch("view_attendance"));
@@ -1415,11 +1496,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       !!banner && /MAT2001[\s\S]*attend the next 6 class\(es\)/.test(banner),
       banner ? banner.slice(banner.indexOf("MAT2001"), banner.indexOf("MAT2001") + 80) : ""
     );
-    const table = await page.evaluate(() => {
-      const c = document.getElementById("vrevamp-bunk-table-container");
-      if (!c) return null;
-      return [...c.querySelectorAll("tr")].map((tr) => [...tr.children].map((td) => td.textContent));
-    });
+    const table = await page.evaluate(READ_BUNK);
     const heldVals = table ? table.filter((r) => /CSE1005|MAT2001/.test(r[0])).map((r) => r[1]) : [];
     ok(
       "held = 10 for both (summary row NOT counted)",
@@ -1612,9 +1689,13 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     // lab rows sit no CATs: CAT columns say so, and their next-exam math
     // runs to the lab FAT instead of CAT-1
+    // Labs sit no CATs. What matters is that a lab row NEVER shows a CAT bunk
+    // count — it used to say so in words, on every lab row, in two columns,
+    // which is ten cells of the same non-answer on a real page. Now the cell
+    // is an em dash and the distinction is proved by it not being a number.
     ok(
-      "lab row CAT columns say 'no CATs for labs'",
-      !!lab88 && lab88[4] === "no CATs for labs" && lab88[5] === "no CATs for labs",
+      "a lab row never shows a CAT bunk count",
+      !!lab88 && !/\d/.test(String(lab88[4])) && !/\d/.test(String(lab88[5])),
       lab88 ? `cat1=${lab88[4]} cat2=${lab88[5]}` : "no row"
     );
     ok(
@@ -1706,36 +1787,42 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, [
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
+      "js/shared/vtop.js",
       "js/attendance_insights.js",
     ]);
     await page.evaluate(() => window.__dispatch("view_attendance"));
     await delay(2500);
 
-    const state = await page.evaluate(() => {
-      const c = document.getElementById("vrevamp-bunk-table-container");
-      return {
-        rows: c
-          ? [...c.querySelectorAll("tr")].map((tr) => [...tr.children].map((td) => td.textContent))
-          : null,
-        detailCalls: window.__detailCalls,
-        warns: window.__warns.filter((w) => /insight failed/.test(w)),
-      };
-    });
+    const state = await page.evaluate(`({
+      rows: ${READ_BUNK},
+      detailCalls: window.__detailCalls,
+      warns: window.__warns.filter((w) => /insight failed/.test(w)),
+    })`);
     const chy = state.rows && state.rows.find((r) => /CHY1008/.test(r[0]));
+    /*
+     * These three used to assert grid cells reading "could've bunked 1",
+     * "none this sem" and "could've bunked 0". The computation is unchanged;
+     * the presentation is not. On a FINISHED semester every exam column is a
+     * retrospective or an exam that never happened — seven columns of history
+     * where a student is looking for advice — so those columns are dropped and
+     * the retrospectives ride in the subject cell's tooltip instead. The
+     * assertions therefore check the tooltip, and check that the columns are
+     * genuinely gone rather than rendering "--".
+     */
     ok(
-      "digit 'CAT - 1' parsed: retrospective could've-bunked shown",
-      !!chy && /could've bunked 1(?!\d)/.test(chy[4]),
-      chy ? `cat1=${chy[4]}` : "no row"
-    );
-    ok(
-      "no CAT-2 in this calendar -> 'none this sem' (not --)",
-      !!chy && /none this sem/.test(chy[5]),
-      chy ? `cat2=${chy[5]}` : "no row"
+      "digit 'CAT - 1' parsed: retrospective could've-bunked kept in the tooltip",
+      !!chy && /CAT-1: could've bunked 1(?!\d)/.test(chy[B.title]),
+      chy ? `title=${chy[B.title]}` : "no row"
     );
     ok(
       "FAT retrospective on the finished sem (could've bunked 0)",
-      !!chy && /could've bunked 0/.test(chy[6]),
-      chy ? `fat=${chy[6]}` : "no row"
+      !!chy && /FAT: could've bunked 0/.test(chy[B.title]),
+      chy ? `title=${chy[B.title]}` : "no row"
+    );
+    ok(
+      "a finished semester draws no exam columns at all",
+      !!chy && chy[B.cat1] === null && chy[B.cat2] === null && chy[B.fat] === null,
+      chy ? `headers=${chy[B.headers]}` : "no row"
     );
     ok(
       "finished sem says so: 'semester over — final 80%' + 'semester over'",
@@ -1912,41 +1999,78 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   }
 
   /* ============ login page: reload guard (flicker regression) ============ */
-  console.log("\n=== login page: refreshTillCaptcha must not reload-loop ===");
+  console.log("\n=== login page: heal the captcha in place, never navigate ===");
   {
-    // real navigations on a routed origin: sessionStorage works and persists
-    // across loads (about:blank/setContent documents deny it)
+    /*
+     * REWRITTEN 2026-08-17 against the live page, not against a belief.
+     *
+     * The previous fixtures asserted a login page with a visible `#stdForm`
+     * and no `#captchaBlock`, and the code was written to match them. Read off
+     * https://vtop.vitap.ac.in/vtop/login the same day:
+     *
+     *   - the form is `#vtopLoginForm`; `#stdForm` is NOT on this page at all,
+     *     it lives on /vtop/open/page (the role picker) alongside empForm,
+     *     parentForm and alumniForm, all POSTing to /vtop/prelogin/setup
+     *   - the captcha lives in `#captchaBlock` as an <img> with a base64 JPEG
+     *   - VTOP's own ⟳ button calls loadCaptcha(), which is
+     *     `GET /vtop/get/new/captcha` -> innerHTML of #captchaBlock
+     *
+     * So the old "reload when a visible #stdForm has no captcha" could never
+     * fire, and reloading was the wrong instrument anyway: /vtop/login is
+     * reached by POSTing the role picker, so re-navigating it is what dropped
+     * the student back on the Student/Parent chooser. These fixtures now model
+     * the real markup, and the assertions are about the captcha ENDPOINT being
+     * used rather than about reload counts.
+     */
+    const captchaImg =
+      "<img class='form-control img-fluid bg-light border-0' src='data:image/jpeg;base64,/9j/AAA'>";
+    const loginForm = (inner) =>
+      "<body><form id='vtopLoginForm'><input name='_csrf' type='hidden' value='x'>" +
+      "<input id='username' name='username'><input id='password' type='password'>" +
+      `<div id='captchaBlock' class='input-group'>${inner}</div>` +
+      "<input id='captchaStr' name='captchaStr'><button id='submitBtn'>Submit</button>" +
+      "</form></body>";
+
     const pages = {
-      // the real role picker: it already ships #stdForm, hidden, so "the form
-      // exists" is TRUE here and must not be enough to trigger a reload
+      // /vtop/open/page — the real role picker. Nothing here is broken and
+      // nothing may be touched: this is the page the student was being thrown
+      // back to, and it has no captcha to heal.
       "/picker":
         "<body><div class='card'>Student</div><div class='card'>Employee</div>" +
         "<div class='card'>Parent</div><div class='card'>Alumni</div>" +
-        "<form id='stdForm' style='display:none'><input id='uname'></form></body>",
-      // the LIVE /vtop/login as of 2026-08-09: VTOP swapped its image captcha
-      // for invisible Google reCAPTCHA, so the page carries a hidden gResponse,
-      // no captcha image, and no #stdForm at all. Nothing is missing here — a
-      // reload would only flicker a healthy page.
+        "<form id='stdForm' action='/vtop/prelogin/setup' method='post'><input id='uname'></form>" +
+        "<form id='parentForm' action='/vtop/prelogin/setup' method='post'></form></body>",
+      // the reCAPTCHA variant VIT-AP sometimes serves instead: invisible by
+      // design, so "no image" is health, not a fault
       "/recaptcha":
-        "<body><h4>VTOP Login</h4><form><input name='_csrf' type='hidden' value='x'>" +
-        "<input name='username' type='text'><input name='password' type='password'>" +
+        "<body><form id='vtopLoginForm'><input name='_csrf' type='hidden' value='x'>" +
+        "<input name='username'><input name='password' type='password'>" +
         "<input name='gResponse' type='hidden'><button>Submit</button></form></body>",
       "/empty": "<body>   </body>",
-      "/captcha": "<body><form><img class='form-control' alt='captcha'></form></body>",
-      // the case the retry exists for: login form up, captcha image missing
-      "/nocaptcha":
-        "<body><form id='stdForm'><input id='uname'><input type='password'>" +
-        "<button>Sign In</button></form></body>",
-      // the OTP step must never be reloaded — a code has already been sent
+      // healthy image-captcha login page
+      "/captcha": loginForm(captchaImg),
+      // THE case this file exists for: the form arrived, the captcha did not
+      "/nocaptcha": loginForm(""),
+      // the OTP step must never be touched — a code has already been sent
       "/otp":
-        "<body><form id='stdForm'>An OTP has been sent to your registered email." +
+        "<body><form id='vtopLoginForm'>An OTP has been sent to your registered email." +
         "<input id='otpValue' maxlength='6'><button>Verify OTP</button></form></body>",
     };
+
     const page = await newPage(browser);
+    let captchaHits = 0;
     await page.route("https://vtop.test/**", (route) => {
       const path = new URL(route.request().url()).pathname;
+      if (path === "/vtop/get/new/captcha") {
+        captchaHits++;
+        return route.fulfill({
+          contentType: "text/html",
+          body: `${captchaImg}<button class='btn btn-success'><i class='fa fa-refresh'></i></button>`,
+        });
+      }
       route.fulfill({ contentType: "text/html", body: pages[path] || "<body></body>" });
     });
+
     // capture scheduled reloads instead of letting them navigate the page
     const trapReloads = `(() => {
       window.__reloads = 0;
@@ -1963,98 +2087,102 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       page.evaluate(() => ({
         reloads: window.__reloads,
         counter: sessionStorage.getItem("vrevamp_login_reloads"),
+        blockHasImg: !!document.querySelector("#captchaBlock img[src^='data:image/']"),
       }));
-
-    // 2026 role-picker login page: rendered content, no captcha, no #stdForm
-    await page.goto("https://vtop.test/picker");
-    await page.addScriptTag({ content: trapReloads });
-    await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    await page.evaluate(() => sessionStorage.removeItem("vrevamp_login_reloads"));
-    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    const picker = await state();
-    ok(
-      "role-picker home page is NOT reloaded (hidden #stdForm doesn't count)",
-      picker.reloads === 0,
-      `reloads=${picker.reloads}`
-    );
-
-    // The reCAPTCHA login page — the one a student actually sees in 2026.
-    // "No captcha visible" is not a fault here, it is what invisible reCAPTCHA
-    // looks like, and the old instinct ("no captcha => reload") would flicker a
-    // page that is completely healthy.
-    await page.goto("https://vtop.test/recaptcha");
-    await page.addScriptTag({ content: trapReloads });
-    await page.evaluate(() => sessionStorage.removeItem("vrevamp_login_reloads"));
-    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    const recap = await state();
-    ok(
-      "reCAPTCHA login page is NOT reloaded (invisible captcha is not a missing one)",
-      recap.reloads === 0 && recap.counter === null,
-      JSON.stringify(recap)
-    );
-
-    // genuinely empty page: reload allowed, but capped per tab
-    await page.goto("https://vtop.test/empty");
-    await page.addScriptTag({ content: trapReloads });
-    for (let i = 0; i < 8; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    const empty = await state();
-    ok(
-      "empty page retried, capped at 5 per tab",
-      empty.reloads === 5 && empty.counter === "5",
-      `reloads=${empty.reloads} counter=${empty.counter}`
-    );
-
-    // the cap is per TAB, so it survives navigation — clear it to test the
-    // next scenario from a clean slate rather than a spent budget
     const resetCounter = () =>
       page.evaluate(() => sessionStorage.removeItem("vrevamp_login_reloads"));
 
-    // the behaviour asked for on 2026-08-06: login form up, captcha missing
-    await page.goto("https://vtop.test/nocaptcha");
+    // --- the role picker is left completely alone ---
+    await page.goto("https://vtop.test/picker");
     await page.addScriptTag({ content: trapReloads });
     await resetCounter();
+    captchaHits = 0;
+    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await delay(300);
+    const picker = await state();
+    ok(
+      "the role picker is never reloaded and never probed",
+      picker.reloads === 0 && captchaHits === 0,
+      `reloads=${picker.reloads} captchaFetches=${captchaHits}`
+    );
+
+    // --- reCAPTCHA page: healthy, nothing missing ---
+    await page.goto("https://vtop.test/recaptcha");
+    await page.addScriptTag({ content: trapReloads });
+    await resetCounter();
+    captchaHits = 0;
+    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await delay(300);
+    const recap = await state();
+    ok(
+      "reCAPTCHA login page is left alone (invisible captcha is not a missing one)",
+      recap.reloads === 0 && recap.counter === null && captchaHits === 0,
+      JSON.stringify({ ...recap, captchaHits })
+    );
+
+    // --- the healthy image-captcha page ---
+    await page.goto("https://vtop.test/captcha");
+    await page.addScriptTag({ content: trapReloads });
+    captchaHits = 0;
     await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    const broken = await state();
+    await delay(300);
+    const captcha = await state();
     ok(
-      "login form with no captcha IS reloaded",
-      broken.reloads === 1,
-      `reloads=${broken.reloads}`
+      "a login page that already has its captcha is not touched",
+      captcha.reloads === 0 && captcha.counter === null && captchaHits === 0,
+      JSON.stringify({ ...captcha, captchaHits })
     );
 
-    // ...but it must stop, not flicker forever
+    // --- THE FIX: captcha missing, healed in place, page never navigated ---
     await page.goto("https://vtop.test/nocaptcha");
     await page.addScriptTag({ content: trapReloads });
     await resetCounter();
-    for (let i = 0; i < 9; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    const brokenCapped = await state();
+    captchaHits = 0;
+    await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await delay(600);
+    const healed = await state();
     ok(
-      "captcha-less login retry is capped, never an infinite loop",
-      brokenCapped.reloads === 5,
-      `reloads=${brokenCapped.reloads}`
+      "a captcha-less login form fetches a new captcha from VTOP's own endpoint",
+      captchaHits === 1,
+      `captchaFetches=${captchaHits}`
+    );
+    ok(
+      "...and the block now holds a real image, so the student can log in",
+      healed.blockHasImg,
+      JSON.stringify(healed)
+    );
+    ok(
+      "...WITHOUT reloading — a reload is what dropped them on the role picker",
+      healed.reloads === 0,
+      `reloads=${healed.reloads}`
     );
 
-    // the OTP step has no captcha BY DESIGN — reloading it would bin the code
+    // --- the OTP step is untouchable ---
     await page.goto("https://vtop.test/otp");
     await page.addScriptTag({ content: trapReloads });
     await resetCounter();
+    captchaHits = 0;
     for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await delay(300);
     const otp = await state();
     ok(
-      "OTP step is never reloaded",
-      otp.reloads === 0,
-      `reloads=${otp.reloads}`
+      "the OTP step is neither reloaded nor refreshed",
+      otp.reloads === 0 && captchaHits === 0,
+      JSON.stringify({ ...otp, captchaHits })
     );
 
-    // captcha present: counter resets so the next broken load can retry again
-    await page.goto("https://vtop.test/captcha");
+    // --- a dead load is the ONLY thing a reload is still used for ---
+    await page.goto("https://vtop.test/empty");
     await page.addScriptTag({ content: trapReloads });
-    await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    const captcha = await state();
+    await resetCounter();
+    for (let i = 0; i < 8; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    const empty = await state();
     ok(
-      "captcha page not reloaded and counter cleared",
-      captcha.reloads === 0 && captcha.counter === null,
-      `reloads=${captcha.reloads} counter=${captcha.counter}`
+      "a genuinely empty page is retried, capped per tab so it cannot loop",
+      empty.reloads === 3 && empty.counter === "3",
+      `reloads=${empty.reloads} counter=${empty.counter}`
     );
+
     await page.close();
   }
 
@@ -2066,8 +2194,22 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const fixedExam = new Date("2026-04-01T09:00:00+05:30").getTime();
     const gcalExam = [];
     const page = await newPage(browser);
+    const gcalExamDeletes = [];
     await page.route("https://www.googleapis.com/**", (route) => {
-      gcalExam.push(JSON.parse(route.request().postData() || "{}"));
+      const req = route.request();
+      const method = req.method();
+      // Split by verb: ✉️ now LISTS its previous run and DELETEs it before
+      // POSTing the new events, so counting every request as "an event created"
+      // would make a working replace look like a duplication.
+      if (method === "POST") gcalExam.push(JSON.parse(req.postData() || "{}"));
+      if (method === "DELETE") gcalExamDeletes.push(req.url());
+      // answer the cleanup's list query with one stale event, so the
+      // replace-don't-duplicate path is actually exercised rather than skipped
+      if (method === "GET" && /privateExtendedProperty/.test(req.url()))
+        return route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ items: [{ id: "old-run-1" }] }),
+        });
       route.fulfill({ contentType: "application/json", body: "{}" });
     });
     await page.setContent(`<body>
@@ -2092,7 +2234,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             <td>R2C2</td><td>9</td></tr>
       </table></body>`);
     await shim(page, { fixedMs: fixedExam });
-    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js"]);
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
     const btns = await page.evaluate(() =>
@@ -2197,7 +2339,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(200);
     const btns2 = await page.evaluate(() => document.querySelectorAll("button").length);
-    ok("message re-fire does not duplicate buttons", btns2 === 6, `buttons=${btns2}`);
+    ok("message re-fire does not duplicate buttons", btns2 === 8, `buttons=${btns2}`);
 
     const bellNote = (btnRe, which) =>
       page.evaluate(([bre, re]) => {
@@ -2251,6 +2393,79 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       `rems=${cat1Rems} note=${await bellNote("notify me", "CAT1")}`
     );
 
+    /*
+     * 📧 the OTHER kind of "email me": a real message in the inbox NOW, sent
+     * through the student's own Gmail — as opposed to ✉️ below, which schedules
+     * Calendar events that will mail a reminder a day before each exam. Both
+     * are wanted, and confusing them is exactly what made the old single ✉️
+     * button feel broken: it looked like "mail me the schedule" and behaved
+     * like "remind me later".
+     */
+    await page.evaluate(() => {
+      window.__mails = [];
+      [...document.querySelectorAll("button")]
+        .filter((b) => /mail me the list/.test(b.textContent))[0]
+        .click();
+    });
+    await delay(400);
+    const sentMail = await page.evaluate(() => (window.__mails || [])[0] || null);
+    ok(
+      "📧 FAT mails the one upcoming exam, and says which inbox it went to",
+      !!sentMail &&
+        /FAT exam schedule — 1 upcoming/.test(sentMail.subject) &&
+        /✓ emailed 1 exam\(s\) to student@vitapstudent\.ac\.in/.test(
+          (await bellNote("mail me the list", "FAT")) || ""
+        ),
+      JSON.stringify({ subject: sentMail && sentMail.subject, note: await bellNote("mail me the list", "FAT") })
+    );
+    ok(
+      "the mail carries date, window, venue and seat — not just the course code",
+      !!sentMail &&
+        /ECE2015/.test(sentMail.html) &&
+        /04-May-2026/.test(sentMail.html) &&
+        /10:00 AM - 01:00 PM/.test(sentMail.html) &&
+        /CB-324/.test(sentMail.html) &&
+        /R3C1/.test(sentMail.html) &&
+        // past FRL1001 and the no-time PHY0000 row must not be in there
+        !/FRL1001|PHY0000/.test(sentMail.html),
+      (sentMail && sentMail.html ? sentMail.html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ") : "no mail").slice(0, 220)
+    );
+    ok(
+      "and a plain-text alternative rides along for phone clients",
+      !!sentMail && /ECE2015/.test(sentMail.text) && /Venue CB-324/.test(sentMail.text),
+      (sentMail && sentMail.text ? sentMail.text : "no text").slice(0, 160)
+    );
+    // The one failure a student cannot fix by clicking again: gmail.send not
+    // added to the Cloud project. It must name the checkbox, not say "failed".
+    await page.evaluate(() => {
+      window.__mailError = "gmail_send_scope";
+      window.__mails = [];
+      [...document.querySelectorAll("button")]
+        .filter((b) => /mail me the list/.test(b.textContent))[0]
+        .click();
+    });
+    await delay(400);
+    ok(
+      "a missing gmail.send scope names the Cloud Console fix, not 'failed'",
+      /gmail\.send/.test((await bellNote("mail me the list", "FAT")) || ""),
+      String(await bellNote("mail me the list", "FAT"))
+    );
+    // CAT1 is entirely in the past — nothing to mail, and nothing sent
+    await page.evaluate(() => {
+      window.__mailError = null;
+      window.__mails = [];
+      [...document.querySelectorAll("button")]
+        .filter((b) => /mail me the list/.test(b.textContent))[1]
+        .click();
+    });
+    await delay(400);
+    ok(
+      "📧 on an all-past group sends no mail at all",
+      (await page.evaluate(() => (window.__mails || []).length)) === 0 &&
+        /no upcoming exams/.test((await bellNote("mail me the list", "CAT1")) || ""),
+      String(await bellNote("mail me the list", "CAT1"))
+    );
+
     // ✉️ without a Google sign-in: surface the real identity error, create nothing
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
@@ -2279,15 +2494,29 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     const exEv = gcalExam[0] || {};
     ok(
-      "event sits on the exam window with email+popup 24h before",
+      "event sits on the exam window, titled and located for the reminder mail",
       (exEv.start || {}).dateTime === "2026-05-04T10:00:00+05:30" &&
         (exEv.end || {}).dateTime === "2026-05-04T13:00:00+05:30" &&
-        !!exEv.reminders &&
+        /FAT exam: ECE2015/.test(exEv.summary || "") &&
+        // Google's reminder mail quotes only summary + location, so the venue
+        // has to be here or the 2 h mail lands without the fact it exists for
+        exEv.location === "CB-324",
+      JSON.stringify({ start: exEv.start, end: exEv.end, summary: exEv.summary, location: exEv.location })
+    );
+    // TWO emails, not one. A single 24 h mail was the original shape and it is
+    // wrong: a day out you note it and forget it, two hours out is when you
+    // need the venue in front of you. Reported 2026-08-16.
+    ok(
+      "Google is asked to email 24 h AND 2 h before, with one popup on the near one",
+      !!exEv.reminders &&
         exEv.reminders.useDefault === false &&
         exEv.reminders.overrides.some((o) => o.method === "email" && o.minutes === 1440) &&
-        /FAT exam: ECE2015/.test(exEv.summary || "") &&
-        exEv.location === "CB-324",
-      JSON.stringify({ start: exEv.start, end: exEv.end, summary: exEv.summary, location: exEv.location, reminders: exEv.reminders })
+        exEv.reminders.overrides.some((o) => o.method === "email" && o.minutes === 120) &&
+        exEv.reminders.overrides.filter((o) => o.method === "popup").length === 1 &&
+        exEv.reminders.overrides.every((o) => o.method !== "popup" || o.minutes === 120) &&
+        // Google refuses more than 5 overrides outright
+        exEv.reminders.overrides.length <= 5,
+      JSON.stringify(exEv.reminders)
     );
     ok(
       "reminder email carries slot, session, reporting time and seat",
@@ -2297,9 +2526,28 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         /Seat: R3C1 · No\. 5/.test(exEv.description || ""),
       JSON.stringify(exEv.description || "")
     );
+    // The timetable import learned this the hard way: 66 class events in one
+    // week, 35 distinct, most present three times, because a re-run only ever
+    // added. ✉️ re-runs are NORMAL here — venue and seat read "-" until VTOP
+    // publishes them — so it must replace, and say that it did.
     ok(
-      "✉️ FAT confirms inline",
-      /✓ 1 reminder\(s\) set/.test((await bellNote("email me", "FAT")) || ""),
+      "✉️ deletes its own previous run before writing, and says so",
+      gcalExamDeletes.length === 1 &&
+        /events\/old-run-1$/.test(gcalExamDeletes[0]) &&
+        /\(replaced 1 from an earlier run\)/.test((await bellNote("email me", "FAT")) || ""),
+      JSON.stringify({ deletes: gcalExamDeletes, note: await bellNote("email me", "FAT") })
+    );
+    ok(
+      "the events it writes are tagged so the NEXT run can find them",
+      (exEv.extendedProperties || {}).private &&
+        exEv.extendedProperties.private.vrevamp === "exam",
+      JSON.stringify(exEv.extendedProperties || null)
+    );
+    ok(
+      "✉️ FAT confirms inline, naming both leads and who sends them",
+      /✓ 1 exam\(s\) — Google will email you 24 h and 2 h before each one/.test(
+        (await bellNote("email me", "FAT")) || ""
+      ),
       `note=${await bellNote("email me", "FAT")}`
     );
 
@@ -2353,7 +2601,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             <td>R3C1</td><td>5</td></tr>
       </table></div></body>`);
     await shim(page, { fixedMs: fixedExam });
-    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js"]);
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
 
@@ -2371,11 +2619,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         return b ? getComputedStyle(b).zIndex : null;
       })(),
     }));
-    ok("first pass injects three delegated buttons", firstPass.bells === 1 && firstPass.bound === 3,
+    ok("first pass injects four delegated buttons", firstPass.bells === 1 && firstPass.bound === 4,
       JSON.stringify(firstPass));
     ok(
       "none of them can submit the VTOP form they sit in",
-      firstPass.types.length === 3 && firstPass.types.every((t) => t === "button"),
+      firstPass.types.length === 4 && firstPass.types.every((t) => t === "button"),
       JSON.stringify(firstPass.types)
     );
     ok(
@@ -2420,7 +2668,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       bound: document.querySelectorAll("[data-vr-action]").length,
     }));
     ok("a later sync adds no duplicates beside the restored set",
-      repaired.bells === 1 && repaired.bound === 3, JSON.stringify(repaired));
+      repaired.bells === 1 && repaired.bound === 4, JSON.stringify(repaired));
     await page.close();
   }
 
@@ -2452,7 +2700,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             <td>R3C1</td><td>5</td></tr>
       </table></div></body>`);
     await shim(page, { fixedMs: fixedExam });
-    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js"]);
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
 
@@ -2541,7 +2789,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         `<body><div id="main-section"><form id="stdForm" action="/vtop/submitted">${EXAM_TABLE}</form></div></body>`
       );
       await shim(page, { fixedMs: fixedExam });
-      await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+      await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js"]);
       await page.evaluate(() => window.__dispatch("exam_schedule"));
       await delay(300);
       const result = await page.evaluate(async () => {
@@ -2578,7 +2826,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const page = await newPage(browser);
       await page.setContent(`<body><div id="main-section"></div></body>`);
       await shim(page, { fixedMs: fixedExam });
-      await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+      await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js"]);
       await page.evaluate(() => window.__dispatch("exam_schedule"));
       const immediately = await page.evaluate(
         () => document.querySelectorAll("[data-vr-action]").length
@@ -2600,7 +2848,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
       ok(
         "the retry catches the table VTOP writes 1.2 s later",
-        eventually.buttons === 3 && eventually.bells === 1,
+        eventually.buttons === 4 && eventually.bells === 1,
         JSON.stringify(eventually)
       );
       await page.close();
@@ -2632,7 +2880,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             <td>R1C2</td><td>9</td></tr>
       </table></body>`);
     await shim(page, { fixedMs: new Date("2026-04-01T09:00:00+05:30").getTime() });
-    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/exam_schedule.js"]);
+    await inject(page, ["js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js"]);
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
     await page.evaluate(() =>
@@ -2830,7 +3078,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await shim(page, { fixedMs: fixed, storage: {} });
     // token lives in chrome.storage.sync (shim maps all areas to one store)
     await page.evaluate(() => (window.__storage.token = "tok123"));
-    await inject(page, ["js/shared/click.js", "js/da_upload.js"]);
+    await inject(page, ["js/shared/click.js", "js/shared/google_auth.js", "js/shared/vtop.js", "js/da_upload.js"]);
     await page.evaluate(() => window.__dispatch("da_upload"));
     await delay(800);
 
@@ -2959,12 +3207,16 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // undo the earlier click in this fixture: a scheduled button disables
       // itself, and `disabled` is an attribute — it serialises into the clone
       // (correctly: an already-scheduled course stays scheduled)
-      const first = document.querySelector('[data-vr-action="da-bell"]');
+      // scoped to the table: there is also a "remind me about all of them"
+      // button in the summary bar above it, and it is deliberately first in
+      // document order. This assertion is about the PER-COURSE button knowing
+      // which course it belongs to after a clone.
+      const t = document.querySelector("table.customTable");
+      const first = t.querySelector('[data-vr-action="da-bell"]');
       first.disabled = false;
       first.textContent = "🔔 remind me";
-      const t = document.querySelector("table.customTable");
       t.innerHTML = t.innerHTML;
-      const bell = document.querySelector('[data-vr-action="da-bell"]');
+      const bell = t.querySelector('[data-vr-action="da-bell"]');
       bell.click();
       await new Promise((r) => setTimeout(r, 400));
       return {
@@ -3123,6 +3375,121 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ============ home card leads with debarment, not with CAT-1 ============
+   *
+   * Asked for 2026-08-17. The old card's headline was "only N class(es)
+   * skippable before CAT-1" — a number that stops meaning anything the day
+   * CAT-1 arrives, and which nothing on the card could tell had expired. It
+   * had been seen live reading 0 for a subject with three in hand.
+   *
+   * The 75% line does not expire: it is measured against the whole semester.
+   * These assert that the card says which subjects are close to it, in the
+   * three states a student can actually be in.
+   */
+  console.log("\n=== home card: how close to being debarred ===");
+  {
+    const now = new Date("2026-08-17T09:00:00+05:30").getTime();
+    const sem = "Fall Semester 2026-27";
+    const cardText = async (subjects) => {
+      const page = await newPage(browser);
+      await page.setContent("<body><div id='main-section'></div></body>");
+      await shim(page, {
+        fixedMs: now,
+        storage: {
+          ["vrevamp_calendar_" + sem.toLowerCase()]: {
+            version: 2,
+            semester: sem,
+            fetchedAt: now,
+            cat1: "2026-08-24",
+            holidays: [],
+            instructionalDays: [],
+            lastInstructional: "2026-12-05",
+          },
+          vrevamp_attendance_summary: { fetchedAt: now, semester: sem, subjects },
+        },
+      });
+      await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
+      await delay(1200);
+      const text = await page.evaluate(() => {
+        const el = document.getElementById("vrevamp-home-notices");
+        return el ? el.textContent : null;
+      });
+      await page.close();
+      return text || "";
+    };
+
+    // Already under 75% and recoverable: the only actionable number is how
+    // many in a row must be attended.
+    let text = await cardText([
+      {
+        name: "CSE3009 - NoSQL Databases",
+        code: "CSE3009",
+        pct: 68,
+        safeNow: 0,
+        below75: true,
+        recover: 4,
+        canRecover: true,
+        maxPct: 88,
+        unit: "class(es)",
+      },
+    ]);
+    ok("below 75% is named as debarment, with the recovery count", /below 75%/.test(text) && /debarred unless you attend the next 4 class\(es\)/.test(text), text.slice(0, 240));
+    ok("the old exam-relative headline is gone", !/skippable before/.test(text), text.slice(0, 240));
+
+    // Under 75% and beyond saving: telling this student to "attend 6 more" is
+    // arithmetic that does not exist. Say what perfect attendance reaches.
+    text = await cardText([
+      {
+        name: "CHY1008 - Chemistry",
+        code: "CHY1008",
+        pct: 52,
+        safeNow: 0,
+        below75: true,
+        recover: 9,
+        canRecover: false,
+        maxPct: 71,
+        unit: "class(es)",
+      },
+    ]);
+    ok(
+      "an unrecoverable subject is not given impossible advice",
+      /still only reaches 71%/.test(text) && !/attend the next/.test(text),
+      text.slice(0, 240)
+    );
+
+    // Above the line, but one absence from crossing it.
+    text = await cardText([
+      { name: "MAT2002 - Applied Numerical Methods", code: "MAT2002", pct: 76, safeNow: 0, below75: false, unit: "class(es)" },
+      { name: "CSE2005 - Operating Systems", code: "CSE2005", pct: 78, safeNow: 1, below75: false, unit: "class(es)" },
+      { name: "CSE2005 - Operating Systems Lab", code: "CSE2005L", pct: 90, safeNow: 4, below75: false, unit: "lab(s)" },
+    ]);
+    ok("no headroom is stated as such", /no room left/.test(text), text.slice(0, 240));
+    ok("one left is singular, not '1 class(es)'", /1 class left before debar/.test(text), text.slice(0, 240));
+    ok(
+      "everyone else is one compact line, tightest first",
+      /Can still miss before debar: CSE2005L \(lab\) 4/.test(text),
+      text.slice(0, 240)
+    );
+
+    // Comfortable across the board: say so once rather than listing nothing.
+    text = await cardText([
+      { name: "CSE3009 - NoSQL Databases", code: "CSE3009", pct: 93, safeNow: 3, below75: false, unit: "class(es)" },
+    ]);
+    ok("a safe student is told so, in one line", /Nothing is close to the 75% line/.test(text), text.slice(0, 240));
+
+    // An exam figure is still worth showing — but only while its exam is ahead.
+    text = await cardText([
+      { name: "CSE3009 - NoSQL", code: "CSE3009", pct: 76, safeNow: 0, below75: false, nextBunkable: 2, nextExamIso: "2026-08-24", nextExamLabel: "CAT-1", unit: "class(es)" },
+      { name: "CHY1008 - Chemistry", code: "CHY1008", pct: 76, safeNow: 0, below75: false, nextBunkable: 9, nextExamIso: "2026-08-10", nextExamLabel: "CAT-1", unit: "class(es)" },
+    ]);
+    ok("a live exam figure rides along in brackets", /\(2 before CAT-1\)/.test(text), text.slice(0, 300));
+    ok(
+      "an exam that has already happened is dropped, not shown",
+      !/9 before/.test(text),
+      text.slice(0, 300)
+    );
+  }
+
   /* ============ stale-semester detection (home cards) ============ */
   console.log("\n=== stale-semester detection: heads-up + next-class cards ===");
   {
@@ -3165,8 +3532,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     ok("heads-up card rendered", !!text, text || "no card");
     ok("stale note names the old semester", !!text && text.includes(oldSem) && /looks over/.test(text), (text || "").slice(0, 160));
-    ok("old at-risk warnings suppressed", !!text && !/skippable before the next exam/.test(text));
-    ok("old safe-skip line suppressed", !!text && !/Safe to skip now/.test(text));
+    ok("old at-risk warnings suppressed", !!text && !/no room left|before debar/.test(text));
+    ok("old safe-skip line suppressed", !!text && !/Can still miss before debar/.test(text));
     await page.close();
 
     // same caches 11 days earlier (semester still running) → normal render
@@ -3181,7 +3548,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       return el ? el.textContent : null;
     });
     ok("mid-semester: no stale note", !!text && !/looks over/.test(text), (text || "").slice(0, 160));
-    ok("mid-semester: at-risk warning shown", !!text && /skippable before the next exam/.test(text));
+    ok("mid-semester: at-risk warning shown", !!text && /no room left/.test(text), (text || "").slice(0, 200));
     ok("mid-semester: FAT countdown shown", !!text && /FAT starts in/.test(text));
     await page.close();
 
@@ -4545,7 +4912,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const bootAuth = (opts = {}) => {
       const listeners = [];
       const store = { ...(opts.store || {}) };
-      const calls = { webAuth: [], getAuthToken: 0 };
+      const calls = { webAuth: [], webAuthFlows: [], getAuthToken: 0 };
       const evt = () => ({ addListener: () => {}, removeListener: () => {} });
       const nsProxy = (seed = {}) =>
         new Proxy({ ...seed }, {
@@ -4586,10 +4953,20 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         scripting: nsProxy(),
         identity: nsProxy({
           getRedirectURL: () => "https://test-ext-id.chromiumapp.org/",
-          launchWebAuthFlow: ({ url }) => {
+          // `details` is recorded whole, not just the URL: whether a VISIBLE
+          // WINDOW opened is `details.interactive`, and that — not the query
+          // string — is the thing a student experiences as "it asked me again".
+          launchWebAuthFlow: (details) => {
+            const url = details.url;
             calls.webAuth.push(url);
+            calls.webAuthFlows.push({
+              url,
+              interactive: !!details.interactive,
+              abortOnLoadForNonInteractive: details.abortOnLoadForNonInteractive,
+              timeoutMsForNonInteractive: details.timeoutMsForNonInteractive,
+            });
             return opts.webAuth
-              ? opts.webAuth(url)
+              ? opts.webAuth(url, details)
               : Promise.resolve(
                   "https://test-ext-id.chromiumapp.org/#access_token=CAL-TOKEN&expires_in=3600"
                 );
@@ -4605,7 +4982,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       if (manifest.action) chromeStub.action = nsProxy();
       const ctx = vm.createContext({
         chrome: chromeStub, console, setTimeout, clearTimeout, setInterval, clearInterval,
-        fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+        fetch: opts.fetch ||
+          (() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })),
         URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, atob, btoa,
       });
       ctx.self = ctx;
@@ -4636,15 +5014,25 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       (swSrc.match(/const CALENDAR_CLIENT_ID = .*/) || ["missing"])[0]
     );
 
-    // Unconfigured: nothing changes. The no-sign-in TEMPLATE paths are still
-    // the ones that run, so leaving the constant blank cannot regress anyone.
+    // Unconfigured: say so, and do not fall back to manifest.oauth2.client_id.
+    // That is upstream's client and it is dead for every user of this build, so
+    // the only thing the old fallback ever produced was a "bad client id"
+    // error — which the buttons then rendered as "this build's OAuth client id
+    // is dead", making a WORKING sign-in look permanently broken to anyone
+    // running a stale copy. Verified live 2026-08-16: client 256000685922-…
+    // issues real calendar.events tokens on the chromiumapp redirect.
     {
       const { ask, calls } = bootAuth({ noClient: true });
       const r = await ask({ message: "get_google_token" });
       ok(
-        "with no Calendar client id, the legacy getAuthToken route still runs",
-        calls.getAuthToken === 1 && calls.webAuth.length === 0 && r && r.token === null,
+        "with no Calendar client id, the dead legacy route is NOT used",
+        calls.getAuthToken === 0 && calls.webAuth.length === 0 && r && r.token === null,
         JSON.stringify({ calls, r })
+      );
+      ok(
+        "and it reports 'not configured' rather than a dead client id",
+        r && r.error === "not_configured",
+        JSON.stringify(r)
       );
     }
 
@@ -4652,6 +5040,17 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       const { ask, calls, store } = bootAuth({
         store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com" },
+        // userinfo.email rides along in the merged grant purely so the worker
+        // can learn WHICH account approved it — that address is what makes
+        // every later refresh silent, so the mock has to answer it.
+        fetch: (url) =>
+          /oauth2\/v3\/userinfo/.test(url)
+            ? Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ email: "student@vitapstudent.ac.in" }),
+              })
+            : Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
       });
       const r = await ask({ message: "get_google_token", interactive: true });
       const url = calls.webAuth[0] || "";
@@ -4669,10 +5068,208 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
       ok(
         "the token is cached with an expiry, so the next click is silent",
-        !!store.vrevamp_calendar_token &&
-          store.vrevamp_calendar_token.token === "CAL-TOKEN" &&
-          store.vrevamp_calendar_token.exp > Date.now(),
-        JSON.stringify(store.vrevamp_calendar_token)
+        !!store.vrevamp_google_app_token &&
+          store.vrevamp_google_app_token.token === "CAL-TOKEN" &&
+          store.vrevamp_google_app_token.exp > Date.now(),
+        JSON.stringify(store.vrevamp_google_app_token)
+      );
+
+      /*
+       * The three causes of "it asks me OAuth every time", asserted directly.
+       * Each one was a single parameter, and each one on its own was enough to
+       * put a consent screen in front of every click.
+       */
+      ok(
+        "the consent screen is NOT forced on every click (no prompt=consent)",
+        !/[?&]prompt=[^&]*consent/.test(url),
+        url
+      );
+      ok(
+        "one grant covers Calendar AND mail, so there is one consent, not three",
+        url.includes(encodeURIComponent("https://www.googleapis.com/auth/gmail.send")) &&
+          url.includes(encodeURIComponent("https://www.googleapis.com/auth/userinfo.email")),
+        url
+      );
+      ok(
+        "an existing narrower grant is kept (include_granted_scopes)",
+        /include_granted_scopes=true/.test(url),
+        url
+      );
+      ok(
+        "the account that consented is remembered, so refreshes can be silent",
+        store.vrevamp_google_account === "student@vitapstudent.ac.in",
+        JSON.stringify(store.vrevamp_google_account)
+      );
+    }
+
+    /*
+     * The silent refresh, which is what actually runs on click 2..n.
+     *
+     * `prompt=none` cannot pick between the several Google accounts signed
+     * into a profile, so without login_hint it fails EVERY time and falls
+     * through to an interactive flow — an hourly consent screen that looks,
+     * from the outside, exactly like consent never being remembered.
+     */
+    {
+      const { ask, calls } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_google_account: "student@vitapstudent.ac.in",
+        },
+      });
+      await ask({ message: "get_google_token" });
+      const url = calls.webAuth[0] || "";
+      ok(
+        "a silent refresh names the account, so prompt=none can resolve it",
+        /[?&]prompt=none/.test(url) &&
+          url.includes("login_hint=" + encodeURIComponent("student@vitapstudent.ac.in")),
+        url
+      );
+    }
+
+    /*
+     * A BUTTON CLICK MUST TRY THE SILENT FLOW BEFORE IT OPENS A WINDOW.
+     *
+     * This is cause (4) in background.js, and it is the one that survived the
+     * first round of fixes: the old code went straight to
+     * `launchWebAuthFlow({interactive: true})` on every cache miss. Whether
+     * Google then had anything to ask was beside the point — the window is
+     * what the student sees, and it appeared roughly hourly, which is exactly
+     * the complaint ("the oauth should persist").
+     *
+     * So the assertion is about `details.interactive`, not the query string. A
+     * click that ends in a live token must not have opened a window at all.
+     */
+    {
+      const { ask, calls } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_google_account: "student@vitapstudent.ac.in",
+        },
+      });
+      const r = await ask({ message: "get_google_token", interactive: true });
+      const first = calls.webAuthFlows[0] || {};
+      ok(
+        "an interactive click tries prompt=none FIRST, with the known account",
+        first.interactive === false &&
+          /[?&]prompt=none/.test(first.url || "") &&
+          String(first.url).includes("login_hint=" + encodeURIComponent("student@vitapstudent.ac.in")),
+        JSON.stringify(first)
+      );
+      ok(
+        "and when that works, no consent window is ever opened",
+        r && r.token === "CAL-TOKEN" && calls.webAuthFlows.every((f) => !f.interactive),
+        JSON.stringify({ token: r && r.token, flows: calls.webAuthFlows.map((f) => f.interactive) })
+      );
+      /*
+       * Cause (5): Chrome kills a non-interactive flow at the first completed
+       * navigation unless told not to. accounts.google.com answers prompt=none
+       * with a page load THEN a redirect, so the default aborted a flow that
+       * was about to succeed — and the abort is indistinguishable from "never
+       * consented", which sent every refresh to the interactive path.
+       */
+      ok(
+        "the silent flow is not aborted at the first page load",
+        first.abortOnLoadForNonInteractive === false &&
+          typeof first.timeoutMsForNonInteractive === "number" &&
+          first.timeoutMsForNonInteractive > 0,
+        JSON.stringify(first)
+      );
+    }
+
+    // Only when the silent attempt genuinely fails does a window open — and
+    // then with no `prompt`, so a student who has already chosen an account is
+    // not shown the chooser a second time.
+    {
+      let n = 0;
+      const { ask, calls } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_google_account: "student@vitapstudent.ac.in",
+        },
+        webAuth: (url, details) =>
+          details.interactive
+            ? Promise.resolve(
+                `https://test-ext-id.chromiumapp.org/#access_token=LOUD${++n}&expires_in=3600`
+              )
+            : Promise.reject(new Error("User interaction required.")),
+      });
+      const r = await ask({ message: "get_google_token", interactive: true });
+      const loud = calls.webAuthFlows.filter((f) => f.interactive);
+      ok(
+        "a failed silent refresh falls back to exactly one window",
+        r && r.token === "LOUD1" && loud.length === 1,
+        JSON.stringify({ token: r && r.token, flows: calls.webAuthFlows.length })
+      );
+      ok(
+        "and that window carries no prompt, so the account chooser stays away",
+        !/[?&]prompt=/.test(loud[0].url) && loud[0].url.includes("login_hint="),
+        loud[0].url
+      );
+    }
+
+    // First run ever — nobody has chosen an account, so the chooser IS right.
+    {
+      const { ask, calls } = bootAuth({
+        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com" },
+        webAuth: (url, details) =>
+          details.interactive
+            ? Promise.resolve(
+                "https://test-ext-id.chromiumapp.org/#access_token=CAL-TOKEN&expires_in=3600"
+              )
+            : Promise.reject(new Error("User interaction required.")),
+      });
+      await ask({ message: "get_google_token", interactive: true });
+      const loud = calls.webAuthFlows.filter((f) => f.interactive)[0] || {};
+      ok(
+        "with no account on record the first window does ask which one",
+        /[?&]prompt=select_account/.test(loud.url || ""),
+        loud.url || "no interactive flow"
+      );
+    }
+
+    // …and never again. Once a grant exists, the chooser is suppressed even if
+    // the remembered address is lost, because re-showing it to someone who has
+    // already picked is the behaviour being complained about.
+    {
+      const { ask, calls } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_google_granted: true,
+        },
+        webAuth: (url, details) =>
+          details.interactive
+            ? Promise.resolve(
+                "https://test-ext-id.chromiumapp.org/#access_token=CAL-TOKEN&expires_in=3600"
+              )
+            : Promise.reject(new Error("User interaction required.")),
+      });
+      await ask({ message: "get_google_token", interactive: true });
+      const loud = calls.webAuthFlows.filter((f) => f.interactive)[0] || {};
+      ok(
+        "a grant already on record suppresses the account chooser",
+        !/[?&]prompt=/.test(loud.url || ""),
+        loud.url || "no interactive flow"
+      );
+    }
+
+    // Signing out has to put both back, or the student cannot switch account.
+    {
+      const { ask, store } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_google_account: "student@vitapstudent.ac.in",
+          vrevamp_google_granted: true,
+          vrevamp_google_app_token: { token: "OLD", exp: Date.now() + 3600000 },
+        },
+      });
+      await ask({ message: "google_sign_out" });
+      ok(
+        "sign-out forgets the token, the account AND the grant flag",
+        !store.vrevamp_google_app_token &&
+          !store.vrevamp_google_account &&
+          !store.vrevamp_google_granted,
+        JSON.stringify(Object.keys(store))
       );
     }
 
@@ -4702,7 +5299,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const { ask } = bootAuth({
         store: {
           vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_calendar_token: { token: "OLD", exp: Date.now() + 3600000 },
+          // the merged grant's key — Calendar and mail share one token now
+          vrevamp_google_app_token: { token: "OLD", exp: Date.now() + 3600000 },
         },
         webAuth: () =>
           Promise.resolve(
@@ -4717,6 +5315,695 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         JSON.stringify({ cached: cached && cached.token, fresh: fresh && fresh.token })
       );
     }
+
+    /* ---- direct email: a real message, not a calendar entry that mails later --- */
+    console.log("\n=== send_mail: a real email through the student's own Gmail ===");
+    const mailBoot = (o = {}) => {
+      const seen = { auth: [], sends: [] };
+      const { ask, store } = bootAuth({
+        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com", ...(o.store || {}) },
+        webAuth: (url) => {
+          seen.auth.push(url);
+          return o.refuseScope
+            ? Promise.resolve("https://test-ext-id.chromiumapp.org/#error=invalid_scope")
+            : Promise.resolve(
+                "https://test-ext-id.chromiumapp.org/#access_token=SEND-TOKEN&expires_in=3600"
+              );
+        },
+        fetch: (url, init) => {
+          if (/oauth2\/v3\/userinfo/.test(url))
+            return Promise.resolve({
+              ok: true, status: 200,
+              json: () => Promise.resolve({ email: "student@vitapstudent.ac.in" }),
+            });
+          seen.sends.push({ url, body: JSON.parse((init && init.body) || "{}") });
+          if (o.sendFails)
+            return Promise.resolve({
+              ok: false, status: 403,
+              json: () => Promise.resolve({ error: { message: o.sendFails } }),
+            });
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: "m1" }) });
+        },
+      });
+      return { ask, store, seen };
+    };
+    // base64url -> the raw RFC 2822 message the worker built
+    const rawOf = (send) =>
+      Buffer.from(String(send.body.raw).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+
+    {
+      const { ask, seen } = mailBoot();
+      // an em dash and an emoji in the subject: btoa() throws on both unless
+      // the worker widens to UTF-8 bytes first, and a naive header would emit
+      // raw 8-bit into a header field
+      const r = await ask({
+        message: "send_mail",
+        subject: "FAT exam schedule — 1 upcoming 📧",
+        html: "<b>ECE2015</b>",
+        text: "ECE2015",
+        interactive: true,
+      });
+      const raw = seen.sends.length ? rawOf(seen.sends[0]) : "";
+      ok(
+        "it asks for gmail.send (not inbox read) and resolves the address itself",
+        /scope=[^&]*gmail\.send/.test(seen.auth[0] || "") &&
+          /userinfo\.email/.test(decodeURIComponent(seen.auth[0] || "")) &&
+          !/gmail\.readonly/.test(decodeURIComponent(seen.auth[0] || "")),
+        decodeURIComponent(seen.auth[0] || "(no auth)")
+      );
+      ok(
+        "the mail is sent and the address it went to is reported back",
+        r && r.ok === true && r.to === "student@vitapstudent.ac.in" &&
+          /gmail\.googleapis\.com\/gmail\/v1\/users\/me\/messages\/send/.test(seen.sends[0].url),
+        JSON.stringify(r)
+      );
+      ok(
+        "a non-ASCII subject survives as an RFC 2047 encoded word",
+        /^Subject: =\?UTF-8\?B\?(\S+)\?=$/mu.test(raw) &&
+          Buffer.from(
+            (raw.match(/^Subject: =\?UTF-8\?B\?(\S+)\?=$/mu) || [])[1],
+            "base64"
+          ).toString("utf8") === "FAT exam schedule — 1 upcoming 📧",
+        (raw.match(/^Subject:.*$/mu) || ["missing"])[0]
+      );
+      ok(
+        "both a text/plain and a text/html part are sent, inside one boundary",
+        /^Content-Type: multipart\/alternative; boundary="(vrevamp-[a-z0-9]+)"$/mu.test(raw) &&
+          /Content-Type: text\/plain; charset="UTF-8"/u.test(raw) &&
+          /Content-Type: text\/html; charset="UTF-8"/u.test(raw) &&
+          raw.trimEnd().endsWith("--"),
+        raw.replace(/\r\n/g, " | ").slice(0, 200)
+      );
+    }
+    {
+      // a remembered address wins over the signed-in mailbox: two Google
+      // accounts is the norm, and the one Calendar runs under is often not the
+      // one the student reads on their phone
+      const { ask, seen } = mailBoot({ store: { vrevamp_reminder_email: "me@personal.example" } });
+      const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+      ok(
+        "a remembered reminder address overrides the signed-in mailbox",
+        r && r.to === "me@personal.example" && /To: me@personal\.example/u.test(rawOf(seen.sends[0])),
+        JSON.stringify(r)
+      );
+    }
+    {
+      // the ONE failure a student cannot click past
+      const { ask } = mailBoot({ refuseScope: true });
+      const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+      ok(
+        "a refused gmail.send scope is reported as a config problem, not a closed window",
+        r && r.ok === false && r.error === "gmail_send_scope",
+        JSON.stringify(r)
+      );
+    }
+    {
+      // the Gmail API itself switched off reads the same to the student
+      const { ask } = mailBoot({ sendFails: "Gmail API has not been used in project 123 before" });
+      const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+      ok(
+        "a disabled Gmail API is folded into the same actionable message",
+        r && r.ok === false && r.error === "gmail_send_scope",
+        JSON.stringify(r)
+      );
+    }
+    {
+      const { ask } = bootAuth({ noClient: true });
+      const r = await ask({ message: "send_mail", subject: "s", text: "t" });
+      ok(
+        "with no client id it says so instead of opening a doomed consent window",
+        r && r.ok === false && r.error === "not_configured",
+        JSON.stringify(r)
+      );
+    }
+
+    /* ---- relay mode: mail comes FROM vRevamp, not from the student ---- */
+    console.log("\n=== mail relay: sending from a vRevamp address, no server ===");
+    const relayBoot = (o = {}) => {
+      const seen = { auth: [], posts: [], gmail: 0 };
+      const { ask } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_mail_relay_url: "https://script.google.com/macros/s/AKfy-test/exec",
+          ...(o.store || {}),
+        },
+        webAuth: (url) => {
+          seen.auth.push(url);
+          return Promise.resolve(
+            "https://test-ext-id.chromiumapp.org/#access_token=ADDR-TOKEN&expires_in=3600"
+          );
+        },
+        fetch: (url, init) => {
+          if (/oauth2\/v3\/userinfo/.test(url))
+            return Promise.resolve({
+              ok: true, status: 200,
+              json: () => Promise.resolve({ email: "student@vitapstudent.ac.in" }),
+            });
+          if (/gmail\.googleapis\.com/.test(url)) {
+            seen.gmail += 1;
+            return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+          }
+          seen.posts.push({ url, init, body: JSON.parse((init && init.body) || "{}") });
+          if (o.relayError)
+            return Promise.resolve({
+              ok: true, status: 200,
+              json: () => Promise.resolve({ ok: false, error: o.relayError }),
+            });
+          if (o.httpFail)
+            return Promise.resolve({ ok: false, status: o.httpFail, json: () => Promise.resolve(null) });
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+        },
+      });
+      return { ask, seen };
+    };
+
+    {
+      // Asked 2026-08-16 — "we do not need their oauth too?". For mail: no. Not
+      // one scope. The relay owns the sending identity, so the only unknown is
+      // the recipient, and the answer to that is a text field, not a consent
+      // screen. `need_address` is the signal that asks for it.
+      const { ask, seen } = relayBoot();
+      const first = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+      ok(
+        "relay mode never touches Google — no address means ask, not sign in",
+        first && first.ok === false && first.error === "need_address" &&
+          seen.auth.length === 0 && seen.gmail === 0 && seen.posts.length === 0,
+        JSON.stringify({ first, auths: seen.auth.length, gmail: seen.gmail })
+      );
+    }
+    {
+      const { ask, seen } = relayBoot({ store: { vrevamp_reminder_email: "student@vitapstudent.ac.in" } });
+      const r = await ask({ message: "send_mail", subject: "FAT — 6 upcoming", html: "<b>x</b>", interactive: true });
+      ok(
+        "a configured relay takes over, and Gmail's send API is never touched",
+        r && r.ok === true && r.to === "student@vitapstudent.ac.in" &&
+          seen.posts.length === 1 && seen.gmail === 0 && seen.auth.length === 0 &&
+          /script\.google\.com\/macros\/s\/.*\/exec$/.test(seen.posts[0].url),
+        JSON.stringify({ r, gmailCalls: seen.gmail, auths: seen.auth.length })
+      );
+      ok(
+        "the relay is told only who to write to — the FROM identity is its own",
+        seen.posts[0].body.to === "student@vitapstudent.ac.in" &&
+          seen.posts[0].body.subject === "FAT — 6 upcoming" &&
+          !("from" in seen.posts[0].body),
+        JSON.stringify(seen.posts[0].body)
+      );
+      ok(
+        "posted as text/plain, so Apps Script isn't asked for a CORS preflight it won't answer",
+        /text\/plain/.test((seen.posts[0].init.headers || {})["Content-Type"] || ""),
+        JSON.stringify(seen.posts[0].init.headers)
+      );
+    }
+    {
+      // the address the student typed is stored per-browser and reused
+      const { ask, seen } = relayBoot();
+      const saved = await ask({ message: "set_reminder_email", address: "me@personal.example" });
+      const r = await ask({ message: "send_mail", subject: "s", text: "t" });
+      ok(
+        "an address typed once is remembered, and every later send just works",
+        saved && saved.ok === true && r && r.ok === true && r.to === "me@personal.example" &&
+          seen.auth.length === 0,
+        JSON.stringify({ saved, r })
+      );
+      const bad = await ask({ message: "set_reminder_email", address: "not an email" });
+      ok(
+        "a typo is refused rather than silently stored and mailed into the void",
+        bad && bad.ok === false && /doesn't look like an email/.test(bad.error),
+        JSON.stringify(bad)
+      );
+    }
+    {
+      // the script's own refusals are already written for a student to read
+      const { ask } = relayBoot({ store: { vrevamp_reminder_email: "student@vitapstudent.ac.in" }, relayError: "too many mails to this address today" });
+      const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+      ok(
+        "a relay refusal is surfaced in the relay's own words",
+        r && r.ok === false && r.error === "too many mails to this address today",
+        JSON.stringify(r)
+      );
+    }
+    {
+      const { ask } = relayBoot({ store: { vrevamp_reminder_email: "student@vitapstudent.ac.in" }, httpFail: 503 });
+      const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+      ok(
+        "a relay that is down reports the status, and does NOT silently fall back to the student's Gmail",
+        r && r.ok === false && /relay returned HTTP 503/.test(r.error),
+        JSON.stringify(r)
+      );
+    }
+
+    /* ---------------- the daily digest ----------------
+     *
+     * Built last session and shipped with NO test at all, which is how the
+     * home card's mistake — telling a student already under 75% how many
+     * classes they may skip — came to be duplicated in the mail nobody had
+     * read yet. `set_daily_digest {enabled:true}` sends one immediately, which
+     * is also the only way to see it without firing an alarm.
+     */
+    console.log("\n=== daily digest: what actually lands in the inbox ===");
+    const digestBoot = (subjects, extra = {}) =>
+      relayBoot({
+        store: {
+          vrevamp_reminder_email: "me@personal.example",
+          vrevamp_attendance_summary: { fetchedAt: Date.now(), subjects },
+          ...extra,
+        },
+      });
+
+    {
+      const { ask, seen } = digestBoot([
+        { name: "CSE3009 - NoSQL", code: "CSE3009", pct: 68, safeNow: 0, below75: true, recover: 4, canRecover: true, maxPct: 88, unit: "class(es)" },
+      ]);
+      const r = await ask({ message: "set_daily_digest", enabled: true });
+      const body = seen.posts[0] ? seen.posts[0].body : {};
+      ok(
+        "turning the digest on sends one straight away, to the saved address",
+        r && r.ok === true && r.enabled === true && seen.posts.length === 1 && body.to === "me@personal.example",
+        JSON.stringify({ r, posts: seen.posts.length })
+      );
+      ok(
+        "a subject under 75% is told what to attend, not what it may skip",
+        /debarred unless you attend the next 4 class\(es\)/.test(body.html || "") &&
+          !/you can still skip/.test(body.html || ""),
+        String(body.html || "").slice(0, 400)
+      );
+      ok(
+        "the plain-text part carries the same verdict, without the markup",
+        /debarred unless you attend the next 4 class\(es\)/.test(body.text || "") &&
+          !/<b>/.test(body.text || ""),
+        String(body.text || "").slice(0, 300)
+      );
+    }
+
+    {
+      const { ask, seen } = digestBoot([
+        { name: "CHY1008 - Chemistry", code: "CHY1008", pct: 52, safeNow: 0, below75: true, recover: 9, canRecover: false, maxPct: 71, unit: "class(es)" },
+      ]);
+      await ask({ message: "set_daily_digest", enabled: true });
+      const html = (seen.posts[0] && seen.posts[0].body.html) || "";
+      ok(
+        "an unrecoverable subject is not sent impossible arithmetic",
+        /still only reaches 71%/.test(html) && !/attend the next/.test(html),
+        html.slice(0, 400)
+      );
+    }
+
+    {
+      const { ask, seen } = digestBoot([
+        { name: "MAT2002 - Numerical Methods", code: "MAT2002", pct: 76, safeNow: 0, below75: false, unit: "class(es)" },
+        { name: "CSE2005 - OS", code: "CSE2005", pct: 79, safeNow: 2, below75: false, unit: "class(es)" },
+      ]);
+      await ask({ message: "set_daily_digest", enabled: true });
+      const html = (seen.posts[0] && seen.posts[0].body.html) || "";
+      ok(
+        "above the line, the number given is headroom before 75%",
+        /no room left/.test(html) && /2 class\(es\) left before you drop under 75%/.test(html),
+        html.slice(0, 400)
+      );
+    }
+
+    {
+      // Nothing cached at all: no mail, no notification, no error. A digest
+      // that mails "I have nothing to tell you" every morning gets muted, and
+      // then the one that matters is muted too.
+      const { ask, seen } = relayBoot({ store: { vrevamp_reminder_email: "me@personal.example" } });
+      const r = await ask({ message: "set_daily_digest", enabled: true });
+      ok(
+        "a day with nothing to report sends nothing at all",
+        r && r.ok === true && seen.posts.length === 0,
+        JSON.stringify({ r, posts: seen.posts.length })
+      );
+    }
+
+    {
+      // Stale snapshots must not be mailed as today's news — the same failure
+      // the home card had, in the surface a student reads before opening VTOP.
+      const { ask, seen } = relayBoot({
+        store: {
+          vrevamp_reminder_email: "me@personal.example",
+          vrevamp_attendance_summary: {
+            fetchedAt: Date.now() - 40 * 86400000,
+            subjects: [{ name: "CSE3009", code: "CSE3009", pct: 60, safeNow: 0, below75: true, recover: 5, canRecover: true, unit: "class(es)" }],
+          },
+        },
+      });
+      await ask({ message: "set_daily_digest", enabled: true });
+      ok(
+        "a 40-day-old attendance snapshot is not mailed as today's news",
+        seen.posts.length === 0,
+        JSON.stringify(seen.posts.map((p) => ({ url: p.url, body: p.body })))
+      );
+    }
+  }
+
+  /* ====== the venue watcher: mail me again once VTOP publishes the venue ===== */
+  console.log("\n=== exam venue watcher: auto-mail when '-' becomes a real venue ===");
+  {
+    // VTOP publishes venue and seat late — the column reads "-" until a few
+    // days out, so the first 📧 can only ever say "not published yet". Asked
+    // for 2026-08-16: mail it again, same format, the moment it appears.
+    const fixedExam = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const body = (venue, seatLoc, seatNo) => `<body>
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <table class="customTable">
+        <tr><td>General (Semester)</td></tr>
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>ETH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>${venue}</td>
+            <td>${seatLoc}</td><td>${seatNo}</td></tr>
+      </table></body>`;
+
+    const page = await newPage(browser);
+    await page.route("https://www.googleapis.com/**", (route) =>
+      route.fulfill({ contentType: "application/json", body: "{}" })
+    );
+    await page.setContent(body("-", "-", "-"));
+    await shim(page, { fixedMs: fixedExam });
+    await inject(page, [
+      "js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js",
+    ]);
+    await page.evaluate(() => { window.__mails = []; window.__dispatch("exam_schedule"); });
+    await delay(600);
+    // Guarantee 1: silence until 📧 has been pressed. A page load must never
+    // send mail — or open a Google consent window — on its own.
+    ok(
+      "no mail before 📧 has ever been pressed",
+      (await page.evaluate(() => (window.__mails || []).length)) === 0,
+      JSON.stringify(await page.evaluate(() => window.__mails || []))
+    );
+
+    await page.evaluate(() => {
+      [...document.querySelectorAll("button")]
+        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+    });
+    await delay(600);
+    const firstNote = await page.evaluate(() => {
+      const b = [...document.querySelectorAll("button")]
+        .find((x) => /mail me the list/.test(x.textContent));
+      return b && b.nextElementSibling ? b.nextElementSibling.textContent : null;
+    });
+    ok(
+      "📧 says which exams are still waiting on a venue, and promises the follow-up",
+      /still have no venue/.test(firstNote || "") &&
+        /mailed again automatically/.test(firstNote || ""),
+      String(firstNote)
+    );
+    ok(
+      "and it records the opt-in so the watcher may run from now on",
+      (await page.evaluate(() => (window.__storage.vrevamp_exam_mail_state || {}).optIn)) === true,
+      JSON.stringify(await page.evaluate(() => window.__storage.vrevamp_exam_mail_state || null))
+    );
+
+    // Nothing has changed yet: re-rendering the same page must not re-send.
+    await page.evaluate(() => { window.__mails = []; window.__dispatch("exam_schedule"); });
+    await delay(600);
+    ok(
+      "an unchanged page does not mail again",
+      (await page.evaluate(() => (window.__mails || []).length)) === 0,
+      JSON.stringify(await page.evaluate(() => (window.__mails || []).map((m) => m.subject)))
+    );
+
+    // VTOP publishes the venue. This is the whole feature.
+    await page.evaluate((html) => {
+      document.body.innerHTML = new DOMParser()
+        .parseFromString(html, "text/html").body.innerHTML;
+      window.__mails = [];
+      window.__dispatch("exam_schedule");
+    }, body("CB-324", "R3C1", "5"));
+    await delay(900);
+    const auto = await page.evaluate(() => (window.__mails || [])[0] || null);
+    ok(
+      "a venue appearing mails automatically, in the same format, saying why",
+      !!auto &&
+        /FAT — venue published for 1 exam\(s\)/.test(auto.subject) &&
+        /published the venue/.test(auto.html) &&
+        /CB-324/.test(auto.html) &&
+        /R3C1/.test(auto.html) &&
+        // same table layout as the manual 📧 — the format was asked for by name
+        /Seat loc \/ no\./.test(auto.html),
+      JSON.stringify({ subject: auto && auto.subject, sent: (await page.evaluate(() => (window.__mails || []).length)) })
+    );
+    ok(
+      "the automatic send is never interactive (no consent window on page load)",
+      !!auto && auto.interactive === false,
+      JSON.stringify({ interactive: auto && auto.interactive })
+    );
+    // Guarantee 2: the sync retries up to ten times per load. Keying the record
+    // by the VENUE, not a boolean, is what stops a storm of identical mails.
+    await page.evaluate(() => { window.__mails = []; window.__dispatch("exam_schedule"); });
+    await delay(900);
+    ok(
+      "the same venue never mails twice",
+      (await page.evaluate(() => (window.__mails || []).length)) === 0,
+      JSON.stringify(await page.evaluate(() => (window.__mails || []).map((m) => m.subject)))
+    );
+    // ...but a CORRECTED venue is news, and must go out
+    await page.evaluate((html) => {
+      document.body.innerHTML = new DOMParser()
+        .parseFromString(html, "text/html").body.innerHTML;
+      window.__mails = [];
+      window.__dispatch("exam_schedule");
+    }, body("CB-101", "R1C1", "12"));
+    await delay(900);
+    const moved = await page.evaluate(() => (window.__mails || [])[0] || null);
+    ok(
+      "a venue CHANGED after the fact mails again",
+      !!moved && /CB-101/.test(moved.html),
+      JSON.stringify({ subject: moved && moved.subject })
+    );
+    await page.close();
+  }
+
+  /* ---- the address prompt: the whole cost of mail once a relay exists ---- */
+  console.log("\n=== 📧 with a relay: one text field instead of a Google sign-in ===");
+  {
+    const fixedExam = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const page = await newPage(browser);
+    await page.route("https://www.googleapis.com/**", (route) =>
+      route.fulfill({ contentType: "application/json", body: "{}" })
+    );
+    await page.setContent(`<body>
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <form id="examSchedule"><table class="customTable">
+        <tr><td>General (Semester)</td></tr>
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>ETH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>CB-324</td>
+            <td>R3C1</td><td>5</td></tr>
+      </table></form></body>`);
+    await shim(page, { fixedMs: fixedExam });
+    await inject(page, [
+      "js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js",
+    ]);
+    await page.evaluate(() => {
+      window.__mailNeedsAddress = true; // a relay is configured, address unknown
+      window.__mails = [];
+      window.__dispatch("exam_schedule");
+    });
+    await delay(400);
+    await page.evaluate(() => {
+      [...document.querySelectorAll("button")]
+        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+    });
+    await delay(400);
+    const prompted = await page.evaluate(() => {
+      const box = document.querySelector(".vrevamp-exam-addr");
+      const save = box && box.querySelector("[data-vr-action='exam-addr']");
+      return {
+        hasInput: !!(box && box.querySelector("input")),
+        // these sit inside VTOP's own <form>; a default-type button submits it
+        saveType: save ? save.type : null,
+        mails: (window.__mails || []).length,
+      };
+    });
+    ok(
+      "no address yet: it asks in place, sends nothing, and cannot submit VTOP's form",
+      prompted.hasInput && prompted.saveType === "button" && prompted.mails === 0,
+      JSON.stringify(prompted)
+    );
+
+    // a typo is caught before anything is stored or sent
+    await page.evaluate(() => {
+      const box = document.querySelector(".vrevamp-exam-addr");
+      box.querySelector("input").value = "nonsense";
+      box.querySelector("[data-vr-action='exam-addr']").click();
+    });
+    await delay(300);
+    ok(
+      "a typo is refused in place, the prompt stays open, still nothing sent",
+      (await page.evaluate(() => !!document.querySelector(".vrevamp-exam-addr"))) &&
+        (await page.evaluate(() => (window.__mails || []).length)) === 0 &&
+        !(await page.evaluate(() => window.__storage.vrevamp_reminder_email)),
+      JSON.stringify(await page.evaluate(() => (window.__mails || []).length))
+    );
+
+    await page.evaluate(() => {
+      const box = document.querySelector(".vrevamp-exam-addr");
+      box.querySelector("input").value = "me@personal.example";
+      box.querySelector("[data-vr-action='exam-addr']").click();
+    });
+    await delay(600);
+    const after = await page.evaluate(() => ({
+      stored: window.__storage.vrevamp_reminder_email || null,
+      gone: !document.querySelector(".vrevamp-exam-addr"),
+      mail: (window.__mails || [])[0] || null,
+      note: (() => {
+        const b = [...document.querySelectorAll("button")]
+          .find((x) => /mail me the list/.test(x.textContent));
+        return b && b.nextElementSibling ? b.nextElementSibling.textContent : null;
+      })(),
+    }));
+    ok(
+      "answering it sends immediately — no re-click, no sign-in, ever",
+      after.stored === "me@personal.example" && after.gone && !!after.mail &&
+        after.mail.to === "me@personal.example" && /ECE2015/.test(after.mail.html),
+      JSON.stringify({ stored: after.stored, gone: after.gone, to: after.mail && after.mail.to })
+    );
+    ok(
+      "and the confirmation names the address the student just typed",
+      /✓ emailed 1 exam\(s\) to me@personal\.example/.test(after.note || ""),
+      String(after.note)
+    );
+    await page.close();
+  }
+
+  /* --- and it waits for the whole batch, instead of one mail per subject --- */
+  {
+    // VTOP publishes a group's venues together, overnight. Reported
+    // 2026-08-16: "it sends even if one subject gets the venue na" — firing on
+    // the first row to change would mean a trickle of mails whenever the
+    // student opens VTOP mid-batch, or when one course lags.
+    const fixedExam = new Date("2026-04-01T09:00:00+05:30").getTime();
+    // ECE2015 is 33 days out, PHY1701 is 32 — neither is urgent
+    const two = (v1, v2) => `<body>
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <table class="customTable">
+        <tr><td>General (Semester)</td></tr>
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>ETH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>${v1}</td>
+            <td>R3C1</td><td>5</td></tr>
+        <tr><td>2</td><td>PHY1701</td><td>Modern Physics</td><td>ETH</td><td>AP2</td><td>B1</td>
+            <td>03-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>${v2}</td>
+            <td>R1C2</td><td>7</td></tr>
+      </table></body>`;
+
+    const page = await newPage(browser);
+    await page.route("https://www.googleapis.com/**", (route) =>
+      route.fulfill({ contentType: "application/json", body: "{}" })
+    );
+    await page.setContent(two("-", "-"));
+    await shim(page, { fixedMs: fixedExam });
+    await inject(page, [
+      "js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js",
+    ]);
+    await page.evaluate(() => window.__dispatch("exam_schedule"));
+    await delay(400);
+    // opt in, with both venues still unpublished
+    await page.evaluate(() => {
+      window.__mails = [];
+      [...document.querySelectorAll("button")]
+        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+    });
+    await delay(600);
+
+    // ONE of two lands: hold, because neither exam is close
+    await page.evaluate((html) => {
+      document.body.innerHTML = new DOMParser().parseFromString(html, "text/html").body.innerHTML;
+      window.__mails = [];
+      window.__dispatch("exam_schedule");
+    }, two("CB-324", "-"));
+    await delay(900);
+    ok(
+      "one subject's venue alone does NOT mail — it waits for the rest of the batch",
+      (await page.evaluate(() => (window.__mails || []).length)) === 0,
+      JSON.stringify(await page.evaluate(() => (window.__mails || []).map((m) => m.subject)))
+    );
+
+    // the batch completes: exactly one mail, carrying BOTH exams
+    await page.evaluate((html) => {
+      document.body.innerHTML = new DOMParser().parseFromString(html, "text/html").body.innerHTML;
+      window.__mails = [];
+      window.__dispatch("exam_schedule");
+    }, two("CB-324", "CB-108"));
+    await delay(900);
+    const batch = await page.evaluate(() => window.__mails || []);
+    ok(
+      "when the batch completes, ONE mail carries the whole group",
+      batch.length === 1 &&
+        /venue published for 2 exam\(s\)/.test(batch[0].subject) &&
+        /CB-324/.test(batch[0].html) &&
+        /CB-108/.test(batch[0].html),
+      JSON.stringify({ count: batch.length, subject: batch[0] && batch[0].subject })
+    );
+    await page.close();
+  }
+
+  /* --- unless waiting would mean missing the exam --- */
+  {
+    // A course whose venue never appears (moved online, cancelled) must not
+    // suppress the mail for an exam that is tomorrow. Inside 36 h, a partial
+    // list beats no list.
+    const soon = new Date("2026-05-03T09:00:00+05:30").getTime(); // ECE2015 is next morning
+    const page = await newPage(browser);
+    await page.route("https://www.googleapis.com/**", (route) =>
+      route.fulfill({ contentType: "application/json", body: "{}" })
+    );
+    const html = (v1) => `<body>
+      <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
+      <table class="customTable">
+        <tr><td>General (Semester)</td></tr>
+        <tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class ID</td><td>Slot</td>
+            <td>Exam Date</td><td>Exam Session</td><td>Reporting Time</td><td>Exam Time</td><td>Venue</td>
+            <td>Seat Location</td><td>Seat No.</td></tr>
+        <tr><td class="panelHead-secondary">FAT</td></tr>
+        <tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>ETH</td><td>AP1</td><td>A1</td>
+            <td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>${v1}</td>
+            <td>R3C1</td><td>5</td></tr>
+        <tr><td>2</td><td>PHY1701</td><td>Modern Physics</td><td>ETH</td><td>AP2</td><td>B1</td>
+            <td>20-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>-</td>
+            <td>R1C2</td><td>7</td></tr>
+      </table></body>`;
+    await page.setContent(html("-"));
+    await shim(page, { fixedMs: soon });
+    await inject(page, [
+      "js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js", "js/exam_schedule.js",
+    ]);
+    await page.evaluate(() => window.__dispatch("exam_schedule"));
+    await delay(400);
+    await page.evaluate(() => {
+      window.__mails = [];
+      [...document.querySelectorAll("button")]
+        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+    });
+    await delay(600);
+    await page.evaluate((h) => {
+      document.body.innerHTML = new DOMParser().parseFromString(h, "text/html").body.innerHTML;
+      window.__mails = [];
+      window.__dispatch("exam_schedule");
+    }, html("CB-324"));
+    await delay(900);
+    const urgent = await page.evaluate(() => (window.__mails || [])[0] || null);
+    ok(
+      "an exam inside 36 h mails immediately, without waiting on a straggler",
+      !!urgent && /CB-324/.test(urgent.html),
+      JSON.stringify({ subject: urgent && urgent.subject })
+    );
+    ok(
+      "and it says the rest are still pending, so the silence is explained",
+      !!urgent && /still show no venue/.test(urgent.html),
+      (urgent ? urgent.html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ") : "no mail").slice(0, 200)
+    );
+    await page.close();
   }
 
   await browser.close();

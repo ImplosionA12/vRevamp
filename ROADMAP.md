@@ -1,33 +1,140 @@
 # vRevamp — what's left
 
-Open work as of **2026-08-10**. Ordered by what unblocks the most.
+Open work as of **2026-08-16**. Ordered by what unblocks the most.
 Historical record of what was *done* lives in [changes.md](changes.md).
+
+The Cloud project is **`verammp`** (number `256000685922`, display name
+"VErammp"), owned by **ruthvikmrao@gmail.com** — *not* the account the browser
+is usually signed in as, which is why every Console link needs `&authuser=…`.
 
 ---
 
-## 1. Two checkboxes in Google Cloud Console — biggest payoff, no code
+## 1. SETTLED 2026-08-16: OAuth works. Do not re-diagnose it.
 
-`CALENDAR_CLIENT_ID` is wired (`service_worker/background.js`) and points at the
-same OAuth client the Gmail OTP feature already uses. What's missing is project
-configuration, in that same project:
+Driven by hand against Google, not inferred:
 
-1. **APIs & Services → Library → Google Calendar API → Enable**
-2. **Google Auth Platform → Data Access → Add scope**
-   `https://www.googleapis.com/auth/calendar.events` → Update → Save
+- client `256000685922-…` is **alive** — account chooser reads "to continue to
+  VEramp"
+- the `chromiumapp.org` redirect is **registered** (no `redirect_uri_mismatch`)
+- **`calendar.events` is already on the consent screen** — the consent card says
+  "View and edit events on all your calendars"
+- the flow returns a real `access_token` with `expires_in=3599`
+- the app is in **Testing** with the student address as a test user (Google's
+  "currently being tested" interstitial appears; Continue works)
 
-Until both are done, consent returns a token that 403s on the first write. If
-that happens the button says so — the hint text recognises `invalid_scope` and
-names the fix rather than blaming the user.
+The "this build's OAuth client id is dead" message was leftover from upstream's
+client and is gone, along with the legacy `getAuthToken` route that produced it.
+See changes.md, 2026-08-16.
 
-**What it unlocks the moment it's set:** the timetable import stops opening one
-editor per class and writes everything through the API in one click, and a
-re-import *replaces* the previous one instead of adding a copy
-(`deleteOldImports` runs first). The exam ✉️ and DA ✉ buttons start working too —
-same token, no change of their own.
+### Nothing is left to configure — verified live the same day
 
-Verify with: `console.cloud.google.com/auth/clients` → client should be
-`256000685922-…` with redirect `https://jfmlhhjlkbliphgkmeingeacbijcilcl.chromiumapp.org/`
-(trailing slash matters).
+On a logged-in session, against Fall 2026-27's newly published CAT1 schedule
+(6 exams, 17–24 Aug 2026):
+
+| button | reported |
+|---|---|
+| 🔔 | `✓ 11 Chrome notification(s) scheduled (1 day & 2 h before each exam)` |
+| ✉️ | `✓ 6 reminder(s) set — email 24 h before each exam` |
+| 📧 | `✓ emailed 6 exam(s) to ruthvik.24mic7198@vitapstudent.ac.in` |
+
+So the **Calendar API is enabled** (six events written through it) and
+**`gmail.send` is on the consent screen** (Gmail returned 200 on
+`users.messages.send`). Both former checkbox items are done.
+
+Each Google flow asks for one interactive consent the first time, because three
+accounts are signed into the profile and `prompt=none` cannot choose between
+them. Once per scope, not once per click.
+
+### 2026-08-17: the screen was still coming back. Two more causes, now fixed
+
+"Settled" above referred to the *client and project configuration*, which is
+still true — nothing in Cloud Console needs touching. The **client-side** flow
+had two more faults, both in `webAuthToken`, both fixed:
+
+- a button click went **straight to a visible window** on any cache miss; it
+  never tried `prompt=none` first. Now it does.
+- the silent flow was aborted by Chrome at the first completed navigation
+  (`abortOnLoadForNonInteractive` defaults to **true**), one hop before
+  Google's `prompt=none` redirect lands. Both non-interactive knobs are passed
+  now.
+
+Expected behaviour from here: **one screen on first use, then silence** — apart
+from Google's 7-day Testing expiry (§3), which no client code can shorten. If a
+window appears more often than that, the grant is genuinely being lost;
+re-diagnose from `chrome://extensions` → service worker console, not from the
+Console.
+
+**What this unlocks beyond the exam page:** the timetable import should now stop
+opening one editor per class and write everything through the API in one click,
+with a re-import *replacing* the previous one (`deleteOldImports` runs first).
+**Not yet retested on the timetable page** — do that next, and it should also
+clear the duplicate-events problem in §2.
+
+## 1b. ONE STEP LEFT: deploy the mail relay
+
+Code is done and tested; it is dormant until `MAIL_RELAY_URL` in
+`service_worker/background.js` is filled in. Blank = mail still sends from the
+student's own Gmail, exactly as today.
+
+1. Make the sender account, e.g. `veramp.mailer@gmail.com`. **Do the rest signed
+   in as that account** — it is the From line students will see.
+2. script.google.com → New project → paste `tools/mail-relay.gs`.
+3. Deploy → New deployment → Web app. **Execute as: Me. Who has access:
+   Anyone.** (Anyone = unauthenticated callers, i.e. the extension. It grants
+   nobody access to the mailbox.)
+4. Authorise it — you will get the "hasn't verified this app" screen; it is your
+   own script, so Advanced → Go to is correct.
+5. Paste the `/exec` URL into `MAIL_RELAY_URL`, reload the extension.
+
+Check it is alive by opening the `/exec` URL in a browser — a GET returns
+`{"ok":true,"service":"vRevamp mail relay","quotaLeft":N}`.
+
+**Later edits: Deploy → Manage deployments → edit the EXISTING deployment.** A
+new deployment issues a new URL and breaks every installed copy.
+
+Once live, **📧 needs no Google sign-in at all** — not one scope. The relay owns
+the sending identity, so the only unknown is where to write, and the page asks
+for that in a text field. A student with no Google account can use it.
+
+`calendar.events` is still required for ✉️ reminders and the timetable import.
+Writing into someone's Google Calendar requires that person's consent and no
+relay changes that; the sign-in-free substitute is the 📅 one-tap links, where
+the student presses Save.
+
+Quota is 100 recipients/day on consumer Gmail (1500 on Workspace); the script
+self-limits to 60/day and 12 per recipient.
+
+### The trade-off, stated plainly
+
+The `/exec` URL ships in the extension, so it is public and anyone who extracts
+it can POST to it. The caps above are mitigation, not prevention. Proportionate
+for personal or single-campus use; a public Web Store release needs per-user
+tokens from something stateful.
+
+## 1c. Superseded: the paid-hosting options
+
+Today 📧 sends through the student's own Gmail, so it arrives **from them, to
+them**. ✉️ reminders already arrive from *Google Calendar*, not from the student,
+so this only affects the instant summary.
+
+Sending as `vrevamp@…` **cannot be done from the extension alone** — anything
+shipped inside it is readable by every user, so a sender credential there would
+let anyone send as vRevamp. It needs a server holding the secret:
+
+| piece | free options | catch |
+|---|---|---|
+| host | Cloudflare Workers (100k req/day), Deno Deploy, Vercel/Netlify functions, Cloud Run | a service that can go down and take everyone's mail with it |
+| sending | Resend (3k/mo), Brevo (300/day), MailerSend | need an owned domain (~₹700–1000/yr) + DNS verification, or you send from the provider's sandbox address, which looks worse than a personal Gmail |
+
+A no-server middle ground exists: create the Calendar event with the destination
+as an **attendee** and `sendUpdates=all`, and Google mails it immediately from
+Google Calendar, using only `calendar.events`. Google does **not** invite the
+organizer, so this works only when the destination differs from the account
+Calendar runs under.
+
+**Not needed** — §1b does the same job free, with no host and no domain, because
+a plain @gmail sender was acceptable. Kept only so the reasoning is not
+re-derived from scratch if vRevamp ever outgrows an Apps Script's quota.
 
 ## 2. Clean up the duplicate calendar events — manual, not code
 
@@ -63,19 +170,11 @@ Google account at all.
 
 ## Unverified, waiting on the world
 
-### Exam 🔔 end-to-end
+### ~~Exam 🔔 end-to-end~~ — DONE 2026-08-16
 
-Fixed and structurally verified (the buttons are `type="button"` inside
-`<form id="examSchedule">` — that form was the original killer), but never once
-run against a *future* exam, because there isn't one:
-
-- **Fall 2026-27 publishes no exam schedule at all** — VTOP returns an empty
-  content area, not even a "not found" message
-- Winter 2025-26's 21 exam dates run 02-Feb-2026 → 18-May-2026, all past
-
-So the bell correctly reports "no upcoming exams". Retest when Fall 2026-27
-publishes. **A large part of the historical "reminders don't work" complaint was
-this and nothing else.**
+Fall 2026-27 published its CAT1 schedule and all three exam buttons were run
+against it on a real session. See §1. **A large part of the historical
+"reminders don't work" complaint really was an empty schedule.**
 
 ### Login OTP autofill
 
@@ -93,32 +192,30 @@ due. Retest when something is actually pending.
 
 ## Known decisions to make
 
-### The captcha solver is obsolete on VIT-AP — is it on VIT Vellore?
+### ~~The captcha solver is obsolete on VIT-AP~~ — WRONG, retracted 2026-08-16
 
-`vtop.vitap.ac.in/vtop/login` now serves invisible **Google reCAPTCHA** (hidden
-`gResponse`, no `img.form-control`, no `#stdForm`). `js/captcha/` is dead weight
-there and `refreshTillCaptcha.js` explicitly recognises the new shape and does
-nothing.
+`vtop.vitap.ac.in/vtop/login` is serving the **old image captcha again**, and
+`js/captcha/` solved it unaided on a live login (`YUF4M9`, filled before the
+page settled). The earlier "moved to invisible reCAPTCHA" reading was a snapshot
+of one moment, not a permanent change.
 
-**Unknown:** whether `vtopcc.vit.ac.in` (Vellore/Chennai) still uses the old
-image captcha. The manifest still injects the solver for those hosts. Check
-before deleting anything — the ML weights (`weights.json`, ~600 KB of the
-791 KB package) are the single biggest thing in the build.
+**Do not delete `weights.json`** (~600 KB of the 791 KB package) on the strength
+of that note. VIT-AP flips between the two; the solver has to survive both, and
+`refreshTillCaptcha.js` already recognises the reCAPTCHA shape and stands down.
 
 Not up for discussion: no attempt to solve or bypass reCAPTCHA.
 
-### Can automation click our buttons after all?
+### ~~Can automation click our buttons after all?~~ — ANSWERED 2026-08-16: YES
 
-The standing rule is "no" — but it was derived from `element.click()` and
-dispatched events, which run in the page's main world and genuinely never reach
-an isolated-world content-script handler. A **CDP-level mouse click** is a
-trusted input event and *should* reach it.
+A **CDP-level mouse click reaches the isolated-world handler.** Confirmed on the
+live exam page: `[vRevamp click] running exam-bell` and `running exam-mail` both
+appear in the console and both handlers complete.
 
-Never tested. If it works, it overturns a rule that has been sending every
-button check back to the user. The exam bell is the ideal probe: with zero
-upcoming exams it only prints a status line. Watch for
-`[vRevamp click] running exam-bell` in the console — that line is the whole
-answer.
+The old rule was true only of `element.click()` and dispatched events, which run
+in the page's MAIN world. Those really never arrive. A trusted CDP click is a
+different mechanism, and it works — so button checks no longer have to be handed
+back to the user. Note the flows that open a Google consent window still do:
+that popup is outside the automated tab group.
 
 ### `session_repair` misses the state users actually hit
 
@@ -135,9 +232,8 @@ endpoints — that is what caused it.
 
 ## Cleanups (small, safe, unglamorous)
 
-- **`vrGoogleAuthHint` is copy-pasted in three files** — `da_upload.js`,
-  `exam_schedule.js`, `timetable_ics.js`. Every fix has to be made three times;
-  today's `invalid_scope` branch was. Move it to `js/shared/`.
+- ~~**`vrGoogleAuthHint` is copy-pasted in three files**~~ — done 2026-08-16,
+  now `js/shared/google_auth.js`.
 - **Dead legacy DA sync button** (`da_upload.js`, ~line 546) — the old-layout
   "Sync assignments with Google Calendar" reads a token from
   `chrome.storage.sync` written by a popup sign-in button that no longer exists,

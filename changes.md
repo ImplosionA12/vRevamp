@@ -1,5 +1,532 @@
 These are the changes made to the project: 
 
+## The OAuth prompt, round two — and the home card now names debarment (2026-08-17, later)
+
+Reported after reloading the build below: *"the oauth should presist thats what
+i asked you"*, and *"on homepage instead of showing how many skippable classes
+before cat1 u can say how many debarred"*.
+
+### The consent screen was still appearing, for two reasons neither round one touched
+
+Round one (further down this file) fixed three real parameters and the screen
+still came back roughly hourly. Two structural causes were left, both in
+`webAuthToken`:
+
+- **The interactive path never tried the silent one first.** A cache miss with
+  `interactive: true` went straight to
+  `launchWebAuthFlow({interactive: true})`. Whether Google then had anything to
+  ask is beside the point — *the window is what the student sees*, and it opened
+  unconditionally once the cached hour ran out. The silent flow only ever ran
+  for callers that asked for it explicitly, i.e. background polling, never a
+  button. A click now attempts `prompt=none` first and opens a window only if
+  that genuinely fails.
+- **The silent flow was being killed before it could finish.**
+  `chrome.identity.launchWebAuthFlow` defaults `abortOnLoadForNonInteractive`
+  to **true**: in non-interactive mode Chrome tears the flow down as soon as the
+  first navigation finishes loading. `accounts.google.com` does not answer
+  `prompt=none` in one hop — it loads, then redirects — so the abort fired on a
+  flow that was about to succeed, and the abort is indistinguishable from
+  "never consented". Every silent refresh this extension has ever attempted was
+  losing that race. Both knobs are passed now
+  (`abortOnLoadForNonInteractive: false`, `timeoutMsForNonInteractive`), with a
+  fallback for Chrome versions that reject them by name.
+
+Two smaller ones alongside:
+
+- A new `vrevamp_google_granted` flag records that a grant has existed, so
+  `prompt=select_account` is used **only on a genuine first run**. Re-showing
+  the account chooser to someone who already picked is the exact complaint.
+- `googleSelfEmail` now falls back to `/oauth2/v3/tokeninfo` when `/userinfo`
+  fails. That address *is* the `login_hint`, so failing to learn it costs a
+  consent screen an hour forever — one endpoint was too thin a thread.
+
+The first-run case deliberately skips the silent pre-flight (nothing granted,
+no account known → `prompt=none` cannot succeed), so a new user does not sit
+through a 15 s timeout before the window they have to see anyway.
+
+**What cannot be fixed in code:** the implicit flow returns ~1 h tokens with no
+refresh token, and the app is in Testing, where Google expires the grant every
+7 days (ROADMAP §3). So the honest promise is: one screen on first use, one
+more per week until the app is verified, and nothing in between.
+
+The popup was lying about this too. `google_status.signedIn` meant "there is an
+unexpired access token", which is false for most of any day, so a perfectly
+healthy grant read as **"(needs re-approval)"**. It now reports the grant, not
+the token.
+
+### The home card leads with debarment
+
+The old headline was *"only N class(es) skippable before CAT-1"*. Two things
+wrong with it, only one of them wording:
+
+1. It is a fact with an expiry date and nothing on the card could see it pass.
+   Seen live the same morning: **"only 0 class(es) skippable"** for a subject
+   the attendance page gave three in hand. Neither number was miscomputed — the
+   0 had been measured against CAT-1 days earlier, CAT-1 arrived, and a figure
+   counted up to a date in the past carried on rendering as news.
+2. Missing an exam-window class costs nothing by itself. Falling under 75%
+   costs the exam hall.
+
+So the card now says how close each subject is to **debarment**, which is
+measured against the whole semester and therefore cannot silently expire:
+
+| state | line |
+|---|---|
+| under 75%, recoverable | `🚫 …: below 75% (68%) — debarred unless you attend the next 4 class(es) in a row.` |
+| under 75%, not recoverable | `🚫 …: attending every remaining class still only reaches 71%. Debarment is decided by the faculty from here; ask now.` |
+| no headroom | `⚠️ …: no room left — miss one more and you are under 75%` |
+| everyone else | `🎯 Can still miss before debar: CSE2005 2 · CSE2005L (lab) 4` |
+| all clear | `✅ Nothing is close to the 75% line.` |
+
+The exam figure is not deleted, only demoted to a parenthetical — and dropped
+entirely once its exam is in the past, because an alarming number nobody can
+date is worse than no number. `attendance_insights.js` now carries `below75`,
+`recover`, `canRecover`, `maxPct` and `debarNote` into the cached snapshot so
+the card can speak to the student who is *already* under the line, who needs
+"attend the next N", not "you may skip 0".
+
+18 new assertions; 391 pass, 0 lint errors.
+
+## Four complaints, four causes, none of them mysterious (2026-08-17)
+
+Reported, verbatim: the extension *"ask me oauth evrytime when i click mail
+me"*; *"the bunkable classes is bad too adn the assignemnts one is"*; *"i need
+mail notifications and alll"*; *"i asked you to to reload this part till you get
+a captha ut u keep doing the complete homepage where i have to cjjooose stuent,
+parent or smth"*; and *"make sure the vtop doesmt get logged out"*.
+
+Each was diagnosed against the live page or the live worker, not from the
+screenshots.
+
+### 1. The consent screen every time: three separate parameters
+
+Read off `webAuthToken` in `service_worker/background.js`. Any one of these
+alone was enough to produce a screen on every click:
+
+- The interactive flow asked for **`prompt=consent select_account`**. `consent`
+  instructs Google to re-render the consent screen *even when the grant already
+  exists* — it is for apps that need a fresh refresh token, and it is exactly
+  wrong for a cached implicit token.
+- The silent flow (`prompt=none`) carried **no `login_hint`**. This profile has
+  three Google accounts signed in, and `prompt=none` must not choose between
+  them, so it failed *by design*, once an hour, forever — and every failure fell
+  through to the interactive flow above.
+- Calendar, `gmail.send` and `gmail.readonly` were **three tokens with three
+  consents**. An hour after signing in, all three expired together.
+
+Fixed in that order: never send `consent`; remember the account that consented
+(`vrevamp_google_account`) and send it as `login_hint`; and request
+`calendar.events` + `gmail.send` + `userinfo.email` as **one grant**
+(`googleToken`), with `include_granted_scopes=true` so an older narrower grant
+is not invalidated. One screen the first time, then silence.
+
+A hint naming an account that has since been signed out is detected and cleared
+automatically, so "switch Google account" needs no button — though there is now
+one anyway, in the popup, along with the account it is actually using.
+
+### 2. The captcha: it never reloaded, and reloading was the wrong tool
+
+Both halves of the complaint were true and they had different causes. Read off
+`https://vtop.vitap.ac.in/vtop/login` on the day:
+
+- The old rule was "reload when a **visible `#stdForm`** has no captcha".
+  `#stdForm` **is not on that page**. It lives on `/vtop/open/page` — the role
+  picker — beside `empForm`, `parentForm` and `alumniForm`, all POSTing to
+  `/vtop/prelogin/setup`. The condition could never be true, so a captcha-less
+  login form sat there broken.
+- And a reload could never have been right: `/vtop/login` is *reached by*
+  POSTing that role picker, so re-navigating it is precisely what drops the
+  student back on the Student/Parent chooser.
+
+VTOP already solves this itself. Its green ⟳ button calls `loadCaptcha()`:
+
+```
+GET /vtop/get/new/captcha   ->   innerHTML of #captchaBlock
+```
+
+Verified live: 200, ~5 KB, an `<img>` with a fresh base64 JPEG. No `_csrf`, no
+POST, no navigation. `refreshTillCaptcha.js` now swaps that block instead of
+the page, retrying a few times and giving up quietly. The only reload left is
+for a genuinely empty document, where there is nothing to swap.
+
+`captchaparser.js` had a matching gap: it solved **once**, on `load`. Every
+route that replaces the captcha afterwards — VTOP's own refresh button, a
+failed submit, the healing above — left the box blank. It now re-solves on both
+the mutation and the swap, waits for the image to decode first, and caches
+`weights.json` (600 KB of the 790 KB package) instead of refetching it per
+solve.
+
+### 3. Assignments, and why nothing ever reached the student
+
+The DA column fetched each course's detail **serially**, hand-rolling its own
+`fetch` with the *first* `_csrf` on the page (sometimes an empty placeholder)
+and no fallback for the student id, catching every failure into a `--` cell.
+Eight courses meant eight sequential round-trips; a stale session meant eight
+consecutive 404s fired at VTOP on every page view.
+
+Worse: a due date only ever existed *inside that page*. The only way to be told
+about one was to open the page, read the cell, and press 🔔 per course — which
+is the job a reminder was supposed to do.
+
+Now: three at a time through the shared layer below, one summary bar above the
+table ("2 still to upload, next MGT1029 on 21-Aug"), a single **remind me about
+all of them**, an **email me this list**, and the whole picture written to
+`vrevamp_da_dues` so it can be used without the page.
+
+### 4. Mail notifications: a daily digest
+
+`runDigest()` in the worker reads the three snapshots the pages leave behind —
+assignments, attendance, exam schedule — and sends one message a day: what is
+due, what is overdue, which subjects are near 75 %, which exams are close. It
+raises the Chrome notification **first and unconditionally** (no account, no
+scope, no network) so a failed mail never costs the reminder, and it never
+opens a consent window: a Google screen appearing by itself at 7 am with no
+click behind it is indistinguishable from malware.
+
+Stated plainly in the mail itself: those snapshots are only as fresh as the
+last visit to each page, and the digest says how old its data is rather than
+reporting last month's attendance as today's. VTOP cannot be scraped in the
+background — that needs the session in a real tab, and driving it from the
+worker is what breaks sessions.
+
+The alarm is re-armed on `onStartup` **and** `onInstalled`: `chrome.alarms`
+survive a browser restart but not an extension reload, and this build is loaded
+unpacked. Without that the digest would silently stop the first time the
+extension was reloaded, while still looking enabled.
+
+### 5. The logouts: a circuit breaker, `js/shared/vtop.js`
+
+Two features replay VTOP's internal POSTs and both swallowed their own
+failures. When the session is stale every request 404s, every cell reads `--`,
+and the extension fires eight more on the next page view. Repeated failed POSTs
+are what damages a session, so the response to failure has to be **to stop**.
+
+One token source (the first *non-empty* `_csrf`), one id source, bounded
+concurrency, and a breaker that trips after three consecutive refusals and says
+so on the page instead of leaving `--` to be read as "the extension is broken".
+A 200 carrying VTOP's session-expired page counts as a failure too — that is
+the state heavy use actually produces.
+
+The distinction that makes it work: `attendance_insights.js` *guesses* at
+endpoints this deployment may not have, and those 404s are routine. A guess is
+declared `{ probe: true }` and only means something in bulk **with nothing ever
+having succeeded** — the signature of a session refusing everything, rather
+than of a wrong guess.
+
+### Also
+
+- The popup had no surface for any of this. It now shows which Google account
+  vRevamp is signed in as, where its mail goes, whether the digest is on, and
+  takes an Apps Script relay URL — which was a hardcoded blank constant, so
+  turning relay mode on previously meant editing `background.js`. The URL is
+  probed before it is stored.
+- The captcha fixtures in `tests/verify.mjs` encoded a page that does not
+  exist (`#stdForm` on the login page, no `#captchaBlock`). Rewritten against
+  the real markup. 375 pass.
+
+## The OAuth client was never dead — the extension was calling the wrong one (2026-08-16)
+
+Reported: *"the oauth gives same error"*, quoting the button's own line —
+"Google sign-in can't work in this build (its OAuth client id is dead)". That
+line was **false**, and it had been false since the day `CALENDAR_CLIENT_ID` was
+wired up.
+
+### Proved by driving Google directly
+
+Rather than reason about it, the authorisation URL the worker builds was pasted
+into a browser by hand:
+
+```
+accounts.google.com/o/oauth2/auth
+  ?client_id=256000685922-….apps.googleusercontent.com
+  &response_type=token
+  &redirect_uri=https://jfmlhhjlkbliphgkmeingeacbijcilcl.chromiumapp.org/
+  &scope=https://www.googleapis.com/auth/calendar.events
+```
+
+(the redirect is the extension id derived from `manifest.key` — SHA-256 of the
+DER public key, first 16 bytes, hex mapped `0-9a-f` → `a-p`.)
+
+It walked the whole flow: account chooser **"to continue to VEramp"** → Google's
+"currently being tested" interstitial (so the app is in Testing and the student
+address is a test user) → consent card reading **"View and edit events on all
+your calendars"** → and it landed back on
+`…chromiumapp.org/#access_token=ya29.…&expires_in=3599&scope=…/auth/calendar.events`.
+
+So: client id valid, chromiumapp redirect registered, `calendar.events` already
+on the consent screen, real token issued. Every premise behind the "dead client"
+message was wrong.
+
+### Where the lie came from
+
+`get_google_token` had two routes. The good one (`launchWebAuthFlow` on
+`CALENDAR_CLIENT_ID`) and a **legacy fallback** to
+`chrome.identity.getAuthToken` on `manifest.oauth2.client_id` — which is
+upstream's client, genuinely dead, and the only thing it can ever produce is
+`"bad client id: 102739538495-…"`. The content scripts pattern-matched exactly
+that string into "this build's OAuth client id is dead".
+
+The fallback only ran when no Calendar client id was configured — but any copy
+of the extension loaded before the id was pasted in still reports it, and the
+message is worded as a permanent property of the build. One stale unpacked build
+was enough to make a working sign-in look impossible forever.
+
+**The legacy route is gone.** No client id now answers `not_configured`, in
+those words. A dead client can no longer be inferred from a route that no longer
+exists.
+
+### `vrGoogleAuthHint` was copy-pasted three times, so it lied three times
+
+Moved to **`js/shared/google_auth.js`** (`vrGoogleToken`, `vrGoogleAuthHint`,
+`vrLocalReminders`, `vrGcalTemplateUrl`, and the new `vrSendMail`), loaded ahead
+of `da_upload.js` / `exam_schedule.js` / `timetable_ics.js` by the manifest.
+That was on ROADMAP's cleanup list; today's fix would otherwise have been the
+third identical edit in a row. Two new branches while there: `admin_policy_enforced`
+(a Workspace admin blocking the app — nothing the student can click past) and
+`redirect_uri_mismatch`, which now prints the actual extension id to register.
+
+### 📧 — mail me the list *now*, not a reminder for later
+
+Asked for: *"how to send mails not only via calendar but directly too"*. They are
+genuinely different things, and conflating them is what made the single ✉️
+button feel broken:
+
+| | mechanism | arrives |
+|---|---|---|
+| ✉️ email me instead | Calendar event with an email reminder | 24 h before each exam, sent by Google's servers whether or not Chrome is running |
+| 📧 mail me the list now | Gmail `users.messages.send` | immediately, in the inbox |
+
+New worker message `send_mail` → `sendMailAsUser()`. It sends **as the student**,
+through their own Gmail, so the mail comes from their address and sits in their
+own Sent — no relay, no address leaving the browser. `gmail.send` is a
+**sensitive** scope, not restricted (it is write-only; it cannot read a mailbox),
+so Testing covers it with no review, exactly like `calendar.events`. It is a
+separate token from the OTP scanner's `gmail.readonly` on purpose: wanting mail
+should not cost inbox-read access. `userinfo.email` rides along so "me" resolves
+without the student typing their own address, and a stored
+`vrevamp_reminder_email` overrides it — two Google accounts is the norm, and the
+one Calendar runs under is often not the one read on a phone.
+
+The message is real RFC 2822: subject as an RFC 2047 encoded word (vRevamp's own
+subjects carry em dashes and emoji, which plain `btoa` throws on), a
+`multipart/alternative` body with both text and HTML parts, inline styles only
+because Gmail strips `<style>`. UTF-8 widening uses `TextEncoder`, not
+`unescape(encodeURIComponent(…))` — no reason to bet on Annex B globals inside a
+worker.
+
+The one failure a student cannot fix by clicking again — `gmail.send` not added
+to the Cloud project — is detected and names the checkbox. A Gmail API that is
+switched off entirely reads identically from the outside, so it folds into the
+same message.
+
+**341/341 tests green, lint 0 errors** (+13: the direct-mail button end to end,
+the RFC 2822 the worker builds, address override, both config failures, and the
+replacement for the deleted legacy-route test).
+
+### VERIFIED LIVE, same day, on the real portal
+
+Fall 2026-27 finally publishes a CAT1 schedule (6 exams, 17–24 Aug 2026), so
+for the first time these buttons had future exams to work on. Logged-in
+session, real mouse clicks, notes read straight off the page:
+
+| button | reported |
+|---|---|
+| 🔔 notify me before each exam | `✓ 11 Chrome notification(s) scheduled (1 day & 2 h before each exam) — no sign-in needed` |
+| ✉️ email me instead (Google) | `✓ 6 reminder(s) set — email 24 h before each exam` |
+| 📧 mail me the list now | `✓ emailed 6 exam(s) to ruthvik.24mic7198@vitapstudent.ac.in` |
+
+Three things that were open questions until this run are now answered:
+
+1. **The Calendar API IS enabled** on project `verammp`. Six events were written
+   through it. That was ROADMAP §1's remaining unknown.
+2. **`gmail.send` IS on the consent screen.** The 📧 flow completed and Gmail
+   returned 200 on `users.messages.send`.
+3. **A CDP-level mouse click DOES reach an isolated-world content-script
+   handler.** The standing "never test extension buttons with automated clicks"
+   rule was derived from `element.click()` and dispatched events, which run in
+   the page's MAIN world. A trusted CDP click is a different thing entirely —
+   `[vRevamp click] running exam-bell` / `running exam-mail` appear in the
+   console, and the handlers complete. Every button check that has been sent
+   back to the user for the last two weeks could have been done here.
+
+Both Google flows needed one interactive consent, for the reason the code
+already anticipated: with three Google accounts signed into the profile,
+`prompt=none` cannot pick one and returns `interaction_required`, so the silent
+attempt fails and the interactive one runs. That is the designed fallback, not a
+fault — and it is once per scope, not once per click.
+
+Also observed: **VIT-AP is serving the old image captcha again**, and
+`js/captcha/` solved it unaided (`YUF4M9` filled before the page settled).
+ROADMAP's note that the site had moved to invisible reCAPTCHA is out of date;
+the ML weights are not dead weight after all.
+
+### Then, from the first real mail: one lead is the wrong shape
+
+*"i asked you to send it when 24 hours before the exam and also 2 hours before,
+with the venue too."* Correct. ✉️ set a single email reminder at 24 h — a day
+out you note it and forget it; two hours out is when you need the venue and the
+reporting time in front of you. The 🔔 button had had both leads all along.
+
+`EXAM_REMINDER_LEADS_MIN = [24*60, 2*60]`, two email overrides plus one popup on
+the near lead only (a popup a day early is noise). Google caps an event at five
+overrides, so three leaves room.
+
+On the venue: it was always in `location` and in the description — Google's
+reminder mail quotes summary and **location** and nothing else, which is why
+that field matters more than the description. The reason it read blank is that
+**VTOP had not published venue or seat yet** — the whole column is `-` this far
+out. That is now stated where it is actionable, and the description says "not
+published yet" rather than a bare dash.
+
+### Which meant ✉️ had to stop duplicating
+
+Re-running ✉️ is now the *expected* thing to do — once venue and seat appear, a
+second click is how you refresh them. But the exam path had no dedupe, so a
+second click meant a second full set of events. That is precisely the trap the
+timetable import already fell into (66 class events in one week, 35 distinct,
+most present three times).
+
+Same fix as `timetable_ics.js`: events carry
+`extendedProperties.private.vrevamp = "exam"`, and `exam_delete_old_reminders()`
+lists and deletes that tag before writing. Scoped by the tag, so an exam the
+student added by hand — or the timetable import's `vrevamp=timetable` events —
+cannot be touched. A failed cleanup is non-fatal; it must not stop reminders
+from being created. The status line reports it: `(replaced 6 from an earlier
+run)`.
+
+**344/344 tests green, lint 0 errors.** The exam page's route stub now splits by
+HTTP verb — counting every googleapis request as "an event created" made a
+working replace look like a duplication.
+
+### The venue watcher — mail me again once VTOP publishes it
+
+*"before the exam it should come with the venue updated — when we open the vtop
+and if you find it updated then we should get the mail with the venue, in the
+same format i got."*
+
+That is the right instinct: the first 📧 is sent days out, when the venue column
+is still `-`, so the mail that matters is the second one. `exam_venue_watch()`
+runs on every render of the exam schedule page, compares each upcoming exam's
+venue against what was last mailed, and sends the same-format mail for anything
+that has changed from "not published" to a real room. One extra line at the top
+says why it arrived.
+
+**No background fetch, deliberately.** Polling VTOP without the student present
+means replaying its endpoints with a scraped `_csrf` — which has previously
+returned 404s and logged the user out. So the check runs where the data
+legitimately arrives: when the page renders. "Open VTOP in the morning and the
+mail goes out then" is exactly the described behaviour, and it costs nothing.
+
+Two properties keep it from being obnoxious, and both are tested:
+
+1. **Opt-in.** It stays silent until 📧 has been pressed once. Pressing it is
+   the consent — for mail, and for Google.
+2. **Never interactive.** The send asks for a token with `interactive:false`, so
+   a page load can never throw up a consent window. A lapsed token means the
+   send is skipped and retried on the next visit.
+
+State is `vrevamp_exam_mail_state = { optIn, sent: { key: venue } }`. Keying the
+record by the **venue** rather than a boolean is what makes it fire on a
+*change*: `sync()` re-runs up to ten times per page load and never mails twice,
+while a venue corrected from CB-324 to CB-101 does go out again. The manual 📧
+now also reports `— 1 still have no venue; you'll be mailed again automatically
+once VTOP publishes it`, so the follow-up is promised rather than surprising.
+
+**352/352 tests green, lint 0 errors** (+8 for the watcher: the opt-in gate, the
+no-change case, the publish, the re-render storm, and the correction).
+
+### …and it must wait for the whole batch
+
+*"every exam venue is updated at night or in the mrng, so it sends even if one
+subject gets the venue na"* — right, and that was a real flaw. VTOP publishes a
+group's venues together, but the first version fired on the first row to change.
+Open VTOP while the batch is landing, or have one course lag, and you would get
+a trickle of mails instead of one list.
+
+The watcher now **holds until every upcoming exam in the group has a venue**,
+then sends one mail carrying the whole group — not just the rows that changed,
+because a mail showing one exam out of six reads like a bug.
+
+The exception is the case where waiting is the worse mistake:
+`EXAM_VENUE_URGENT_MS = 36 h`. An exam inside that window goes out immediately
+with whatever is known, and the mail says how many are still pending. Without
+that escape hatch, one course that never gets a venue — moved online, cancelled
+— would suppress the mail forever.
+
+### Sending FROM vRevamp instead of from yourself
+
+*"i asked for the mails to be sent by a specific mail instead of same person to
+same person"*, and *"@gmail is fine"* — which is the detail that makes it
+affordable, because a plain @gmail sender needs no domain and no DNS.
+
+A Chrome extension still cannot hold the sender credential: everything inside it
+is readable by every user, so a token for a vRevamp mailbox would let anyone send
+as vRevamp. But that does not require a server either. **`tools/mail-relay.gs`
+is a Google Apps Script web app** — free, hosted by Google, running *as* the
+account that deployed it. The credential never exists outside Google, there is
+nothing to keep alive, and there is no bill.
+
+`MAIL_RELAY_URL` in `background.js` (blank = off, so this cannot regress the
+existing path). When it is set, `sendMailAsUser` routes through the relay and
+**the gmail.send scope is never requested at all** — the extension only needs to
+know *where* to write, via non-sensitive `userinfo.email`, kept as its own token
+so it can never disturb the verified `calendar.events` consent. That is a
+strictly smaller ask of every student: calendar access, an email address, and
+nothing that can read a mailbox.
+
+Two details that would otherwise cost an afternoon each:
+
+- The POST is `text/plain`, not `application/json`. Apps Script web apps do not
+  answer the CORS preflight a JSON content-type triggers, so a JSON body fails
+  before it is sent. The script reads `e.postData.contents`.
+- Editing the script later means **Deploy → Manage deployments → edit the
+  existing one**. A new deployment issues a new URL and silently breaks every
+  installed copy.
+
+The trade-off is written into the file rather than glossed: the `/exec` URL
+ships in the extension and is therefore public. The script caps sends per
+recipient per day (12) and per day overall (60, deliberately under Gmail's
+100/day quota), takes a `LockService` lock around the counters because students
+genuinely do hit it concurrently, and never lets the caller choose the sender. A
+public Web Store release would want per-user tokens from something stateful.
+
+### "we do not need their oauth too?" — for mail, correct. Not one scope.
+
+Follow-up question, and it changed the design for the better. The first relay
+draft still asked Google for `userinfo.email` just to learn where to write. That
+is absurd once you say it out loud: a consent screen, to find out an address the
+student could type in three seconds — and it locks out anyone without a Google
+account at all.
+
+So relay mode now asks Google for **nothing**. `sendMailViaRelay` answers
+`need_address` when it has no recipient, which is a *signal*, not an error: the
+exam page turns it into an inline field next to 📧 ("where should vRevamp mail
+you?"), stores the answer in that student's own `chrome.storage.local`, and
+sends straight away — no re-click. A typo is refused in place before anything is
+stored or sent.
+
+The honest split, now written into `background.js` where the next person will
+find it:
+
+| | sign-in needed? |
+|---|---|
+| 📧 mail, with a relay | **none at all** — one text field |
+| 📧 mail, no relay | `gmail.send` (sends as the student) |
+| ✉️ Calendar reminders | **unavoidable.** Writing into someone's Google Calendar requires that person's consent; no relay changes that. The sign-in-free substitute is the 📅 one-tap links, where the student presses Save. |
+
+Also fixed while testing this: `set_reminder_email` used
+`chrome.storage.local.set(obj, callback)`. The callback overload never fired in
+the harness, so `sendResponse` was never called and the caller hung. Switched to
+the promise form, which MV3 returns when no callback is passed — a storage
+failure is now reported instead of the page waiting forever for a reply.
+
+**368/368 tests green, lint 0 errors** (+12: the relay takes over, Gmail's send
+API is never touched, no Google call happens at all, the text/plain
+content-type, its refusals pass through in its own words, a relay that is down
+must NOT silently fall back to sending as the student, and the full on-page
+prompt — asks in place, refuses a typo, sends on answer, names the address, and
+its save button is `type="button"` so it cannot submit VTOP's form).
+
 ## The grade calculator computed the right answer off screen (2026-08-10)
 
 Reported: *"the dropdowns are good, but where is the CGPA change? it's not

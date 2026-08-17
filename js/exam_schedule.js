@@ -122,101 +122,41 @@ const build_exam_ics = (exams) => {
   };
 };
 
-const EXAM_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the exam
+/*
+ * When Google mails the reminder, in minutes before the exam starts.
+ *
+ * TWO of them, matching the 🔔 button exactly. A single 24 h mail was the
+ * original design and it is the wrong shape: a day out you note it and forget
+ * it; two hours out is when you need the venue and the reporting time in front
+ * of you. Reported 2026-08-16 — "i asked you to send it when 24 hours before
+ * the exam and also 2 hours before".
+ *
+ * Google caps an event at 5 reminder overrides. Two emails plus one popup on
+ * the near one leaves room and does not bury the student in popups.
+ */
+const EXAM_REMINDER_LEADS_MIN = [24 * 60, 2 * 60];
 
 const exam_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Fresh Google token via the worker at click time (chrome.identity refreshes
-// silently once consent exists). The worker replies { token, error } — the
-// error is kept so the buttons can say WHY no consent window appeared (most
-// often: the Chrome profile itself has no Google account signed in).
-// Shared with da_upload.js / timetable_ics.js, hence the window guard.
-if (typeof window.vrGoogleToken !== "function") {
-  window.vrGoogleAuthError = null;
-  window.vrGoogleToken = (opts) =>
-    new Promise((resolve) => {
-      const fallback = () =>
-        chrome.storage.sync.get(["token"], (r) => resolve(r.token || null));
-      try {
-        chrome.runtime.sendMessage(
-          {
-            message: "get_google_token",
-            interactive: !!(opts && opts.interactive),
-            stale: (opts && opts.stale) || null,
-          },
-          (resp) => {
-            if (chrome.runtime.lastError || resp === undefined) return fallback();
-            if (resp && typeof resp === "object") {
-              window.vrGoogleAuthError = resp.error || null;
-              return resolve(resp.token || null);
-            }
-            resolve(resp || null); // worker from before the update: bare token
-          }
-        );
-      } catch {
-        fallback();
-      }
-    });
-  // the sign-in failure, phrased for the button status lines
-  window.vrGoogleAuthHint = () => {
-    const e = window.vrGoogleAuthError || "";
-    // a Cloud Console checkbox, not anything the student can click past
-    if (/invalid_scope|accessNotConfigured|not enabled|has not been used/i.test(e))
-      return "Google refused the scope — in Cloud Console enable the Google Calendar API and add calendar.events under Data Access, then retry";
-    if (/bad client id|invalid_client|deleted_client/i.test(e))
-      return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
-    if (/not signed in/i.test(e))
-      return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
-    if (/did not approve|access|denied|closed|cancel/i.test(e))
-      return "the Google consent window was closed — click again and allow access";
-    return e
-      ? `Google sign-in failed: ${e}`
-      : "Google sign-in failed — allow the consent window, then retry";
-  };
-}
-
-// Chrome-native reminders via the worker (chrome.alarms + notifications) —
-// needs no Google account at all. Shared with da_upload.js (window guard).
-if (typeof window.vrLocalReminders !== "function") {
-  window.vrLocalReminders = (tag, reminders) =>
-    new Promise((resolve) => {
-      try {
-        chrome.runtime.sendMessage(
-          { message: "schedule_local_reminders", tag, reminders },
-          (n) => {
-            if (chrome.runtime.lastError) return resolve(null);
-            resolve(typeof n === "number" ? n : null);
-          }
-        );
-      } catch {
-        resolve(null);
-      }
-    });
-}
-
-// One-tap "add to Google Calendar": a calendar.google.com/render?action=
-// TEMPLATE URL opens the user's own calendar with the event prefilled — the
-// student just presses Save. No extension OAuth client and no consent flow,
-// so it works for EVERY user with zero setup (the upstream OAuth client id
-// baked into the manifest is dead — "bad client id", seen live 2026-07-16 —
-// which killed the ✉️ Calendar-API path for everyone). `start`/`end` are
-// compact local times (YYYYMMDDTHHMMSS), pinned to IST via ctz.
-// Shared with da_upload.js, hence the window guard.
-if (typeof window.vrGcalTemplateUrl !== "function") {
-  window.vrGcalTemplateUrl = (ev) =>
-    "https://calendar.google.com/calendar/render?action=TEMPLATE" +
-    `&text=${encodeURIComponent(ev.title)}` +
-    `&dates=${ev.start}/${ev.end}` +
-    "&ctz=Asia/Kolkata" +
-    `&details=${encodeURIComponent(ev.details || "")}` +
-    (ev.location ? `&location=${encodeURIComponent(ev.location)}` : "");
-}
+// vrGoogleToken / vrGoogleAuthHint / vrLocalReminders / vrGcalTemplateUrl all
+// live in js/shared/google_auth.js, loaded before this file by the manifest.
+// They used to be copy-pasted into this file, da_upload.js and timetable_ics.js
+// alike, which meant every fix had to be made three times.
 
 // "04-May-2026" -> "2026-05-04" (null when unparseable / no month match)
 const exam_date_iso = (date_text) => {
   const d = (date_text || "").trim().split("-");
   if (d.length !== 3 || !EXAM_MONTHS[d[1]]) return null;
   return `${d[2]}-${EXAM_MONTHS[d[1]]}-${d[0].padStart(2, "0")}`;
+};
+
+// When this exam starts, in epoch ms (IST). NaN when the row has no published
+// window, which every caller treats as "cannot reason about the timing".
+const exam_start_ms = (exam) => {
+  const iso = exam_date_iso(exam.date);
+  const start = exam_time_to_24h((exam.time || "").split("-")[0] || "");
+  if (!iso || !start) return NaN;
+  return new Date(`${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30`).getTime();
 };
 
 // One calendar event per exam, at the exam's own start-end window, with an
@@ -242,16 +182,29 @@ const exam_email_reminder = (exam, exam_type, token) => {
           `📚 ${exam.code} — ${exam.title}\n` +
           `🪑 Slot: ${exam.slot || "-"}   Session: ${exam.session || "-"}\n` +
           `⏰ Reporting time: ${exam.reporting || "-"} (exam ${exam.time})\n` +
-          `📍 Venue: ${exam.venue || "-"}   Seat: ${exam.seatLoc || "-"} · No. ${exam.seatNo || "-"}\n\n` +
-          `vRevamp reminder — email ${EXAM_REMINDER_LEAD_MIN / 60} h before`,
+          `📍 Venue: ${exam.venue || "not published yet"}   Seat: ${exam.seatLoc || "-"} · No. ${exam.seatNo || "-"}\n\n` +
+          `vRevamp reminder — email ${EXAM_REMINDER_LEADS_MIN.map((m) => `${m / 60} h`).join(" and ")} before`,
+        // Google's reminder email quotes the event's title and LOCATION, and
+        // nothing else — so the venue has to live here, not only in the
+        // description, or the 2 h mail arrives without the one fact it is for.
+        // VTOP publishes venue/seat late (they read "-" until a few days out),
+        // so re-run ✉️ closer to the exam to refresh them.
         location: exam.venue || "",
+        // Tagged so a re-run can REPLACE this instead of adding a second copy —
+        // the same mechanism js/timetable_ics.js uses. Without it every extra
+        // click silently doubles the exam events, which is exactly what
+        // happened to the timetable import (66 events in one week, 35 distinct,
+        // most present three times). Re-running ✉️ is normal here: venue and
+        // seat read "-" until VTOP publishes them a few days out.
+        extendedProperties: { private: { vrevamp: "exam" } },
         start: { dateTime: `${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30` },
         end: { dateTime: `${iso}T${end.slice(0, 2)}:${end.slice(2)}:00+05:30` },
         reminders: {
           useDefault: false,
           overrides: [
-            { method: "email", minutes: EXAM_REMINDER_LEAD_MIN },
-            { method: "popup", minutes: EXAM_REMINDER_LEAD_MIN },
+            ...EXAM_REMINDER_LEADS_MIN.map((minutes) => ({ method: "email", minutes })),
+            // one popup, on the near lead only — a popup a day early is noise
+            { method: "popup", minutes: EXAM_REMINDER_LEADS_MIN[EXAM_REMINDER_LEADS_MIN.length - 1] },
           ],
         },
       }),
@@ -259,6 +212,39 @@ const exam_email_reminder = (exam, exam_type, token) => {
   )
     .then((r) => ({ ok: r.status === 200, status: r.status }))
     .catch(() => ({ ok: false, status: 0 }));
+};
+
+const EXAM_GCAL_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+
+// Drop the events a previous ✉️ run created, so this run replaces them rather
+// than doubling them. Only ever touches events carrying our own
+// `vrevamp=exam` private property — an exam the student added by hand, or the
+// timetable import's `vrevamp=timetable` events, are invisible to this query.
+// Returns how many went, for the status line; failures are non-fatal because a
+// failed cleanup must not stop the reminders from being created.
+const exam_delete_old_reminders = async (token) => {
+  let removed = 0;
+  try {
+    const list = await fetch(
+      `${EXAM_GCAL_API}?privateExtendedProperty=${encodeURIComponent("vrevamp=exam")}&maxResults=250`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!list.ok) return removed;
+    const data = await list.json().catch(() => null);
+    for (const item of (data && data.items) || []) {
+      if (!item || !item.id) continue;
+      const r = await fetch(`${EXAM_GCAL_API}/${encodeURIComponent(item.id)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // 410 = already gone, which is the outcome we wanted anyway
+      if (r.ok || r.status === 410) removed++;
+      await exam_sleep(200);
+    }
+  } catch (error) {
+    console.warn("vRevamp exam schedule: cleanup", error);
+  }
+  return removed;
 };
 
 const exam_status = (button, text, good) => {
@@ -290,7 +276,7 @@ const exam_status = (button, text, good) => {
 // only re-ran on the `exam_schedule` webRequest message, which fires at
 // onCompleted, i.e. *before* VTOP writes the response into the DOM, with no
 // retry behind it. Neither survived contact with the real page.
-const VR_ACTIONS = ["exam-ics", "exam-bell", "exam-mail"];
+const VR_ACTIONS = ["exam-ics", "exam-bell", "exam-mail", "exam-send", "exam-addr"];
 const VR_BTN_SEL = VR_ACTIONS.map((a) => `[data-vr-action="${a}"]`).join(",");
 
 // NOTE: an earlier version also set `position:relative;z-index:1100` to lift
@@ -436,11 +422,7 @@ window.vrDelegate("exam-bell", async (bell) => {
     }
     const reminders = [];
     upcoming.forEach((exam) => {
-      const iso = exam_date_iso(exam.date);
-      const start = exam_time_to_24h(exam.time.split("-")[0] || "");
-      const startMs = new Date(
-        `${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30`
-      ).getTime();
+      const startMs = exam_start_ms(exam);
       const title = `${ctx.examType} exam: ${exam.code}${exam.title ? ` — ${exam.title}` : ""}`;
       const body =
         `${exam.date} · ${exam.time} (reporting ${exam.reporting || "-"})\n` +
@@ -487,6 +469,10 @@ window.vrDelegate("exam-mail", async (mail) => {
       return;
     }
     mail.disabled = true;
+    // replace, never duplicate: clear anything a previous ✉️ run left behind
+    // before writing this one
+    exam_status(mail, "checking for a previous run…", true);
+    const replaced = await exam_delete_old_reminders(token);
     let done = 0;
     let refreshed = false;
     for (let i = 0; i < upcoming.length; i++) {
@@ -512,7 +498,8 @@ window.vrDelegate("exam-mail", async (mail) => {
     exam_status(
       mail,
       done > 0
-        ? `✓ ${done} reminder(s) set — email 24 h before each exam`
+        ? `✓ ${done} exam(s) — Google will email you 24 h and 2 h before each one` +
+          (replaced ? ` (replaced ${replaced} from an earlier run)` : "")
         : "couldn't create the reminders — try again",
       done > 0
     );
@@ -520,6 +507,374 @@ window.vrDelegate("exam-mail", async (mail) => {
     console.warn("vRevamp exam schedule:", error);
     mail.disabled = false;
     exam_status(mail, "failed — refresh and try again", false);
+  }
+});
+
+// Escaping for the mail body below: the exam table is VTOP's HTML, and a
+// course title with an ampersand in it would otherwise break the message.
+const exam_html_escape = (s) =>
+  String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+// The whole upcoming list as one email. Deliberately a plain table with inline
+// styles: Gmail strips <style> blocks, and this has to stay readable in the
+// phone client the student will actually read it in.
+const exam_mail_body = (exams, examType, semester, opts) => {
+  const cell = (v, bold) =>
+    `<td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;${
+      bold ? "font-weight:600;" : ""
+    }">${exam_html_escape(v || "-")}</td>`;
+  const rows = exams
+    .map(
+      (e) =>
+        "<tr>" +
+        cell(e.date, true) +
+        cell(e.time) +
+        cell(`${e.code}${e.title ? ` — ${e.title}` : ""}`) +
+        cell(e.venue) +
+        cell(`${e.seatLoc || "-"} / ${e.seatNo || "-"}`) +
+        cell(e.reporting) +
+        "</tr>"
+    )
+    .join("");
+  const head = ["Date", "Time", "Course", "Venue", "Seat loc / no.", "Report by"]
+    .map(
+      (h) =>
+        `<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #111;font-size:12px;text-transform:uppercase;letter-spacing:.04em;">${h}</th>`
+    )
+    .join("");
+  const text = exams
+    .map(
+      (e) =>
+        `${e.date}  ${e.time}  ${e.code}${e.title ? ` — ${e.title}` : ""}\n` +
+        `    Venue ${e.venue || "-"} · Seat ${e.seatLoc || "-"} No. ${e.seatNo || "-"} · Report ${e.reporting || "-"}`
+    )
+    .join("\n");
+  // `lead` marks an automatic send (the venue watcher). Same layout either way —
+  // the format was asked for by name — with one line saying why it arrived, so
+  // an unexpected mail is never a mystery.
+  const lead = (opts && opts.lead) || "";
+  return {
+    subject: (opts && opts.subject) ||
+      `${examType} exam schedule — ${exams.length} upcoming${semester ? ` (${semester})` : ""}`,
+    text:
+      `${examType} — ${exams.length} upcoming exam(s)\n` +
+      (lead ? `${lead}\n` : "") +
+      `\n${text}\n\nSent by vRevamp from your VTOP exam schedule.`,
+    html:
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111;">` +
+      `<h2 style="margin:0 0 4px;font-size:18px;">${exam_html_escape(examType)} — ${exams.length} upcoming exam(s)</h2>` +
+      (semester
+        ? `<div style="color:#666;font-size:13px;margin-bottom:${lead ? "8" : "14"}px;">${exam_html_escape(semester)}</div>`
+        : "") +
+      (lead
+        ? `<div style="margin:0 0 14px;padding:8px 12px;background:#eef6ff;border-left:3px solid #2a83f8;font-size:13px;">${exam_html_escape(lead)}</div>`
+        : "") +
+      `<table style="border-collapse:collapse;font-size:14px;">` +
+      `<thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>` +
+      `<p style="color:#666;font-size:12px;margin-top:16px;">Sent by vRevamp from your VTOP exam schedule.</p>` +
+      `</div>`,
+  };
+};
+
+/*
+ * ===================== the venue watcher =====================
+ *
+ * Asked for 2026-08-16: *"before the exam it should come with the venue
+ * updated — when we open the vtop and if you find it updated then we should get
+ * the mail with the venue, in the same format"*.
+ *
+ * VTOP publishes venue and seat LATE. Until a few days before the exam the
+ * whole column reads `-`, so the first 📧 (and Google's own reminder mail) can
+ * only ever say "not published yet". The moment they appear is the moment the
+ * mail is actually worth having.
+ *
+ * There is no background fetch here, deliberately. Reading VTOP without the
+ * student present means replaying its endpoints with a scraped `_csrf`, and
+ * that is what has previously returned 404s and logged the user out. So the
+ * check runs where the data legitimately arrives: every time the exam schedule
+ * page renders. Open VTOP in the morning and the mail goes out then — which is
+ * exactly the behaviour described.
+ *
+ * Two guarantees that keep this from being obnoxious:
+ *
+ *  1. **Opt-in.** It only ever runs after 📧 has been pressed once. Pressing it
+ *     is the consent, both for mail and for Google.
+ *  2. **Never interactive.** The send asks for a token with `interactive:false`,
+ *     so a page load can never throw up a Google consent window. If the silent
+ *     token has lapsed the send is skipped and retried on the next visit.
+ *
+ * State lives in `vrevamp_exam_mail_state`: `{ optIn, sent: { key: venue } }`.
+ * Keying the record by the VENUE, not by a boolean, is what makes this fire on
+ * a *change* — a venue corrected from CB-324 to CB-101 mails again, and an
+ * unchanged one never does.
+ */
+const EXAM_MAIL_STATE_KEY = "vrevamp_exam_mail_state";
+
+// "-", "", "--", whitespace — VTOP's several ways of writing "not yet"
+const exam_venue_of = (exam) => {
+  const v = String((exam && exam.venue) || "").trim();
+  return /^-*$/.test(v) ? "" : v;
+};
+
+const exam_mail_key = (examType, exam) =>
+  `${examType}|${exam.code}|${exam_date_iso(exam.date) || exam.date}`;
+
+/*
+ * How close an exam has to be before its venue is mailed on its own.
+ *
+ * VTOP publishes venues for a whole group in one batch, overnight — so the
+ * normal case is "they all appear at once" and the right output is ONE mail
+ * with the complete list. Firing on the first row to change would instead send
+ * a trickle: one mail per subject if the student happens to open VTOP while the
+ * batch is landing, or if one course lags behind the rest.
+ *
+ * So the watcher WAITS for every upcoming exam in the group to have a venue
+ * before sending. The exception is the case where waiting is worse than a
+ * partial list: an exam inside this window is close enough that a straggler
+ * course must not be allowed to delay it — and a course whose venue never
+ * appears at all (moved online, cancelled) would otherwise suppress the mail
+ * forever.
+ */
+const EXAM_VENUE_URGENT_MS = 36 * 3600 * 1000;
+
+const exam_mail_state = () =>
+  new Promise((resolve) => {
+    try {
+      chrome.storage.local.get([EXAM_MAIL_STATE_KEY], (r) => {
+        const s = (r && r[EXAM_MAIL_STATE_KEY]) || {};
+        resolve({ optIn: !!s.optIn, sent: s.sent && typeof s.sent === "object" ? s.sent : {} });
+      });
+    } catch {
+      resolve({ optIn: false, sent: {} });
+    }
+  });
+
+// Remember what was mailed, so the watcher fires on changes only. Called both
+// by the manual 📧 (which also flips optIn on) and by the watcher itself.
+const exam_mail_remember = async (examType, exams, optIn) => {
+  const state = await exam_mail_state();
+  exams.forEach((e) => {
+    state.sent[exam_mail_key(examType, e)] = exam_venue_of(e);
+  });
+  if (optIn) state.optIn = true;
+  try {
+    chrome.storage.local.set({ [EXAM_MAIL_STATE_KEY]: state });
+  } catch {
+    /* storage full or unavailable — the watcher simply repeats next visit */
+  }
+};
+
+// sync() re-runs up to ten times per page load while it waits for VTOP to
+// finish writing the table; without this the watcher would race itself and
+// send the same mail several times over.
+let exam_venue_watch_busy = false;
+
+const exam_venue_watch = async (table, cols) => {
+  if (exam_venue_watch_busy) return null;
+  const state = await exam_mail_state();
+  if (!state.optIn) return null; // 📧 has never been pressed — stay silent
+
+  exam_venue_watch_busy = true;
+  try {
+    for (let i = 0; i < table.rows.length; i++) {
+      const head = table.rows[i].children[0];
+      if (!head || head.className !== "panelHead-secondary") continue;
+      const examType = vr_group_type(head);
+      const upcoming = vr_upcoming_exams({ table, cols, groupIndex: i, examType });
+      // only exams whose venue is now published AND differs from what was
+      // last mailed for them
+      const fresh = upcoming.filter((e) => {
+        const venue = exam_venue_of(e);
+        return venue !== "" && state.sent[exam_mail_key(examType, e)] !== venue;
+      });
+      if (fresh.length === 0) continue;
+
+      // Hold for the rest of the batch. VTOP publishes a whole group at once,
+      // so the complete list is one mail — unless something is close enough
+      // that waiting on a straggler would be the worse mistake.
+      const stillPending = upcoming.filter((e) => exam_venue_of(e) === "");
+      const now = Date.now();
+      const urgent = fresh.filter((e) => {
+        const ms = exam_start_ms(e);
+        return !Number.isNaN(ms) && ms - now <= EXAM_VENUE_URGENT_MS;
+      });
+      if (stillPending.length > 0 && urgent.length === 0) {
+        vr_log(
+          `venue watcher: holding — ${fresh.length} published, ` +
+            `${stillPending.length} still awaiting a venue, none urgent yet`
+        );
+        continue;
+      }
+
+      const sem = document.querySelector("#semesterSubId");
+      const semester =
+        sem && sem.selectedIndex >= 0 ? sem.options[sem.selectedIndex].innerText.trim() : "";
+      // The mail always carries the WHOLE upcoming group, not just the rows
+      // that changed — the format the student asked for is the full list, and
+      // a mail showing one exam out of six reads like something went wrong.
+      const body = exam_mail_body(upcoming, examType, semester, {
+        subject: `${examType} — venue published for ${fresh.length} exam(s)`,
+        lead:
+          `VTOP has published the venue${fresh.length > 1 ? "s" : ""} for ` +
+          `${fresh.length} exam${fresh.length > 1 ? "s" : ""}. Sent automatically.` +
+          (stillPending.length
+            ? ` ${stillPending.length} still show no venue — you'll get another mail when they appear.`
+            : ""),
+      });
+      // interactive:false — a page load must never open a consent window
+      const r = await window.vrSendMail({ ...body, interactive: false });
+      if (r && r.ok) {
+        // record EVERY upcoming exam, pending ones included: they go in as ""
+        // so that when a venue finally appears it reads as a change and fires
+        await exam_mail_remember(examType, upcoming, false);
+        vr_log(`venue watcher: mailed ${fresh.length} newly published exam(s) to ${r.to}`);
+        return { sent: fresh.length, to: r.to, examType };
+      }
+      vr_log("venue watcher: send skipped —", (r && r.error) || "unknown");
+      return null;
+    }
+  } catch (error) {
+    console.warn("vRevamp exam schedule: venue watch", error);
+  } finally {
+    exam_venue_watch_busy = false;
+  }
+  return null;
+};
+
+/*
+ * 📧 — a real email, in the inbox, now.
+ *
+ * Distinct from ✉️ next to it, which schedules Calendar events that will mail
+ * a reminder a day before each exam. Both are wanted: the reminder is for "do
+ * not forget", this is for "I want the list on my phone". It goes through the
+ * student's own Gmail (see sendMailAsUser in the worker) so it arrives from
+ * their own address, and the status line names the address it went to —
+ * students routinely have two Google accounts and guess wrong about which one
+ * the extension used.
+ */
+/*
+ * "where should vRevamp mail you?" — the whole cost of the mail feature when a
+ * relay is configured. One text field, in place, instead of a Google consent
+ * screen: it works for a student with no Google account, and it lets them
+ * choose the inbox they actually read on their phone rather than whichever
+ * account Chrome happens to be signed into.
+ *
+ * Rendered next to the 📧 button only when the worker answers `need_address`,
+ * so nobody who has already answered ever sees it again.
+ */
+const exam_ask_address = (btn, onSaved) => {
+  let box = btn.parentElement.querySelector(".vrevamp-exam-addr");
+  if (box) {
+    box.querySelector("input").focus();
+    return;
+  }
+  box = document.createElement("span");
+  box.className = "vrevamp-exam-addr";
+  box.style.cssText = "margin-left:8px;font-size:12px;font-weight:normal;white-space:nowrap;";
+
+  const input = document.createElement("input");
+  input.type = "email";
+  input.placeholder = "you@example.com";
+  input.setAttribute("aria-label", "Email address for vRevamp reminders");
+  input.style.cssText =
+    "font-size:12px;padding:3px 6px;border:1px solid #b9b9b9;border-radius:3px;min-width:210px;";
+
+  // type=button, like every other injected control: these sit inside VTOP's own
+  // <form id="examSchedule"> and a default-type button submits it
+  const save = window.vrButton("exam-addr", " save ", {});
+  save.style.marginLeft = "4px";
+
+  const note = document.createElement("span");
+  note.style.cssText = "margin-left:6px;color:#c00;";
+
+  box.append(input, save, note);
+  btn.insertAdjacentElement("afterend", box);
+  input.focus();
+
+  const submit = async () => {
+    note.style.color = "#c00";
+    const r = await window.vrSetReminderEmail(input.value);
+    if (!r || !r.ok) {
+      note.textContent = (r && r.error) || "couldn't save that";
+      return;
+    }
+    box.remove();
+    onSaved(r.address);
+  };
+  save.__vrSubmit = submit;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault(); // Enter in a VTOP form submits it
+      submit();
+    }
+  });
+};
+
+window.vrDelegate("exam-addr", (save) => {
+  if (typeof save.__vrSubmit === "function") save.__vrSubmit();
+});
+
+window.vrDelegate("exam-send", async (btn) => {
+  const ctx = vr_exam_context(btn);
+  vr_log("send-mail clicked, group:", ctx ? ctx.examType : "(table not found)");
+  if (!ctx) {
+    exam_status(btn, "couldn't read the schedule table — reload the page", false);
+    return;
+  }
+  try {
+    const upcoming = vr_upcoming_exams(ctx);
+    if (upcoming.length === 0) {
+      exam_status(btn, "no upcoming exams with a published time in this group", false);
+      return;
+    }
+    const sem = document.querySelector("#semesterSubId");
+    const semester =
+      sem && sem.selectedIndex >= 0 ? sem.options[sem.selectedIndex].innerText.trim() : "";
+    const body = exam_mail_body(upcoming, ctx.examType, semester);
+    const succeed = async (r) => {
+      // pressing this IS the opt-in for the venue watcher, and it records the
+      // venues as they stand now so the watcher fires only on a change
+      await exam_mail_remember(ctx.examType, upcoming, true);
+      const pending = upcoming.filter((e) => exam_venue_of(e) === "").length;
+      exam_status(
+        btn,
+        `✓ emailed ${upcoming.length} exam(s) to ${r.to}` +
+          (pending
+            ? ` — ${pending} still have no venue; you'll be mailed again automatically once VTOP publishes it`
+            : ""),
+        true
+      );
+    };
+
+    btn.disabled = true;
+    exam_status(btn, `sending ${upcoming.length} exam(s)…`, true);
+    const r = await window.vrSendMail(body);
+    btn.disabled = false;
+    if (r && r.ok) return succeed(r);
+
+    // Relay mode with nobody to write to yet. Not a failure — ask, then send.
+    // This is the ONLY thing the mail feature needs from the student when a
+    // relay is configured: no Google account, no consent screen, one field.
+    if (r && r.error === "need_address") {
+      exam_status(btn, "where should vRevamp mail you?", true);
+      exam_ask_address(btn, async (address) => {
+        btn.disabled = true;
+        exam_status(btn, `sending ${upcoming.length} exam(s)…`, true);
+        const again = await window.vrSendMail({ ...body, to: address });
+        btn.disabled = false;
+        if (again && again.ok) return succeed(again);
+        exam_status(btn, window.vrSendMailHint(again && again.error), false);
+      });
+      return;
+    }
+    exam_status(btn, window.vrSendMailHint(r && r.error), false);
+  } catch (error) {
+    console.warn("vRevamp exam schedule:", error);
+    btn.disabled = false;
+    exam_status(btn, "failed — refresh and try again", false);
   }
 });
 
@@ -576,6 +931,20 @@ let exam_schedule_sync = () => {
   } catch (error) {
     console.warn("vRevamp exam schedule: cache", error);
   }
+
+  // Has VTOP published a venue since the last mail? If so, mail it — same
+  // format, sent automatically. No-op unless 📧 has been pressed once, and
+  // never interactive, so this cannot surprise anyone with a consent window.
+  exam_venue_watch(table, cols).then((r) => {
+    if (!r) return;
+    const anyButton = document.querySelector('[data-vr-action="exam-send"]');
+    if (anyButton)
+      exam_status(
+        anyButton,
+        `✓ venue published — ${r.sent} exam(s) emailed to ${r.to} just now`,
+        true
+      );
+  });
 
   // per-exam 📅 one-tap links (added before the group buttons below so the
   // group-head innerText is still just the exam type)
@@ -646,13 +1015,25 @@ let exam_schedule_sync = () => {
       "Chrome notification 1 day and 2 h before each exam — no sign-in needed";
     head.appendChild(bell);
 
-    // ✉️ optional: one Google Calendar event per upcoming exam with an email
-    // (+popup) reminder 24 h before — this one does need Google consent
-    const mail = window.vrButton("exam-mail", " ✉️ email me instead (Google) ", {
+    // ✉️ one Google Calendar event per upcoming exam, with email reminders 24 h
+    // AND 2 h before. Sent by Google's servers, so they arrive on a phone with
+    // Chrome closed — and they come from Google Calendar, not from the student.
+    const mail = window.vrButton("exam-mail", " ✉️ email me 24 h & 2 h before ", {
       vrExamType: exam_type,
     });
-    mail.title = "Google Calendar event per exam with an email 24 h before — needs one-time Google consent";
+    mail.title =
+      "One Google Calendar event per exam; Google emails you 24 h and 2 h before each. " +
+      "Sent by Google's servers, so it arrives even with Chrome closed. Needs one-time Google consent.";
     head.appendChild(mail);
+
+    // 📧 the whole list, mailed now, from the student's own Gmail. The ✉️
+    // above is "remind me later"; this is "put it in my inbox".
+    const send = window.vrButton("exam-send", " 📧 mail me the list now ", {
+      vrExamType: exam_type,
+    });
+    send.title =
+      "Sends the upcoming exams of this group to your own inbox straight away — needs one-time Google consent";
+    head.appendChild(send);
     vr_log("buttons injected for group:", exam_type);
   }
 };

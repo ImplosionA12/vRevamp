@@ -188,9 +188,25 @@ const max_soft = (a) => {
   return n;
 };
 
+// weights.json is ~600 KB of the extension's 790 KB. It was re-fetched and
+// re-parsed on every solve, which is once per captcha refresh — and with the
+// refresh loop in refreshTillCaptcha.js that is now several times per login.
+// Fetch it once per page instead.
+let weightsPromise = null;
+const loadWeights = () => {
+  if (!weightsPromise) {
+    weightsPromise = fetch(chrome.runtime.getURL("js/captcha/weights.json"))
+      .then((response) => response.json())
+      .catch((error) => {
+        weightsPromise = null; // a failed load must not poison every later try
+        throw error;
+      });
+  }
+  return weightsPromise;
+};
+
 const solve = (img, textB) => {
-  fetch(chrome.runtime.getURL("js/captcha/weights.json"))
-    .then((response) => response.json())
+  loadWeights()
     .then((data) => {
       const weights = data.weights;
       const biases = data.biases;
@@ -211,6 +227,9 @@ const solve = (img, textB) => {
         out += label_txt[bls[i]];
       }
       textB.value = out;
+    })
+    .catch(() => {
+      // model unavailable — leave the field alone so the student can type it
     });
 };
 
@@ -248,16 +267,50 @@ function myMain(evt) {
       }
     }
   } else if (document.URL.match("https://vtop.vitap.ac.in/vtop/login")) {
-    let img = document.getElementsByClassName(
-      "form-control img-fluid bg-light border-0"
-    )[0];
-    let textB = document.getElementById("captchaStr");
-    let submitB = document.getElementById("submitBtn");
-    if (!img || !textB || !submitB) return; // role-picker/404: no captcha yet
-    img.style.height = "40px!important";
-    img.style.width = "200px!important";
-    solve(img, textB);
-    submitB.focus();
+    /*
+     * This branch used to run exactly once, on window "load", and then never
+     * again. Every route that replaces the captcha afterwards therefore left
+     * the box blank and the field empty:
+     *   - VTOP's own green ⟳ button (loadCaptcha() swaps #captchaBlock)
+     *   - a failed submit, which re-renders the page with a new captcha
+     *   - refreshTillCaptcha.js healing a login page that arrived without one
+     * That is the majority of the times a student actually looks at the field,
+     * so "the solver works" and "the field is filled for me" were two very
+     * different claims. Re-solve whenever the image changes.
+     */
+    const solveNow = () => {
+      const img = document.querySelector("#captchaBlock img") ||
+        document.getElementsByClassName("form-control img-fluid bg-light border-0")[0];
+      const textB = document.getElementById("captchaStr");
+      if (!img || !textB) return false; // role-picker/404: no captcha here
+      if (!/^data:image\//.test(img.getAttribute("src") || "")) return false;
+      img.style.height = "40px!important";
+      img.style.width = "200px!important";
+      // A decoded <img> is required before getImageData sees anything but
+      // transparent pixels. On a fresh innerHTML swap it usually is not.
+      const run = () => solve(img, textB);
+      if (img.complete && img.naturalWidth > 0) run();
+      else img.addEventListener("load", run, { once: true });
+      return true;
+    };
+
+    solveNow();
+    const submitB = document.getElementById("submitBtn");
+    if (submitB) submitB.focus();
+
+    // Both signals, because neither alone is reliable: the CustomEvent covers
+    // refreshTillCaptcha.js's in-place swap, and the observer covers VTOP's own
+    // refresh button (and fires even if this script loaded after the swap).
+    document.addEventListener("vrevamp:captcha-changed", solveNow);
+    const block = document.getElementById("captchaBlock");
+    if (block) {
+      new MutationObserver(() => solveNow()).observe(block, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["src"],
+      });
+    }
   } else {
     let img = document.getElementById("captcha_id");
     let textB = document.getElementById("captchaString");

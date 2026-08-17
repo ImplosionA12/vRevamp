@@ -53,6 +53,55 @@
       </div>
     </div>
 
+    <!--
+      Reminders & mail.
+
+      Added 2026-08-17. Before this there was no surface anywhere for any of
+      it: which Google account vRevamp had ended up signed in as, where its
+      mail was going, or whether the daily digest was on. All three were
+      invisible state that only showed itself as a consent window appearing
+      "every time" — with nothing to click to find out why or to change it.
+    -->
+    <div class="vr-panel" id="vr-mail-panel">
+      <h4>Reminders &amp; mail</h4>
+
+      <div class="vr-row">
+        <span class="vr-label">Google</span>
+        <span id="vr-google-state" class="vr-value">checking…</span>
+        <button type="button" class="vr-mini" id="vr-google-switch">Use another account</button>
+      </div>
+
+      <div class="vr-row">
+        <span class="vr-label">Send mail to</span>
+        <input type="email" id="vr-mail-to" placeholder="you@example.com" />
+        <button type="button" class="vr-mini" id="vr-mail-save">Save</button>
+      </div>
+
+      <div class="vr-row">
+        <label class="vr-check">
+          <input type="checkbox" id="vr-digest" />
+          Mail me a daily summary
+        </label>
+        <span id="vr-digest-when" class="vr-hint"></span>
+      </div>
+
+      <details id="vr-advanced">
+        <summary>Advanced: send from a vRevamp address</summary>
+        <p class="vr-hint">
+          Paste the Apps Script <code>/exec</code> URL from
+          <code>tools/mail-relay.gs</code>. With it set, mail arrives from that
+          address and no Google sign-in is needed to send it. Leave blank to
+          send from your own Gmail.
+        </p>
+        <div class="vr-row">
+          <input type="url" id="vr-relay" placeholder="https://script.google.com/macros/s/…/exec" />
+          <button type="button" class="vr-mini" id="vr-relay-save">Save</button>
+        </div>
+      </details>
+
+      <div id="vr-mail-status" class="vr-hint"></div>
+    </div>
+
     <div class="body">
       <button style="cursor: pointer;" type="button" class="login-with-google-btn" id="view-offline">
         Open offline page

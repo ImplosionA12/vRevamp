@@ -1,0 +1,68 @@
+
+/* ---- Reminders & mail panel (popup) -------------------------------------
+   Added 2026-08-17 with the panel in popup.html. Deliberately plain and
+   self-contained: the rest of this stylesheet is upstream's and styles the
+   WiFi controls, so nothing here reuses or overrides those class names. */
+.vr-panel {
+  margin: 10px 8px;
+  padding: 10px 12px;
+  border: 1px solid #d8dee6;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 12px;
+  color: #22303f;
+}
+.vr-panel h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.vr-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.vr-label {
+  min-width: 72px;
+  color: #5b6b7c;
+}
+.vr-value {
+  flex: 1 1 120px;
+  font-weight: 600;
+  word-break: break-all;
+}
+.vr-panel input[type="email"],
+.vr-panel input[type="url"] {
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid #c7d0da;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.vr-mini {
+  padding: 3px 8px;
+  border: 1px solid #c7d0da;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 11px;
+}
+.vr-mini:hover {
+  background: #eef4fb;
+}
+.vr-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.vr-hint {
+  color: #6b7a89;
+  font-size: 11px;
+}
+.vr-panel summary {
+  cursor: pointer;
+  color: #4a5c6e;
+  margin: 4px 0;
+}

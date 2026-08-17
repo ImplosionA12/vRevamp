@@ -66,38 +66,25 @@
 
   /* ---------------- VTOP request helper ---------------- */
 
-  const getCsrf = () => {
-    const el = document.querySelector('input[name="_csrf"]');
-    return el ? el.value || el.defaultValue : null;
-  };
-
-  const getAuthorizedID = () => {
-    const el = document.querySelector("#authorizedIDX");
-    return el ? el.value : null;
-  };
-
-  const vtopPost = async (path, params) => {
-    const csrf = getCsrf();
-    const authorizedID = getAuthorizedID();
-    if (!csrf || !authorizedID) throw new Error("missing _csrf/authorizedID");
-    const body = new URLSearchParams({
-      _csrf: csrf,
-      authorizedID,
-      x: new Date().toUTCString(),
-      ...params,
-    });
-    const res = await fetch(`${location.origin}/vtop/${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: body.toString(),
-      credentials: "same-origin",
-    });
-    if (!res.ok) throw new Error(`VTOP request failed: ${path} (${res.status})`);
-    return res.text();
-  };
+  /*
+   * Routed through js/shared/vtop.js, which now owns the token, the student
+   * id, the concurrency and the circuit breaker. (The local getCsrf /
+   * getAuthorizedID that used to sit here went with it — they had no other
+   * caller. AUTH_PARAMS below still names those parameters, but only to
+   * recognise and strip them from a captured request template.)
+   *
+   * Sharing the breaker matters here more than anywhere: this file fires one
+   * POST PER SUBJECT and, when it cannot find the right endpoint, one per
+   * CANDIDATE per subject — comfortably twenty failed requests on a stale
+   * session, which is how a merely-expired session became a broken one.
+   */
+  const vtopPost = async (path, params, options) =>
+    window.vrVtop.post(path, params, options);
+  // A guess at an endpoint this deployment may not have. Expected to 404, so
+  // it must not count toward the "this session is dead" breaker — see the
+  // PROBES vs REAL REQUESTS note in js/shared/vtop.js.
+  const vtopProbe = async (path, params) =>
+    window.vrVtop.post(path, params, { probe: true });
 
   /* ---------------- per-subject attendance history ---------------- */
 
@@ -244,6 +231,12 @@
 
   const buildAttempts = async (call) => {
     const attempts = [];
+    // `probe` marks an attempt as a GUESS. The first two entries are not
+    // guesses — one worked earlier in this very run, the other is the request
+    // VTOP itself made when the student opened a detail modal — so a refusal
+    // there is real news and counts toward the circuit breaker. Everything
+    // after them is a list of endpoint names that may simply not exist on this
+    // deployment, and 404s from those are routine.
     if (resolvedAttempt)
       attempts.push({
         path: resolvedAttempt.path,
@@ -259,9 +252,9 @@
         params: paramsFromTemplate(rec.params, call) || defaultParams(call),
       });
     const mined = await findEndpointInScripts(call.fn);
-    if (mined) attempts.push({ path: mined, params: defaultParams(call) });
+    if (mined) attempts.push({ path: mined, params: defaultParams(call), probe: true });
     [call.fn, ...DETAIL_ENDPOINT_CANDIDATES].forEach((path) =>
-      attempts.push({ path, params: defaultParams(call) })
+      attempts.push({ path, params: defaultParams(call), probe: true })
     );
     return attempts;
   };
@@ -276,7 +269,7 @@
       tried.add(key);
       let html;
       try {
-        html = await vtopPost(attempt.path, attempt.params);
+        html = await vtopPost(attempt.path, attempt.params, { probe: attempt.probe });
       } catch (error) {
         lastError = error;
         continue;
@@ -380,7 +373,10 @@
     let menuUrl = null;
     for (const candidate of candidates) {
       try {
-        const doc = parseHtml(await vtopPost(candidate, { verifyMenu: "true" }));
+        // both candidates are guesses at where this deployment keeps its
+        // academic calendar — the first is the current path, the second is
+        // whatever the sidebar link carries on older builds
+        const doc = parseHtml(await vtopProbe(candidate, { verifyMenu: "true" }));
         if (doc.querySelector("option")) {
           landing = doc;
           menuUrl = candidate;
@@ -414,7 +410,7 @@
     let monthDates = new Set();
     try {
       const monthsPage = parseHtml(
-        await vtopPost("getDateForSemesterPreview", { semSubId, classGroupId })
+        await vtopProbe("getDateForSemesterPreview", { semSubId, classGroupId })
       );
       monthDates = collectMonthDates(monthsPage);
     } catch (error) {
@@ -444,7 +440,7 @@
       try {
         // current VTOP: dedicated grid endpoint with calDate
         const grid = parseHtml(
-          await vtopPost("processViewCalendar", { calDate: dateStr, semSubId, classGroupId })
+          await vtopProbe("processViewCalendar", { calDate: dateStr, semSubId, classGroupId })
         );
         parseMonthGrid(grid, monthDate, days);
       } catch (error) {
@@ -914,17 +910,56 @@
     const table = document.createElement("table");
     table.style.cssText = "border-collapse:collapse;width:100%;";
 
+    /*
+     * WHICH COLUMNS ARE WORTH DRAWING — decided per render, from the data.
+     *
+     * Read off the live page 2026-08-17, on a day CAT-1 had just started:
+     * "Bunkable before CAT-1" said "could've bunked 3" on every single theory
+     * row and "no CATs for labs" on every lab row, and "Bunkable before CAT-2"
+     * said "no CATs for labs" on half of them. Two of seven columns carried no
+     * decision a student could act on, and they sat between the reader and the
+     * one number the table exists to give — "safe to skip now", which was the
+     * fourth of seven and set in the same weight as the noise around it.
+     *
+     * A retrospective ("could've bunked N") is history, not advice, so it goes
+     * in the tooltip rather than the grid; a column where every row is
+     * retrospective or inapplicable is dropped entirely. What is left is
+     * always at least Subject / Now / Safe to skip now.
+     *
+     * Also added: the CURRENT PERCENTAGE. It was genuinely absent — the table
+     * told you how many classes you could skip without telling you where you
+     * stood, so every reading meant scrolling back to VTOP's own table above.
+     */
+    const dead = (v) =>
+      v === undefined ||
+      v === null ||
+      v === "--" ||
+      /^no CATs for labs$/i.test(String(v)) ||
+      /^none this sem$/i.test(String(v)) ||
+      /^could've bunked/i.test(String(v));
+    const examCols = [
+      ["Bunkable before CAT-1", "cat1"],
+      ["Bunkable before CAT-2", "cat2"],
+      ["Bunkable before FAT", "fat"],
+    ].filter(([, key]) => rowsData.some((r) => !dead(r[key])));
+
     const head = document.createElement("tr");
     [
-      "Subject",
-      "Classes held",
-      "Remaining till sem end",
-      "Safe to skip now (never <75%)",
-      "Bunkable before CAT-1",
-      "Bunkable before CAT-2",
-      "Bunkable before FAT",
-    ].forEach((h) =>
-      head.appendChild(makeCell("th", h, "background:rgb(60,141,188,0.8);"))
+      ["Subject", null],
+      ["Now", null],
+      ["Held", null],
+      ["Left this sem", null],
+      ["SAFE TO SKIP NOW", null],
+      ...examCols,
+    ].forEach(([h]) =>
+      head.appendChild(
+        makeCell(
+          "th",
+          h,
+          "background:rgb(60,141,188,0.8);" +
+            (h === "SAFE TO SKIP NOW" ? "background:rgb(46,125,50,0.85);" : "")
+        )
+      )
     );
     table.appendChild(head);
 
@@ -1015,15 +1050,69 @@
         }
         tr.appendChild(td);
       };
+      // Where you stand right now, in the units VTOP's own table uses so the
+      // two can be read against each other without arithmetic.
+      const pctCell = makeCell(
+        "td",
+        r.pct === null ? "--" : `${r.pct}%`,
+        "font-weight:bold;" +
+          (r.below75 ? "color:#c0392b;" : r.pct !== null && r.pct < 80 ? "color:#b8860b;" : "color:#2e7d32;")
+      );
+      if (typeof r.attended === "number") {
+        const sub = document.createElement("div");
+        sub.textContent = `${r.attended}/${r.total}`;
+        sub.style.cssText = "color:#777;font-size:11px;font-weight:normal;margin-top:2px;";
+        pctCell.appendChild(sub);
+      }
+      tr.appendChild(pctCell);
+
       addCell(r.held);
       addCell(r.remaining, r.bestNote);
-      addCell(r.safeNow, r.debarNote);
-      addCell(r.cat1);
-      addCell(r.cat2);
-      addCell(r.fat);
+
+      // The answer the table exists for, drawn like it. Everything else on
+      // this row is context for this number.
+      const safeCell = makeCell(
+        "td",
+        r.safeNow,
+        "font-weight:bold;font-size:15px;" +
+          (r.safeCount === 0
+            ? "color:#c0392b;background:rgba(238,75,43,0.12);"
+            : r.safeCount === 1
+              ? "color:#b8860b;background:rgba(255,193,7,0.14);"
+              : "color:#2e7d32;background:rgba(46,125,50,0.10);")
+      );
+      if (r.debarNote) {
+        const sub = document.createElement("div");
+        sub.textContent = r.debarNote;
+        sub.style.cssText = "color:#777;font-size:11px;font-weight:normal;margin-top:2px;";
+        safeCell.appendChild(sub);
+      }
+      tr.appendChild(safeCell);
+
+      // Retrospectives are history, not advice — they ride in the tooltip so
+      // a column of them cannot crowd out the columns that are.
+      const past = [
+        ["CAT-1", r.cat1],
+        ["CAT-2", r.cat2],
+        ["FAT", r.fat],
+      ]
+        .filter(([, v]) => /^could've bunked/i.test(String(v)))
+        .map(([label, v]) => `${label}: ${v}`);
+      if (past.length) subjCell.title = past.join("\n");
+
+      examCols.forEach(([, key]) => addCell(dead(r[key]) ? "—" : r[key]));
       table.appendChild(tr);
     });
     container.appendChild(table);
+
+    // 120 words of caveats sat under the table, unread, competing with the
+    // numbers. They are all true and worth keeping — behind a disclosure, so
+    // they are there when a number is being doubted and invisible otherwise.
+    const details = document.createElement("details");
+    const summaryEl = document.createElement("summary");
+    summaryEl.textContent = "How these numbers are worked out";
+    summaryEl.style.cssText = "color:#666;font-size:12px;cursor:pointer;margin-top:6px;";
+    details.appendChild(summaryEl);
 
     const note = document.createElement("p");
     note.textContent =
@@ -1039,7 +1128,8 @@
       "used only if the calendar marks no separate lab FAT). One-off " +
       "day-order swaps and unposted attendance are not visible here.";
     note.style.cssText = "color:#666;font-size:12px;margin-top:5px;";
-    container.appendChild(note);
+    details.appendChild(note);
+    container.appendChild(details);
 
     anchor.insertAdjacentElement("afterend", container);
   };
@@ -1349,6 +1439,13 @@
         maxPct,
         nextBunkable,
         nextExamLabel: nextExam ? nextExam[0] : null,
+        // WHICH exam nextBunkable counts up to. Without it the number is
+        // undated and cannot be checked later — which is exactly how the home
+        // page came to display "only 0 class(es) skippable before the next
+        // exam" for a subject with three in hand: that 0 was computed against
+        // CAT-1 days earlier, CAT-1 then arrived, and nothing could tell that
+        // the figure had stopped meaning anything. See js/home_notices.js.
+        nextExamIso: upcoming,
         pct,
         below75,
         // attendToTarget works in history entries (hours for labs) — show
@@ -1403,7 +1500,29 @@
           pct: r.pct,
           safeNow: r.safeCount,
           nextBunkable: r.nextBunkable,
+          nextExamIso: r.nextExamIso,
+          nextExamLabel: r.nextExamLabel,
           unit: r.unit,
+          /*
+           * DEBAR FIELDS — added 2026-08-17 because the home card was asked to
+           * stop leading with "skippable before CAT-1" and lead with debarment
+           * instead. That is the right call and not only a wording change:
+           * "before CAT-1" stops meaning anything the day CAT-1 arrives (see
+           * js/home_notices.js), whereas 75% is the rule that actually costs a
+           * student the exam hall, and it is measured against the whole
+           * semester so it never silently expires.
+           *
+           * safeNow above already IS the debar headroom — how many sessions can
+           * be missed while never dipping under 75%. What the card could not do
+           * without these is speak to the student already UNDER the line, who
+           * needs "attend the next N", or to the one for whom even a perfect
+           * record no longer reaches 75%, who needs to be told to stop counting.
+           */
+          below75: r.below75,
+          recover: r.recover,
+          canRecover: r.canRecover,
+          maxPct: r.maxPct,
+          debarNote: r.debarNote,
         })),
       },
     });

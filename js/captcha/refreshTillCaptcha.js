@@ -1,95 +1,177 @@
-// Retry a login page that failed to render its captcha.
-//
-// History matters here. The original version reloaded whenever there was no
-// captcha, which loops forever on VTOP's 2026 login: that page is a role
-// picker (Student/Employee/Parent/Alumni) with no captcha at all until a role
-// is chosen, so the page just flickered. It was then narrowed to "reload only
-// an empty body", which stopped the flicker but also stopped the behaviour
-// that was actually wanted — a login form whose captcha image failed to load
-// sat there broken.
-//
-// So the decision is made on what the page IS, not on the captcha alone:
-//
-//   captcha present            -> nothing to do, clear the counter
-//   OTP step                   -> NEVER reload; VTOP has already mailed a code
-//                                 and a reload throws it away
-//   login form, captcha missing-> reload, this is the case worth retrying
-//   body effectively empty     -> reload, a dead load
-//   anything else (role picker)-> leave alone, this is what looped before
-//
-// Capped per tab either way, so no page can flicker indefinitely.
-//
-// CHECKED LIVE 2026-08-09, and the answer is "there is nothing to retry any
-// more". vtop.vitap.ac.in/vtop/login now renders: _csrf, username, password,
-// and a HIDDEN `gResponse` field — VTOP has replaced its own image captcha with
-// **Google reCAPTCHA**, which is invisible by design. There is no
-// `img.form-control` to wait for, no `#stdForm` on that page at all, and a
-// login form with no visible captcha is now the page in perfect health.
-//
-// So "no captcha appeared, reload until it does" describes a page that no
-// longer exists. Reloading would only flicker, and re-adding that loop is the
-// bug this file has already had twice. The reCAPTCHA itself is deliberately
-// left alone: solving or bypassing a bot check is not something this extension
-// should do.
-//
-// (Also corrected while here: the note below claimed #stdForm ships hidden on
-// the role picker. Live, /vtop/open/page reports it VISIBLE, and /vtop/login
-// does not contain it at all. The visibility test is kept because it is the
-// conservative direction — it can only ever suppress a reload — but it is not
-// the discriminator the comment claimed.)
+/*
+ * Make sure the login page HAS a captcha — without ever navigating.
+ *
+ * ---------------------------------------------------------------------------
+ * THE COMPLAINT THIS FIXES, 2026-08-17
+ * ---------------------------------------------------------------------------
+ * "i asked you to reload this part till you get a captcha but you keep doing
+ *  the complete homepage where i have to choose student, parent or smth"
+ *
+ * Both halves of that were true, and they had different causes.
+ *
+ * 1. It did not reload at all. The old rule was "reload when a VISIBLE #stdForm
+ *    has no captcha". Checked live: /vtop/login does not contain #stdForm — it
+ *    lives on /vtop/open/page, the role picker, and holds the four
+ *    Student/Employee/Parent/Alumni forms. So the condition was false on the
+ *    only page this script runs on, and a captcha-less login form sat there
+ *    broken forever.
+ *
+ * 2. Reloading was the wrong instrument anyway. /vtop/login is reached by
+ *    POSTing the role picker's #stdForm to /vtop/prelogin/setup. Re-issuing
+ *    that navigation is what drops the student back on the role picker with the
+ *    Student/Parent buttons — the exact behaviour being complained about. A
+ *    reload can never be the fix here, however carefully it is guarded.
+ *
+ * VTOP already solves this itself. Its own refresh button (the green ⟳ beside
+ * the captcha) calls loadCaptcha(), which is:
+ *
+ *     GET /vtop/get/new/captcha  ->  innerHTML of #captchaBlock
+ *
+ * Verified live 2026-08-17: 200, ~5 KB, an <img class="form-control …"> with a
+ * fresh base64 JPEG plus the refresh button. No _csrf, no POST, no navigation,
+ * no session cost — which also settles the "don't drive VTOP's internal
+ * endpoints" rule (ROADMAP #4): that rule is about replaying authenticated
+ * endpoints with a scraped token on a live session. This is an unauthenticated
+ * GET the page itself performs, before any session exists.
+ *
+ * So: swap the captcha block, never the page. Retried a few times, spaced out,
+ * and it gives up quietly rather than strobing.
+ *
+ * The one surviving reload is for a genuinely empty document — a dead load with
+ * no form and no text, where there is nothing to refresh in place.
+ */
 (() => {
   const RELOAD_KEY = "vrevamp_login_reloads";
-  const MAX_RELOADS = 5;
+  const MAX_RELOADS = 3;
+  const MAX_CAPTCHA_FETCHES = 6;
+  const RETRY_MS = 1200;
 
   let store = null;
   try {
     store = window.sessionStorage;
   } catch {
-    // sandboxed document: can't count attempts, so never reload
+    // sandboxed document: can't count attempts, so never act
   }
 
-  const captchaImg = document.querySelector("img.form-control");
-  if (captchaImg !== null) {
-    if (store) store.removeItem(RELOAD_KEY);
-    return;
+  const captchaBlock = () => document.getElementById("captchaBlock");
+
+  // A captcha is "there" only when it is an image with actual pixels behind it.
+  // VTOP serves the block with an empty <img> when its generator hiccups, and
+  // that renders as the blank gap the student sees.
+  const haveCaptcha = () => {
+    const block = captchaBlock();
+    if (!block) return false;
+    const img = block.querySelector("img");
+    return !!img && /^data:image\//.test(img.getAttribute("src") || "");
+  };
+
+  // Announced so captchaparser.js can re-solve the new image. Same extension,
+  // same isolated world, so a plain CustomEvent on document is enough and
+  // nothing in the page can see it.
+  const announce = () => {
+    document.dispatchEvent(new CustomEvent("vrevamp:captcha-changed"));
+  };
+
+  const fetchNewCaptcha = async () => {
+    const block = captchaBlock();
+    if (!block) return false;
+    try {
+      const res = await fetch("/vtop/get/new/captcha", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!res.ok) return false;
+      const html = await res.text();
+      // Parse before touching the DOM: a 200 carrying an error page must not
+      // wipe a block that still had a usable image in it.
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const img = doc.querySelector("img");
+      if (!img || !/^data:image\//.test(img.getAttribute("src") || "")) return false;
+      block.innerHTML = html;
+      const field = document.getElementById("captchaStr");
+      if (field) field.value = "";
+      announce();
+      return true;
+    } catch {
+      return false; // offline or blocked — leave the page alone
+    }
+  };
+
+  const ensureCaptcha = async () => {
+    for (let i = 0; i < MAX_CAPTCHA_FETCHES; i++) {
+      if (haveCaptcha()) return true;
+      if (await fetchNewCaptcha()) return true;
+      await new Promise((r) => setTimeout(r, RETRY_MS));
+    }
+    return haveCaptcha();
+  };
+
+  // The OTP step legitimately has no captcha, and VTOP has already mailed a
+  // code by then. Nothing on this page may be refreshed or reloaded.
+  const otpStep = () => {
+    const text = document.body ? document.body.innerText : "";
+    return (
+      /one[\s-]*time\s*password|\bOTP\b/i.test(text) ||
+      document.querySelector(
+        "input[id*='otp' i], input[name*='otp' i], input[placeholder*='otp' i]"
+      ) !== null
+    );
+  };
+
+  const run = () => {
+    if (otpStep()) return;
+
+    // reCAPTCHA variant of the login page: complete as rendered, nothing to
+    // fetch. (VIT-AP flips between this and the image captcha — see ROADMAP.)
+    if (document.querySelector("input[name='gResponse'], input#gResponse")) {
+      if (store) store.removeItem(RELOAD_KEY);
+      return;
+    }
+
+    if (captchaBlock()) {
+      if (store) store.removeItem(RELOAD_KEY);
+      if (!haveCaptcha()) ensureCaptcha();
+      return;
+    }
+
+    // No captcha block and no form: a dead load. This is the only case a
+    // reload can help with, and it is capped so it can never become a loop.
+    const rendered = document.body ? document.body.innerText.trim().length > 0 : false;
+    const haveForm = !!document.getElementById("vtopLoginForm");
+    if (rendered || haveForm || store === null) return;
+
+    const attempts = Number(store.getItem(RELOAD_KEY)) || 0;
+    if (attempts >= MAX_RELOADS) return;
+    store.setItem(RELOAD_KEY, String(attempts + 1));
+    setTimeout(() => window.location.reload(), 500);
+  };
+
+  run();
+
+  // VTOP re-renders #captchaBlock on its own refresh button and after a failed
+  // submit. Watch for a block that comes back empty and heal it too — that is
+  // the "wrong captcha, try again" path, where a student is most likely to be
+  // staring at a blank box.
+  const watch = () => {
+    const block = captchaBlock();
+    if (!block) return;
+    let pending = false;
+    new MutationObserver(() => {
+      if (pending || haveCaptcha()) return;
+      pending = true;
+      setTimeout(() => {
+        pending = false;
+        ensureCaptcha();
+      }, 400);
+    }).observe(block, { childList: true, subtree: true });
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      run();
+      watch();
+    });
+  } else {
+    watch();
   }
-
-  // reCAPTCHA login page: complete as rendered, nothing missing, nothing to
-  // retry. Checked ahead of everything else so that a future VTOP layout which
-  // happens to put a visible #stdForm back on this page cannot restart the
-  // flicker loop.
-  if (document.querySelector("input[name='gResponse'], input#gResponse") !== null) {
-    if (store) store.removeItem(RELOAD_KEY);
-    return;
-  }
-
-  const text = document.body ? document.body.innerText : "";
-
-  // The OTP step legitimately has no captcha. Reloading it would discard a
-  // code VTOP has already sent and force a resend, so it is off limits.
-  const otpStep =
-    /one[\s-]*time\s*password|OTP\b/i.test(text) ||
-    document.querySelector(
-      "input[id*='otp' i], input[name*='otp' i], input[placeholder*='otp' i]"
-    ) !== null;
-  if (otpStep) return;
-
-  // VISIBLE, not merely present. The role-picker page ships #stdForm in the
-  // DOM already, hidden until a role is chosen — so "does #stdForm exist"
-  // is true on the picker too, and reloading on it puts the home page in a
-  // loop. Only a form the user can actually see is a form whose missing
-  // captcha is a fault.
-  const stdForm = document.getElementById("stdForm");
-  const formVisible =
-    stdForm !== null &&
-    (stdForm.offsetParent !== null || stdForm.getClientRects().length > 0);
-  const rendered = text.trim().length > 0;
-
-  const worthReloading = formVisible || !rendered;
-  if (!worthReloading || store === null) return;
-
-  const attempts = Number(store.getItem(RELOAD_KEY)) || 0;
-  if (attempts >= MAX_RELOADS) return;
-  store.setItem(RELOAD_KEY, String(attempts + 1));
-  setTimeout(() => window.location.reload(), 500);
 })();

@@ -143,54 +143,136 @@
       added++;
     }
 
-    if (!stale && summary && Array.isArray(summary.subjects)) {
-      const atRisk = summary.subjects.filter(
-        (s) => typeof s.nextBunkable === "number" && s.nextBunkable <= 1
-      );
-      if (atRisk.length) {
-        atRisk.forEach((s) => {
+    const summaryAgeDays =
+      summary && summary.fetchedAt
+        ? Math.floor((Date.now() - summary.fetchedAt) / DAY_MS)
+        : null;
+
+    /*
+     * WHY THIS CARD NOW TALKS ABOUT DEBARMENT, NOT ABOUT CAT-1.
+     * Asked for 2026-08-17: "instead of showing how many skippable classes
+     * before cat1 u can say how many debarred".
+     *
+     * It is the right number for two reasons, only one of which is wording.
+     *
+     * 1. "N skippable before CAT-1" is a fact with an expiry date, and nothing
+     *    on the card could see it pass. Seen live the same morning: the card
+     *    said "only 0 class(es) skippable before the next exam" for a subject
+     *    the attendance page gave three in hand. Neither number was wrong — the
+     *    0 had been measured against CAT-1 days earlier, CAT-1 arrived, and a
+     *    figure counted up to a date in the past carried on rendering as news.
+     * 2. Missing an exam-window class costs nothing by itself. Falling under
+     *    75% costs the exam hall. The 75% line is measured against the rest of
+     *    the semester, so it cannot silently expire the way the other did.
+     *
+     * `safeNow` is that number already: sessions that can be missed while never
+     * dipping under 75%. So the card leads with it, and says what it is for.
+     *
+     * The exam figure is not deleted — it is demoted to a parenthetical, and
+     * only while the exam it counts to is still ahead. A stale one is dropped
+     * rather than shown, because an alarming number nobody can date is worse
+     * than no number.
+     */
+    // LOCAL date, not toISOString(). Between midnight and 05:30 IST the UTC
+    // day is still yesterday, so a UTC "today" would keep showing an exam
+    // figure for an exam that started this morning — the exact class of bug
+    // this rewrite exists to remove. Same hazard dateOfIso() guards above.
+    const d0 = todayMidnight();
+    const todayIso = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-${String(
+      d0.getDate()
+    ).padStart(2, "0")}`;
+    const examStillAhead = (s) =>
+      typeof s.nextBunkable === "number" &&
+      !!s.nextExamIso &&
+      s.nextExamIso > todayIso;
+
+    const label = (s) =>
+      `${s.code || String(s.name || "").split(" ")[0]}${/lab/i.test(s.unit || "") ? " (lab)" : ""}`;
+    // "3 class(es)" / "1 class" — the unit strings carry the plural in
+    // brackets, which reads badly next to a 1.
+    const count = (n, unit) => {
+      const u = unit || "class(es)";
+      return n === 1 ? `${n} ${u.replace("(es)", "").replace("(s)", "")}` : `${n} ${u}`;
+    };
+
+    if (!stale && summary && Array.isArray(summary.subjects) && summary.subjects.length) {
+      const subjects = summary.subjects;
+
+      // Already under the line. This is the only group with a deadline it can
+      // still act on, so it goes first and is never collapsed into a summary.
+      subjects
+        .filter((s) => s.below75)
+        .sort((a, b) => (a.pct || 0) - (b.pct || 0))
+        .forEach((s) => {
+          const where = typeof s.pct === "number" ? ` (${s.pct}%)` : "";
           body.appendChild(
             line(
-              `⚠️ ${s.name}: only ${s.nextBunkable} ${s.unit || "class(es)"} skippable before the next exam`,
+              s.canRecover === false
+                ? `\u{1F6AB} ${s.name}: below 75%${where} — attending every remaining class still only reaches ${
+                    typeof s.maxPct === "number" ? `${s.maxPct}%` : "under 75%"
+                  }. Debarment is decided by the faculty from here; ask now.`
+                : `\u{1F6AB} ${s.name}: below 75%${where} — debarred unless you attend the next ${count(
+                    s.recover || 1,
+                    s.unit
+                  )} in a row.`,
               "#c0392b"
             )
           );
           added++;
         });
-      } else if (summary.subjects.length) {
+
+      // Above the line but with no room left: one more absence is the one that
+      // costs the exam.
+      subjects
+        .filter((s) => !s.below75 && typeof s.safeNow === "number" && s.safeNow <= 1)
+        .sort((a, b) => a.safeNow - b.safeNow)
+        .forEach((s) => {
+          const ahead = examStillAhead(s)
+            ? ` (${s.nextBunkable} before ${s.nextExamLabel || "the next exam"})`
+            : "";
+          body.appendChild(
+            line(
+              s.safeNow === 0
+                ? `\u{26A0}\u{FE0F} ${s.name}: no room left — miss one more and you are under 75%${ahead}`
+                : `\u{26A0}\u{FE0F} ${s.name}: ${count(s.safeNow, s.unit)} left before debar${ahead}`,
+              s.safeNow === 0 ? "#c0392b" : "#b8860b"
+            )
+          );
+          added++;
+        });
+
+      // Everyone else, one line, smallest headroom first — the order a student
+      // reads it in is the order they should worry in.
+      const comfortable = subjects
+        .filter((s) => !s.below75 && typeof s.safeNow === "number" && s.safeNow > 1)
+        .sort((a, b) => a.safeNow - b.safeNow);
+      if (comfortable.length) {
         body.appendChild(
           line(
-            "✅ Attendance: all subjects have buffer before the next exam.",
-            "#2e7d32"
-          )
-        );
-        added++;
-      }
-      // compact safe-skip overview — the "never dip below 75%" numbers
-      const withSafe = summary.subjects.filter(
-        (s) => typeof s.safeNow === "number"
-      );
-      if (withSafe.length) {
-        body.appendChild(
-          line(
-            `🎯 Safe to skip now: ${withSafe
-              .map(
-                (s) =>
-                  `${s.code || s.name.split(" ")[0]}${/lab/i.test(s.unit || "") ? " (lab)" : ""} ${s.safeNow}`
-              )
+            `\u{1F3AF} Can still miss before debar: ${comfortable
+              .map((s) => `${label(s)} ${s.safeNow}`)
               .join(" · ")}`,
             null
           )
         );
         added++;
       }
-      const ageDays = Math.floor(
-        (Date.now() - (summary.fetchedAt || 0)) / DAY_MS
-      );
-      if (ageDays >= 1) {
+
+      if (
+        !subjects.some((s) => s.below75) &&
+        !subjects.some((s) => typeof s.safeNow === "number" && s.safeNow <= 1) &&
+        comfortable.length
+      ) {
+        body.appendChild(
+          line("✅ Nothing is close to the 75% line.", "#2e7d32")
+        );
+        added++;
+      }
+
+      if (summaryAgeDays !== null && summaryAgeDays >= 1) {
         body.appendChild(
           line(
-            `(attendance data is ${ageDays} day(s) old — open the Attendance page to refresh)`,
+            `(attendance data is ${summaryAgeDays} day(s) old — open the Attendance page to refresh)`,
             "#888"
           )
         );

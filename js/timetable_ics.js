@@ -14,54 +14,8 @@
   const CALENDAR_PREFIX = "vrevamp_calendar_";
   const GCAL_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
-  // Fresh Google token via the worker at click time (chrome.identity refreshes
-  // silently once consent exists). The worker replies { token, error } — the
-  // error is kept so the buttons can say WHY no consent window appeared (most
-  // often: the Chrome profile itself has no Google account signed in).
-  // Shared with exam_schedule.js/da_upload.js, hence the window guard.
-  if (typeof window.vrGoogleToken !== "function") {
-    window.vrGoogleAuthError = null;
-    window.vrGoogleToken = (opts) =>
-      new Promise((resolve) => {
-        const fallback = () =>
-          chrome.storage.sync.get(["token"], (r) => resolve(r.token || null));
-        try {
-          chrome.runtime.sendMessage(
-            {
-              message: "get_google_token",
-              interactive: !!(opts && opts.interactive),
-              stale: (opts && opts.stale) || null,
-            },
-            (resp) => {
-              if (chrome.runtime.lastError || resp === undefined) return fallback();
-              if (resp && typeof resp === "object") {
-                window.vrGoogleAuthError = resp.error || null;
-                return resolve(resp.token || null);
-              }
-              resolve(resp || null); // worker from before the update: bare token
-            }
-          );
-        } catch {
-          fallback();
-        }
-      });
-    // the sign-in failure, phrased for the button status lines
-    window.vrGoogleAuthHint = () => {
-      const e = window.vrGoogleAuthError || "";
-      // a Cloud Console checkbox, not anything the student can click past
-      if (/invalid_scope|accessNotConfigured|not enabled|has not been used/i.test(e))
-        return "Google refused the scope — in Cloud Console enable the Google Calendar API and add calendar.events under Data Access, then retry";
-      if (/bad client id|invalid_client|deleted_client/i.test(e))
-        return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
-      if (/not signed in/i.test(e))
-        return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
-      if (/did not approve|access|denied|closed|cancel/i.test(e))
-        return "the Google consent window was closed — click again and allow access";
-      return e
-        ? `Google sign-in failed: ${e}`
-        : "Google sign-in failed — allow the consent window, then retry";
-    };
-  }
+  // vrGoogleToken / vrGoogleAuthHint / vrGcalTemplateUrl live in
+  // js/shared/google_auth.js, loaded before this file by the manifest.
 
   // getDay() index for the recurrence: 0=Sun..6=Sat
   const dayToNum = (name) =>
