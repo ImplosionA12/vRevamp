@@ -234,14 +234,13 @@ endpoints — that is what caused it.
 
 - ~~**`vrGoogleAuthHint` is copy-pasted in three files**~~ — done 2026-08-16,
   now `js/shared/google_auth.js`.
-- **Dead legacy DA sync button** (`da_upload.js`, ~line 546) — the old-layout
-  "Sync assignments with Google Calendar" reads a token from
-  `chrome.storage.sync` written by a popup sign-in button that no longer exists,
-  against the dead upstream OAuth client. It cannot work. Delete it.
-- **19 lint warnings, 0 errors** — all `no-use-before-define` in upstream code.
-  Harmless; worth a pass if the file is being touched anyway.
-- **`.bak` files** (`background.js.bak`, `chooseCurrentSem.js.bak`) — excluded
-  from the package already, but still in the tree.
+- ~~**Dead legacy DA sync button**~~ — removed 2026-08-16; `da_upload.js` says
+  where and why at the site of the deletion.
+- ~~**`.bak` files**~~ — gone; checked 2026-08-17, `git ls-files` finds none.
+- **24 lint warnings, 0 errors** — all `no-use-before-define`, all on functions
+  or consts referenced from inside a function body and therefore fine at
+  runtime. Worth a pass only if a file is being restructured anyway; reordering
+  them for the linter's sake risks a real TDZ error in exchange for nothing.
 
 ## Features previously discussed, not built
 

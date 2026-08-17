@@ -85,7 +85,48 @@ date is worse than no number. `attendance_insights.js` now carries `below75`,
 the card can speak to the student who is *already* under the line, who needs
 "attend the next N", not "you may skip 0".
 
-18 new assertions; 391 pass, 0 lint errors.
+### Three more bugs, found by writing the tests that were missing
+
+- **The DA summary bar named the course where it meant the assignment.**
+  `{...assignment, code: c.code, title: c.title}` — the spread carries the
+  assignment's own `title` ("Digital Assessment-2") and the next key overwrote
+  it with the course's ("Basic Law for Engineers"). So the bar, and the list
+  📧 emails, read `MGT1029 — Basic Law for Engineers` once per assignment:
+  three identical lines where three different assignments should be. The course
+  name is kept under `course`, which does not collide.
+- **The daily digest had no tests at all** and repeated the home card's
+  mistake, telling a student already under 75% how many classes they may skip.
+  It now says what to attend, or — when even perfect attendance no longer
+  reaches 75% — says that instead of offering impossible arithmetic.
+- **The digest would mail every morning saying only "your attendance figures
+  are 40 days old."** That note was pushed into `sections`, and
+  `sections.length` is the test for "is there anything worth mailing". It is a
+  footnote now: it rides along on a digest with real news and otherwise says
+  nothing. A digest that cries wolf gets muted, and takes the one that mattered
+  with it.
+
+### Tests for the two things standing between the student and a dead session
+
+`js/shared/vtop.js` — the circuit breaker written to answer *"make sure the
+vtop doesnt get logged out"* — shipped with **no direct test**, only indirect
+exercise through the pages that use it. Eight now: the first non-empty `_csrf`
+is the one used; three refusals stop it and the other three are never sent; a
+success in between resets the count; eleven failed endpoint probes do **not**
+trip it but twelve with nothing ever having worked does; one success anywhere
+makes probe failures meaningless for good; a 200 carrying VTOP's own
+session-expired page counts as the refusal it is; the concurrency pool stops
+early instead of queueing work behind a tripped breaker; and a page with no
+`_csrf` sends nothing at all. One real defect fell out of writing them — the
+banner said "refused 3 requests in a row" even when it was twelve probes that
+did it, which is a number nobody could check against the network tab.
+
+The DA bar's overdue-only state — the one seen live — is covered too: 📧 and
+📬 are offered, 🔔 is **not** (a notification for a date that has passed can
+never fire, and a button that silently does nothing is worse than no button),
+and the payload names each assignment.
+
+418 tests pass, 0 lint errors. **Not yet verified against a reloaded extension
+on the live portal.**
 
 ## Four complaints, four causes, none of them mysterious (2026-08-17)
 

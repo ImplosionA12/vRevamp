@@ -429,9 +429,23 @@ let da_page_2026 = async () => {
 const renderDaSummary = (classTable, courses) => {
   document.getElementById("vrevamp-da-summary")?.remove();
 
-  const upcoming = courses.flatMap((c) =>
-    c.upcoming.map((a) => ({ ...a, code: c.code, title: c.title }))
-  );
+  /*
+   * `title` on an assignment is the ASSIGNMENT's name ("Digital
+   * Assessment-2"); `title` on a course is the course's ("Basic Law for
+   * Engineers"). Spreading the assignment and then setting `title: c.title`
+   * overwrote the first with the second — so this bar, and the list that gets
+   * emailed by 📧, named the course once per assignment:
+   *
+   *   Past due: MGT1029 — Basic Law for Engineers (24-Jun-2026);
+   *             MGT1029 — Basic Law for Engineers (24-Jun-2026);  …
+   *
+   * Three identical lines where three different assignments should be. The
+   * course name is kept, under a name that does not collide.
+   */
+  const withCourse = (list, c) =>
+    (list || []).map((a) => ({ ...a, code: c.code, course: c.title }));
+
+  const upcoming = courses.flatMap((c) => withCourse(c.upcoming, c));
   /*
    * SEEN LIVE 2026-08-17 on this student's own page: nothing upcoming, and
    * ONE assignment past due and never uploaded. The bar named it and then
@@ -445,9 +459,7 @@ const renderDaSummary = (classTable, courses) => {
    * condition entirely — a student with nothing due today is exactly who
    * wants to be told when that changes.
    */
-  const overdueItems = courses.flatMap((c) =>
-    (c.overdue || []).map((a) => ({ ...a, code: c.code, title: c.title }))
-  );
+  const overdueItems = courses.flatMap((c) => withCourse(c.overdue, c));
   const overdue = overdueItems.length;
 
   const bar = document.createElement("div");

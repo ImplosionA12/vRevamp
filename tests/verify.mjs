@@ -3012,6 +3012,97 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ============ DA page: nothing upcoming, something still owed ============
+   *
+   * SEEN LIVE 2026-08-17 on this student's own page. Every control in the
+   * summary bar used to sit inside `if (upcoming.length)`, so the one state
+   * that most deserves attention — work you owe and never submitted — was the
+   * one state with no buttons at all. The bar named it and then offered
+   * nothing.
+   */
+  console.log("\n=== DA page: overdue with nothing upcoming ===");
+  {
+    const fixed = new Date("2026-07-06T09:00:00+05:30").getTime();
+    const lateHtml = `
+      <table class="customTable">
+        <tr><td>Semester</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class Number</td></tr>
+        <tr><td>Summer II</td><td>MGT1029</td><td>Basic Law for Engineers</td><td>TH</td><td>AP2025267000565</td></tr>
+      </table>
+      <table class="customTable">
+        <tr><td>Sl.No.</td><td>Title</td><td>Max. Mark</td><td>Weightage %</td><td>Due Date</td><td>QP</td><td>Document Details</td></tr>
+        <tr><td>Last Updated On</td><td>Upload/Edit</td><td>Download</td></tr>
+        <tr><td>1</td><td>Digital Assessment-1</td><td>15</td><td>15</td><td><span style="color:red">24-Jun-2026</span></td><td></td>
+            <td><span style="color:red">File Not Uploaded</span></td><td></td><td></td></tr>
+      </table>`;
+    const page = await newPage(browser);
+    await page.route("https://vtop-late.test/**", (route) => {
+      if (route.request().url().includes("processDigitalAssignment"))
+        return route.fulfill({ contentType: "text/html", body: lateHtml });
+      route.fulfill({
+        contentType: "text/html",
+        body: `<body>
+          <span class="navbar-text text-light small fw-bold">24MIC7198 (STUDENT)</span>
+          <input name="_csrf" value="t0k">
+          <table class="customTable">
+            <tr><td>Sl.No</td><td>Class Nbr</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Faculty Name</td><td>Dashboard</td></tr>
+            <tr><td>1</td><td>AP2025267000565</td><td>MGT1029</td><td>Basic Law for Engineers</td><td>TH</td><td>P Ojha</td><td><a>view</a></td></tr>
+          </table></body>`,
+      });
+    });
+    await page.goto("https://vtop-late.test/vtop/content");
+    await shim(page, { fixedMs: fixed, storage: {} });
+    await inject(page, ["js/shared/click.js", "js/shared/google_auth.js", "js/shared/vtop.js", "js/da_upload.js"]);
+    await page.evaluate(() => window.__dispatch("da_upload"));
+    await delay(800);
+
+    const bar = await page.evaluate(() => {
+      const el = document.getElementById("vrevamp-da-summary");
+      if (!el) return null;
+      return {
+        text: el.textContent,
+        buttons: [...el.querySelectorAll("button")].map((b) => b.textContent),
+        dues: [...el.querySelectorAll("button")]
+          .map((b) => b.dataset.vrDues)
+          .filter(Boolean)
+          .map((d) => JSON.parse(d)),
+      };
+    });
+    ok("the bar says plainly that nothing is upcoming but something is owed",
+      !!bar && /Nothing upcoming — but 1 assignment\(s\) are past due and never uploaded/.test(bar.text),
+      (bar && bar.text.slice(0, 160)) || "no bar");
+    ok("the overdue item is named, with its own title and date",
+      !!bar && /Past due: MGT1029 — Digital Assessment-1 \(24-Jun-2026\)/.test(bar.text),
+      (bar && bar.text.slice(0, 200)) || "no bar");
+    ok(
+      "📧 is offered, and says what it will send",
+      !!bar && bar.buttons.some((b) => /email me what I still owe/.test(b)),
+      JSON.stringify(bar && bar.buttons)
+    );
+    ok(
+      "📬 the daily digest is offered too — nothing due today is exactly who wants it",
+      !!bar && bar.buttons.some((b) => /daily digest/.test(b)),
+      JSON.stringify(bar && bar.buttons)
+    );
+    /*
+     * And NOT 🔔. A Chrome notification for a date that has already passed can
+     * never fire, so offering it would be a button that silently does nothing —
+     * worse than no button, because it looks like the problem is handled.
+     */
+    ok(
+      "🔔 is NOT offered — it could only schedule a reminder for a past date",
+      !!bar && !bar.buttons.some((b) => /remind me/.test(b)),
+      JSON.stringify(bar && bar.buttons)
+    );
+    ok(
+      "the payload 📧 carries is the overdue list, named per assignment",
+      !!bar && bar.dues.length === 1 &&
+        bar.dues[0].dues.length === 1 &&
+        bar.dues[0].dues[0].title === "MGT1029 — Digital Assessment-1",
+      JSON.stringify(bar && bar.dues)
+    );
+    await page.close();
+  }
+
   /* ============ DA page 2026: dues column + email reminder ============ */
   console.log("\n=== DA page (2026): upcoming dues + 🔔 email reminder ===");
   {
@@ -3177,6 +3268,36 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         daLinks.row1[0].href.includes("dates=20260710T200000/20260710T210000") &&
         daLinks.row1[0].href.includes(encodeURIComponent("DA due: MGT1029 — Digital Assessment-2")),
       JSON.stringify(daLinks.row1)
+    );
+
+    /*
+     * The summary bar above the table. Mixed state first: something upcoming
+     * AND something past due — both have to be named, because "1 still to
+     * upload" alone reads like everything else is fine.
+     */
+    const barMixed = await page.evaluate(() => {
+      const bar = document.getElementById("vrevamp-da-summary");
+      if (!bar) return null;
+      return {
+        text: bar.textContent,
+        buttons: [...bar.querySelectorAll("button")].map((b) => b.textContent),
+        types: [...bar.querySelectorAll("button")].map((b) => b.type),
+      };
+    });
+    ok(
+      "the summary bar counts what is upcoming AND what is already past due",
+      !!barMixed && /1 assignment\(s\) still to upload, and 4 already past due/.test(barMixed.text),
+      (barMixed && barMixed.text.slice(0, 160)) || "no bar"
+    );
+    ok(
+      "past-due items are named, not just counted",
+      !!barMixed && /Past due: MGT1029 — Digital Assessment-1 \(24-Jun-2026\); PHY1001 — Digital Assessment-1/.test(barMixed.text),
+      (barMixed && barMixed.text.slice(0, 240)) || "no bar"
+    );
+    ok(
+      "and every bar button is type=button, so none of them submits VTOP's form",
+      !!barMixed && barMixed.types.length >= 3 && barMixed.types.every((t) => t === "button"),
+      JSON.stringify(barMixed && barMixed.types)
     );
 
     // re-fired message must not duplicate the column
@@ -3373,6 +3494,201 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       `messages=${s.messages.length} reloads=${s.reloads} counter=${s.counter}`
     );
     await page.close();
+  }
+
+  /* ============ the VTOP circuit breaker ============
+   *
+   * `js/shared/vtop.js` is the thing standing between the student and *"make
+   * sure the vtop doesnt get logged out"*, and it shipped with no direct test —
+   * only indirect exercise through the pages that use it. Repeated failed POSTs
+   * are what damages a session, so the one behaviour that must be true is that
+   * failure makes it STOP, not try the other seven.
+   */
+  console.log("\n=== VTOP circuit breaker: stop, don't retry ===");
+  {
+    // `plan` is one entry per fetch; the last entry repeats for anything beyond.
+    const bootVtop = async (plan) => {
+      const page = await newPage(browser);
+      await page.setContent(
+        "<body>" +
+          // VTOP ships EMPTY _csrf placeholders on some fragments and
+          // querySelector takes the first match — picking that one 404s every
+          // request made with it. The first non-empty token is the right one.
+          '<input name="_csrf" value="">' +
+          '<input name="_csrf" value="TOKEN-1">' +
+          '<input id="authorizedIDX" value="24MIC7198">' +
+          '<div class="table-responsive"><table></table></div>' +
+          "</body>"
+      );
+      await page.addScriptTag({
+        content:
+          "window.__fetches = [];\n" +
+          `const plan = ${JSON.stringify(plan)};\n` +
+          "window.fetch = (url) => {\n" +
+          "  window.__fetches.push(String(url));\n" +
+          "  const step = plan[Math.min(window.__fetches.length - 1, plan.length - 1)];\n" +
+          "  return Promise.resolve({\n" +
+          "    ok: step.status >= 200 && step.status < 300,\n" +
+          "    status: step.status,\n" +
+          "    text: () => Promise.resolve(step.body || 'ok'),\n" +
+          "  });\n" +
+          "};\n" +
+          "window.__try = async (n, opts) => {\n" +
+          "  const out = [];\n" +
+          "  for (let i = 0; i < n; i++) {\n" +
+          "    try { out.push('ok'); await window.vrVtop.post('p' + i, {}, opts); }\n" +
+          "    catch (e) { out[out.length - 1] = String(e.message); }\n" +
+          "  }\n" +
+          "  return out;\n" +
+          "};",
+      });
+      await inject(page, ["js/shared/vtop.js"]);
+      return page;
+    };
+
+    {
+      const page = await bootVtop([{ status: 200 }]);
+      const ids = await page.evaluate(() => [window.vrVtop.csrf(), window.vrVtop.authorizedID()]);
+      ok(
+        "the first NON-EMPTY _csrf is used, not the first one on the page",
+        ids[0] === "TOKEN-1" && ids[1] === "24MIC7198",
+        JSON.stringify(ids)
+      );
+      await page.close();
+    }
+
+    {
+      const page = await bootVtop([{ status: 404 }]);
+      const r = await page.evaluate(() => window.__try(6));
+      const state = await page.evaluate(() => ({
+        fetches: window.__fetches.length,
+        banner: (document.getElementById("vrevamp-session-banner") || {}).textContent || null,
+      }));
+      ok(
+        "three refusals in a row stop it — the other three are never sent",
+        state.fetches === 3,
+        JSON.stringify({ fetches: state.fetches, results: r })
+      );
+      ok(
+        "and every later call fails fast, saying the session is stale",
+        r.slice(3).every((m) => /vtop-session-stale/.test(m)),
+        JSON.stringify(r)
+      );
+      ok(
+        "the student is told why, and what fixes it",
+        !!state.banner && /refused 3 requests in a row \(HTTP 404\)/.test(state.banner) &&
+          /sign in again/i.test(state.banner),
+        String(state.banner).slice(0, 160)
+      );
+      await page.close();
+    }
+
+    {
+      // Consecutive, not cumulative. A deployment that answers every other
+      // request is annoying, not hostile, and must not be shut down.
+      const page = await bootVtop([
+        { status: 404 }, { status: 404 }, { status: 200 },
+        { status: 404 }, { status: 404 }, { status: 200 },
+      ]);
+      await page.evaluate(() => window.__try(6));
+      const state = await page.evaluate(() => ({
+        fetches: window.__fetches.length,
+        tripped: window.vrVtop.tripped,
+      }));
+      ok(
+        "a success in between resets the count — the breaker stays shut",
+        state.fetches === 6 && state.tripped === false,
+        JSON.stringify(state)
+      );
+      await page.close();
+    }
+
+    {
+      // Endpoint probing 404s by design on every deployment it guessed wrong
+      // about. Counting those like real failures would trip the breaker on the
+      // first subject of every page load and kill the feature permanently.
+      const page = await bootVtop([{ status: 404 }]);
+      await page.evaluate(() => window.__try(11, { probe: true }));
+      let tripped = await page.evaluate(() => window.vrVtop.tripped);
+      ok("eleven failed probes do not trip it", tripped === false);
+      await page.evaluate(() => window.__try(1, { probe: true }));
+      const state = await page.evaluate(() => ({
+        tripped: window.vrVtop.tripped,
+        banner: (document.getElementById("vrevamp-session-banner") || {}).textContent || null,
+      }));
+      ok(
+        "but twelve, with nothing ever having worked, is a session refusing everything",
+        state.tripped === true && /refused 12 requests in a row/.test(state.banner || ""),
+        JSON.stringify(state)
+      );
+      await page.close();
+    }
+
+    {
+      // One success anywhere proves the session is fine, so probe failures
+      // stop meaning anything at all from then on.
+      const page = await bootVtop([{ status: 200 }, { status: 404 }]);
+      await page.evaluate(() => window.__try(1));
+      await page.evaluate(() => window.__try(30, { probe: true }));
+      const tripped = await page.evaluate(() => window.vrVtop.tripped);
+      ok("after one success, no number of failed probes trips it", tripped === false);
+      await page.close();
+    }
+
+    {
+      // The state the ROADMAP says users actually hit: shell healthy, content
+      // POSTs answered 200 with VTOP's own session-expired page inside. A
+      // failure wearing a success code still has to count.
+      const page = await bootVtop([{ status: 200, body: "<html>Session Expired. Please Login Again</html>" }]);
+      const r = await page.evaluate(() => window.__try(5));
+      const state = await page.evaluate(() => ({
+        fetches: window.__fetches.length,
+        tripped: window.vrVtop.tripped,
+      }));
+      ok(
+        "a 200 carrying 'session expired' counts as a refusal and trips it",
+        state.tripped === true && state.fetches === 3 && /session expired/i.test(r[0]),
+        JSON.stringify({ state, first: r[0] })
+      );
+      await page.close();
+    }
+
+    {
+      // The pool must not queue work behind a tripped breaker either.
+      const page = await bootVtop([{ status: 404 }]);
+      const done = await page.evaluate(async () => {
+        const items = [1, 2, 3, 4, 5, 6, 7, 8];
+        const out = await window.vrVtop.pool(items, 3, async (n) => window.vrVtop.post("c" + n, {}));
+        return { fetches: window.__fetches.length, results: out.length };
+      });
+      ok(
+        "eight queued jobs stop after the breaker trips, not after eight failures",
+        done.fetches <= 5,
+        JSON.stringify(done)
+      );
+      await page.close();
+    }
+
+    {
+      // No token means the page is not what we think it is. Send nothing.
+      const page = await newPage(browser);
+      await page.setContent("<body><div class='table-responsive'></div></body>");
+      await page.addScriptTag({
+        content: "window.__fetches=[];window.fetch=(u)=>{window.__fetches.push(u);return Promise.resolve({ok:true,status:200,text:()=>Promise.resolve('')});};",
+      });
+      await inject(page, ["js/shared/vtop.js"]);
+      const r = await page.evaluate(async () => {
+        let message = null;
+        try { await window.vrVtop.post("x", {}); } catch (e) { message = e.message; }
+        return { message, fetches: window.__fetches.length };
+      });
+      ok(
+        "with no _csrf on the page nothing is sent at all",
+        r.fetches === 0 && /missing _csrf/.test(r.message || ""),
+        JSON.stringify(r)
+      );
+      await page.close();
+    }
   }
 
   /* ============ home card leads with debarment, not with CAT-1 ============

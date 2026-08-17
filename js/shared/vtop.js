@@ -104,12 +104,15 @@
     else anchor.insertAdjacentElement("beforebegin", bar);
   };
 
-  const trip = (status) => {
+  // `count` is however many refusals actually did it — the probe route trips
+  // on PROBE_TRIP_AFTER, not TRIP_AFTER, and a banner that names the wrong
+  // number is a banner nobody can check against the network tab.
+  const trip = (status, count) => {
     state.tripped = true;
     state.lastStatus = status;
     showBanner(
-      "vRevamp stopped talking to VTOP: it refused " +
-        `${TRIP_AFTER} requests in a row (HTTP ${status}). That usually means the ` +
+      `vRevamp stopped talking to VTOP: it refused ${count} requests in a row ` +
+        `(HTTP ${status}). That usually means the ` +
         "session has gone stale. Sign out of VTOP and sign in again — vRevamp " +
         "deliberately sends nothing more until then, because repeating failed " +
         "requests is what breaks the session further."
@@ -155,11 +158,12 @@
     const countFailure = (status) => {
       if (probe) {
         state.probeFailures++;
-        if (state.probeFailures >= PROBE_TRIP_AFTER && state.successes === 0) trip(status);
+        if (state.probeFailures >= PROBE_TRIP_AFTER && state.successes === 0)
+          trip(status, state.probeFailures);
         return;
       }
       state.consecutiveFailures++;
-      if (state.consecutiveFailures >= TRIP_AFTER) trip(status);
+      if (state.consecutiveFailures >= TRIP_AFTER) trip(status, state.consecutiveFailures);
     };
 
     if (res.status === 401 || res.status === 403 || res.status === 404) {
