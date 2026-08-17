@@ -3929,6 +3929,49 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       text.slice(0, 240)
     );
 
+    /*
+     * A SHELL THAT ARRIVES LATE. ROADMAP records VTOP stalling its own static
+     * assets for thirty seconds or more; the retry budget was seven, so on one
+     * of those loads the card simply never appeared — silently, nothing in the
+     * console, indistinguishable from the feature being broken.
+     *
+     * Deliberately a slow test (~10 s): the container is added at 8 s, past the
+     * old cap and inside the new one. There is no way to assert this quickly
+     * that would still have caught the bug.
+     */
+    {
+      const page = await newPage(browser);
+      await page.setContent("<body></body>");
+      await shim(page, {
+        fixedMs: now,
+        storage: {
+          vrevamp_attendance_summary: {
+            fetchedAt: now,
+            semester: sem,
+            subjects: [
+              { name: "CSE3009 - NoSQL", code: "CSE3009", pct: 93, safeNow: 3, below75: false, unit: "class(es)" },
+            ],
+          },
+        },
+      });
+      await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
+      await delay(8000);
+      const earlyCard = await page.evaluate(() => !!document.getElementById("vrevamp-home-notices"));
+      await page.evaluate(() => {
+        const d = document.createElement("div");
+        d.id = "main-section";
+        document.body.appendChild(d);
+      });
+      await delay(2000);
+      const lateCard = await page.evaluate(() => !!document.getElementById("vrevamp-home-notices"));
+      ok(
+        "a shell that takes 8s to arrive still gets the card",
+        earlyCard === false && lateCard === true,
+        JSON.stringify({ earlyCard, lateCard })
+      );
+      await page.close();
+    }
+
     // Comfortable across the board: say so once rather than listing nothing.
     text = await cardText([
       { name: "CSE3009 - NoSQL Databases", code: "CSE3009", pct: 93, safeNow: 3, below75: false, unit: "class(es)" },

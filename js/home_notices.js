@@ -311,8 +311,22 @@
     return true;
   };
 
-  // the landing content loads asynchronously after the nav message, so retry
-  // briefly until the container exists
+  /*
+   * The landing content loads asynchronously after the nav message, so retry
+   * until the container exists.
+   *
+   * The cap was 10 × 700 ms — seven seconds. VTOP's own server is documented in
+   * ROADMAP as intermittently stalling its static assets for **thirty seconds
+   * or more** (readyState "loading", the navbar and cards appearing only after),
+   * which is longer than the whole retry budget. On one of those loads the card
+   * simply never appeared, silently and with nothing in the console, which is
+   * indistinguishable from the feature being broken.
+   *
+   * 45 ticks is ~31 s. The work per tick is a handful of querySelectors against
+   * a shell that has not rendered yet, so the cost of the extra 35 is nil, and
+   * the interval still ends — an unbounded retry on VTOP's SPA is how the
+   * "Page Unresponsive" freeze happened.
+   */
   const renderWithRetries = () => {
     let attempts = 0;
     const timer = setInterval(async () => {
@@ -324,7 +338,7 @@
         done = true;
         console.warn("vRevamp notices:", error);
       }
-      if (done || attempts >= 10) clearInterval(timer);
+      if (done || attempts >= 45) clearInterval(timer);
     }, 700);
   };
 

@@ -162,7 +162,28 @@ code before being kept** — `git stash` the fix, run, watch it go red, restore.
 Green tests have proved nothing on this project before (299 passed with three
 live button bugs); a test that has never been seen to fail is not evidence.
 
-425 tests pass, 0 lint errors. The captcha findings are verified on the live
+Worth noting where the fix came from: `js/vtop_otp.js` already used exactly this
+capped-poll pattern, for exactly this reason, with a comment saying *"the login
+page is server-rendered but swaps in the OTP step without a reload… an observer
+on this page was what froze the timetable page"*. The same-document swap was
+already known and already solved once — the two captcha scripts were simply
+never given the same treatment.
+
+### And one more, from the same audit
+
+`home_notices.js` retried for the container **10 × 700 ms = seven seconds**.
+ROADMAP records VTOP intermittently stalling its own static assets for **thirty
+seconds or more**, which is longer than the entire retry budget — so on one of
+those loads the heads-up card never appeared, silently, with nothing in the
+console. Raised to ~31 s. The work per tick is a few `querySelector`s against a
+shell that has not rendered, so the extra ticks cost nothing, and it still ends:
+an unbounded retry on VTOP's SPA is how the "Page Unresponsive" freeze happened.
+
+Its test takes ten seconds on purpose — the container is added at 8 s, past the
+old cap and inside the new one. There is no quick way to assert this that would
+still have caught the bug. It was watched to fail against the old code too.
+
+426 tests pass, 0 lint errors. The captcha findings are verified on the live
 portal; the OAuth and home-card work is **not** — it needs an extension reload,
 which cannot be done from here.
 
