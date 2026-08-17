@@ -223,6 +223,19 @@ So: the flip is real and goes both ways, the stand-down check
 loop is dead on the page shape that used to loop** — the last two rows are the
 proof, on the real portal.
 
+**Then it flipped BACK inside the hour.** Same tab, same day, checked again:
+`#captchaBlock` present, `gResponse` gone, an `<img class="form-control
+img-fluid bg-light border-0">` carrying a `data:image/` src — and
+**`#captchaStr` already held `96QVLW`, which is exactly what the image reads**.
+
+Two conclusions, both now dated and first-hand:
+
+1. **Stop trying to settle which captcha VIT-AP uses.** It changed twice in one
+   hour. Any note claiming one or the other is permanent is a snapshot. Check
+   `input[name=gResponse]` at the time and branch; both paths must work.
+2. **The solver works, live, unaided** — six characters, correct, filled before
+   the page settled, with no reload and the counter never set.
+
 #### The path that broke both captcha scripts — fixed the same day
 
 `/vtop/login` serves **two different documents depending on state**. Signed out

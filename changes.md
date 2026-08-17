@@ -162,6 +162,17 @@ code before being kept** — `git stash` the fix, run, watch it go red, restore.
 Green tests have proved nothing on this project before (299 passed with three
 live button bugs); a test that has never been seen to fail is not evidence.
 
+**And then it flipped back inside the hour.** Same tab, checked again a little
+later: `#captchaBlock` present, `gResponse` gone, a `data:image/` captcha —
+**and `#captchaStr` already held `96QVLW`, which is exactly what the image
+reads.** Six characters, correct, filled unaided, no reload, counter never set.
+
+That is worth more than either observation alone. The captcha question has been
+"settled" twice in this file already, in opposite directions, and both notes
+were snapshots. It changed **twice in one hour**. Check
+`input[name=gResponse]` at the time and branch; both paths have to work, and
+`weights.json` stays.
+
 Worth noting where the fix came from: `js/vtop_otp.js` already used exactly this
 capped-poll pattern, for exactly this reason, with a comment saying *"the login
 page is server-rendered but swaps in the OTP step without a reload… an observer
