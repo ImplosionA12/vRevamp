@@ -2183,7 +2183,149 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       `reloads=${empty.reloads} counter=${empty.counter}`
     );
 
+    /* ---- the login form that arrives AFTER the script ran ----
+     *
+     * FOUND LIVE 2026-08-17, by walking the portal signed out. `/vtop/login`
+     * can serve the four-role landing page (Student / Employee / Parent /
+     * Alumni), and the login form arrives only once Student is pressed — at
+     * the SAME URL. Whatever ran at document load therefore ran against the
+     * landing page, found no #captchaBlock, and returned; both this file and
+     * captchaparser.js then never looked again, because each attached its
+     * observer to a block that did not exist yet.
+     *
+     * So on the path a student actually takes, the healing and the solver were
+     * both dead on arrival whenever VIT-AP was serving the image captcha.
+     */
+    await page.goto("https://vtop.test/picker");
+    await page.addScriptTag({ content: trapReloads });
+    await resetCounter();
+    captchaHits = 0;
+    await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await delay(200);
+    ok(
+      "nothing is fetched while only the landing page is on screen",
+      captchaHits === 0,
+      `captchaFetches=${captchaHits}`
+    );
+    // press Student: VTOP swaps the login form in, same document, no navigation
+    await page.evaluate(() => {
+      document.body.innerHTML =
+        "<form id='vtopLoginForm'><input name='_csrf' type='hidden' value='x'>" +
+        "<input id='username' name='username'><input id='password' type='password'>" +
+        "<div id='captchaBlock' class='input-group'></div>" +
+        "<input id='captchaStr' name='captchaStr'><button id='submitBtn'>Submit</button></form>";
+    });
+    await delay(1400);
+    const late = await state();
+    ok(
+      "a login form that appears after load still gets its captcha healed",
+      captchaHits === 1 && late.blockHasImg,
+      JSON.stringify({ ...late, captchaHits })
+    );
+    ok(
+      "...and still without a reload",
+      late.reloads === 0,
+      `reloads=${late.reloads}`
+    );
+
+    // Same late arrival, reCAPTCHA variant: no image is ever coming, so the
+    // wait has to end rather than poll for its full cap against a page that
+    // is not broken.
+    await page.goto("https://vtop.test/picker");
+    await page.addScriptTag({ content: trapReloads });
+    await resetCounter();
+    captchaHits = 0;
+    await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await page.evaluate(() => {
+      document.body.innerHTML =
+        "<form id='vtopLoginForm'><input name='_csrf' type='hidden' value='x'>" +
+        "<input name='username'><input name='password' type='password'>" +
+        "<input name='gResponse' type='hidden'><button>Submit</button></form>";
+    });
+    await delay(1400);
+    const lateRecap = await state();
+    ok(
+      "a late reCAPTCHA form is recognised and left alone",
+      captchaHits === 0 && lateRecap.reloads === 0 && lateRecap.counter === null,
+      JSON.stringify({ ...lateRecap, captchaHits })
+    );
+
     await page.close();
+  }
+
+  /* ============ the solver, on a login form that arrives late ============
+   *
+   * captchaparser.js had the same fault as refreshTillCaptcha.js and for the
+   * same reason: it attached its MutationObserver to #captchaBlock once, at
+   * window "load", and returned quietly when the block was not there yet. On
+   * the landing-page → Student path (same URL, no navigation) that meant the
+   * solver never ran at all, however well the model worked.
+   *
+   * Running the model itself needs 600 KB of weights and a real captcha image,
+   * neither of which belongs in a unit test. What IS worth asserting is that
+   * the solver reaches the point of ASKING for the weights — that is the first
+   * thing solve() does, and it only happens if the block was found.
+   */
+  console.log("\n=== captcha solver: attaches to a block that appears later ===");
+  {
+    const captchaImg =
+      "<img class='form-control img-fluid bg-light border-0' " +
+      "src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'>";
+    const landing =
+      "<body><div class='card'>Student</div><div class='card'>Employee</div></body>";
+
+    const runSolver = async (afterHtml) => {
+      const page = await newPage(browser);
+      let weightsHits = 0;
+      await page.route("https://vtop.vitap.ac.in/**", (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === "/weights.json") {
+          weightsHits++;
+          return route.fulfill({ contentType: "application/json", body: '{"weights":[],"biases":[]}' });
+        }
+        route.fulfill({ contentType: "text/html", body: landing });
+      });
+      await page.goto("https://vtop.vitap.ac.in/vtop/login");
+      await shim(page, {});
+      await page.addScriptTag({
+        content:
+          "chrome.runtime.getURL = () => 'https://vtop.vitap.ac.in/weights.json';",
+      });
+      await inject(page, ["js/captcha/captchaparser.js"]);
+      // the real page fires "load" before our script is added in this harness
+      await page.evaluate(() => window.dispatchEvent(new Event("load")));
+      await delay(200);
+      const before = weightsHits;
+      await page.evaluate((html) => { document.body.innerHTML = html; }, afterHtml);
+      await delay(1400);
+      await page.close();
+      return { before, after: weightsHits };
+    };
+
+    const withImage = await runSolver(
+      "<form id='vtopLoginForm'><div id='captchaBlock'>" + captchaImg + "</div>" +
+        "<input id='captchaStr'><button id='submitBtn'>Submit</button></form>"
+    );
+    ok(
+      "nothing is attempted while only the landing page is on screen",
+      withImage.before === 0,
+      JSON.stringify(withImage)
+    );
+    ok(
+      "a captcha that appears after load is picked up and solved",
+      withImage.after >= 1,
+      JSON.stringify(withImage)
+    );
+
+    const withRecaptcha = await runSolver(
+      "<form id='vtopLoginForm'><input name='gResponse' type='hidden'>" +
+        "<button>Submit</button></form>"
+    );
+    ok(
+      "a late reCAPTCHA form is left alone — the model is never loaded for it",
+      withRecaptcha.after === 0,
+      JSON.stringify(withRecaptcha)
+    );
   }
 
   /* ============ exam schedule (2026): header-driven .ics export ============ */

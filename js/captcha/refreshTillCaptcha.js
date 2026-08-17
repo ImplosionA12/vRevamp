@@ -152,9 +152,9 @@
   // submit. Watch for a block that comes back empty and heal it too — that is
   // the "wrong captcha, try again" path, where a student is most likely to be
   // staring at a blank box.
-  const watch = () => {
+  const attach = () => {
     const block = captchaBlock();
-    if (!block) return;
+    if (!block) return false;
     let pending = false;
     new MutationObserver(() => {
       if (pending || haveCaptcha()) return;
@@ -164,14 +164,52 @@
         ensureCaptcha();
       }, 400);
     }).observe(block, { childList: true, subtree: true });
+    return true;
+  };
+
+  /*
+   * WAIT FOR THE BLOCK, DON'T GIVE UP ON IT — found live 2026-08-17.
+   *
+   * `attach()` used to be called once and return silently when #captchaBlock
+   * was absent, which is a permanent decision made from one instant. Checked
+   * against the real portal that morning: /vtop/login can serve the four-role
+   * landing page (Student/Employee/Parent/Alumni), and the login form arrives
+   * only after Student is pressed — at the SAME URL. Whatever ran at document
+   * load ran against the landing page, found no block, and never looked again,
+   * so on the image-captcha variant neither the healing here nor the solver in
+   * captchaparser.js would ever attach on the path a student actually takes.
+   *
+   * A capped poll, not an observer on body. The 2026-08-07 "Page Unresponsive"
+   * freeze was a MutationObserver storm on VTOP's SPA container, and this file
+   * is loaded on the login page where a wedged main thread means nobody can
+   * sign in at all. Twenty ticks at 400 ms is eight seconds and then it is
+   * over, whatever happened.
+   *
+   * It also stops early on the reCAPTCHA variant — which is what the live page
+   * was serving that day — because there no block is ever coming.
+   */
+  const waitForBlock = () => {
+    if (attach()) return;
+    let ticks = 0;
+    const timer = setInterval(() => {
+      ticks++;
+      const recaptcha = !!document.querySelector(
+        "input[name='gResponse'], input#gResponse, .g-recaptcha"
+      );
+      if (recaptcha || attach() || ticks >= 20) {
+        clearInterval(timer);
+        // a block that appeared after load has never been through run()
+        if (!recaptcha && captchaBlock() && !haveCaptcha()) ensureCaptcha();
+      }
+    }, 400);
   };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
       run();
-      watch();
+      waitForBlock();
     });
   } else {
-    watch();
+    waitForBlock();
   }
 })();

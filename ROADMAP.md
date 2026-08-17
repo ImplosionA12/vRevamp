@@ -205,6 +205,49 @@ of that note. VIT-AP flips between the two; the solver has to survive both, and
 
 Not up for discussion: no attempt to solve or bypass reCAPTCHA.
 
+#### 2026-08-17, walked signed out — it has flipped back to reCAPTCHA
+
+Read off the live login form the same day, not inferred:
+
+| checked | found |
+|---|---|
+| `#captchaBlock` | **absent** |
+| `input[name=gResponse]` | present (hidden) |
+| `.grecaptcha-badge`, `g-recaptcha-response` | present |
+| `document.images.length` | 1 (the VIT-AP logo) |
+| `sessionStorage.vrevamp_login_reloads` | **null** — never set |
+| `performance…navigation[0].type` | `"navigate"`, not `"reload"` |
+
+So: the flip is real and goes both ways, the stand-down check
+(`input[name='gResponse']`) matches the live markup exactly, and **the reload
+loop is dead on the page shape that used to loop** — the last two rows are the
+proof, on the real portal.
+
+#### The path that broke both captcha scripts — fixed the same day
+
+`/vtop/login` serves **two different documents depending on state**. Signed out
+with a stale cookie it can be the four-role landing page (Student / Employee /
+Parent / Alumni); pressing **Student swaps the login form in at the same URL**.
+
+Both `refreshTillCaptcha.js` and `captchaparser.js` attached their
+MutationObserver to `#captchaBlock` **once**, and returned quietly when it was
+not there yet. On that path it never is — so on the image-captcha variant the
+healing and the solver were **both dead on arrival**, which is invisible from
+the outside and looks exactly like "the solver doesn't work".
+
+Each now waits for the block with a **capped poll** (20 × 400 ms, and it stops
+early the moment it sees the reCAPTCHA shape). Deliberately not an observer on
+`body`: the 2026-08-07 "Page Unresponsive" freeze was an observer storm, and a
+wedged main thread on the login page means nobody can sign in at all.
+
+Both fixes are covered by tests that were **checked to fail against the old
+code** before being kept.
+
+**Correction to an earlier note:** "the role picker means you have a session" is
+**wrong**. Pressing Student on it leads to the login form, i.e. no session. The
+landing page is pre-login; a live session gets the dashboard from
+`/vtop/content` directly.
+
 ### ~~Can automation click our buttons after all?~~ — ANSWERED 2026-08-16: YES
 
 A **CDP-level mouse click reaches the isolated-world handler.** Confirmed on the

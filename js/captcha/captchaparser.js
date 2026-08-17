@@ -302,14 +302,38 @@ function myMain(evt) {
     // refreshTillCaptcha.js's in-place swap, and the observer covers VTOP's own
     // refresh button (and fires even if this script loaded after the swap).
     document.addEventListener("vrevamp:captcha-changed", solveNow);
-    const block = document.getElementById("captchaBlock");
-    if (block) {
+    /*
+     * Same fix as refreshTillCaptcha.js, for the same reason and found the same
+     * morning: /vtop/login can serve the four-role landing page, and the login
+     * form (with #captchaBlock) arrives only after Student is pressed, at the
+     * same URL. Attaching once at load meant that on that path the observer was
+     * never attached at all, so the box stayed blank however well the model
+     * worked. Capped poll, never an observer on body — a wedged main thread on
+     * the login page means nobody signs in.
+     */
+    const attachBlock = () => {
+      const block = document.getElementById("captchaBlock");
+      if (!block) return false;
       new MutationObserver(() => solveNow()).observe(block, {
         childList: true,
         subtree: true,
         attributes: true,
         attributeFilter: ["src"],
       });
+      solveNow();
+      return true;
+    };
+    if (!attachBlock()) {
+      let ticks = 0;
+      const timer = setInterval(() => {
+        ticks++;
+        // reCAPTCHA variant: no image is ever coming, and solving it is not
+        // something this project does. Stop looking.
+        const recaptcha = !!document.querySelector(
+          "input[name='gResponse'], input#gResponse, .g-recaptcha"
+        );
+        if (recaptcha || attachBlock() || ticks >= 20) clearInterval(timer);
+      }, 400);
     }
   } else {
     let img = document.getElementById("captcha_id");

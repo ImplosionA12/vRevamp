@@ -125,8 +125,46 @@ The DA bar's overdue-only state — the one seen live — is covered too: 📧 a
 never fire, and a button that silently does nothing is worse than no button),
 and the payload names each assignment.
 
-418 tests pass, 0 lint errors. **Not yet verified against a reloaded extension
-on the live portal.**
+### Walked the live portal signed out, and found two dead scripts
+
+The extension could not be reloaded from here, so the OAuth and home-card work
+above is still unproven live. But plenty *can* be read off the portal without
+one, and doing so paid for itself.
+
+**VIT-AP has flipped back to invisible reCAPTCHA** (checked 2026-08-17 on the
+real login form): no `#captchaBlock`, a hidden `input[name=gResponse]`, a
+`.grecaptcha-badge`, and exactly one image on the page — the university logo.
+The stand-down check in `refreshTillCaptcha.js` matches that markup exactly, and
+**the reload loop is confirmed dead**: `vrevamp_login_reloads` was never set and
+the navigation type was `"navigate"`, not `"reload"`, on the page shape that
+used to loop five times.
+
+Then the real find. `/vtop/login` serves **two different documents depending on
+state**: signed out it can be the four-role landing page, and pressing
+**Student swaps the login form in at the same URL, with no navigation**.
+
+Both `refreshTillCaptcha.js` and `captchaparser.js` attached their
+MutationObserver to `#captchaBlock` *once*, at load, and returned quietly when
+it was not there yet. On that path it never is. So on the image-captcha variant
+**the healing and the solver were both dead on arrival** — the box stays blank,
+the field stays empty, and from the outside it is indistinguishable from a
+solver that simply does not work. That is very likely part of what "i asked you
+to reload this part till you get a captcha" was describing all along.
+
+Each now waits for the block with a **capped poll** — 20 ticks at 400 ms, and it
+stops early the moment it sees the reCAPTCHA shape, because there no block is
+ever coming. Deliberately *not* an observer on `body`: the 2026-08-07 "Page
+Unresponsive" freeze was an observer storm, and a wedged main thread on the
+login page means nobody can sign in at all.
+
+Both fixes have tests, and **both tests were checked to fail against the old
+code before being kept** — `git stash` the fix, run, watch it go red, restore.
+Green tests have proved nothing on this project before (299 passed with three
+live button bugs); a test that has never been seen to fail is not evidence.
+
+425 tests pass, 0 lint errors. The captcha findings are verified on the live
+portal; the OAuth and home-card work is **not** — it needs an extension reload,
+which cannot be done from here.
 
 ## Four complaints, four causes, none of them mysterious (2026-08-17)
 
