@@ -1,6 +1,6 @@
 # vRevamp — what's left
 
-Open work as of **2026-08-16**. Ordered by what unblocks the most.
+Open work as of **2026-08-18**. Ordered by what unblocks the most.
 Historical record of what was *done* lives in [changes.md](changes.md).
 
 The Cloud project is **`verammp`** (number `256000685922`, display name
@@ -273,16 +273,27 @@ different mechanism, and it works — so button checks no longer have to be hand
 back to the user. Note the flows that open a Google consent window still do:
 that popup is outside the automated tab group.
 
-### `session_repair` misses the state users actually hit
+### ~~`session_repair` misses the state users actually hit~~ — BUILT 2026-08-18
 
-It fires on a rendered Tomcat 404 and on the poisoned-cookie signature. It does
-**not** fire on "shell healthy, content POSTs 404" — `/vtop/content` returns 200
-with and without cookies, the top bar still shows the student, and every menu
-click clears the content area. That's the state heavy use produces. Worth
-detecting repeated 404s on the content POSTs and prompting a re-login.
+Repeated 404s on the content POSTs are now detected and the student is prompted
+to re-login. The detector had to live in the **service worker**: VTOP drives its
+content area with jQuery AJAX in the page MAIN world, so no content script can
+see those responses, while `chrome.webRequest` sees them regardless of world.
+It counts *consecutive* 404s in a 2-minute window, excludes the login paths, and
+resets on any success or on the tab's next `main_frame` request. It detects
+only — it never retries and never replays an endpoint.
 
-Recovery today is a fresh sign-in. Do **not** try to fix it by replaying VTOP
-endpoints — that is what caused it.
+Recovery is a fresh sign-in, and the banner now does it: clear this site's
+cookies, then go to `/vtop/login`. The clear is not optional, because VTOP
+answers `/vtop/login` with a 404 whenever a session cookie is present — sending
+someone there without clearing is the same dead end. User-initiated by a button,
+never automatic.
+
+Do **not** try to fix this by replaying VTOP endpoints — that is what caused it.
+
+**Not yet seen live.** It fires on a state that takes heavy use to reach. The
+failure mode to watch for is now the opposite one: a banner on a healthy
+session. See changes.md, 2026-08-18.
 
 ---
 

@@ -974,10 +974,113 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   return true; // suggest() is called asynchronously
 });
 
+/*
+ * ===================== "shell healthy, content POSTs 404" =====================
+ *
+ * The session state js/session_repair.js is structurally unable to see.
+ *
+ * That script heals two things: a rendered Tomcat 404 page, and the poisoned
+ * cookie signature (404 with cookies, 200 without). Heavy use produces a third
+ * state that looks like neither, and it is the one students actually hit:
+ * `/vtop/content` still answers 200, the top bar still shows their name, the
+ * page never renders a 404 — and yet every menu click POSTs, gets a 404 back,
+ * and clears the content area. Nothing is wrong with the document, so a
+ * content script inspecting the document finds nothing wrong.
+ *
+ * The evidence only exists in the network layer, and only the worker can read
+ * it: VTOP's menu clicks are jQuery AJAX in the page's MAIN world, which an
+ * isolated-world content script cannot intercept at all. webRequest sees them
+ * regardless of world, and carries the status code.
+ *
+ * Detection, not repair. This counts and then tells the student; it never
+ * retries and never replays an endpoint. Repeating failed POSTs is what
+ * damages the session in the first place (ROADMAP rule 4), so the response to
+ * "VTOP is refusing everything" must be to stop and hand it back.
+ *
+ * Three guards against crying wolf:
+ *
+ *  - CONSECUTIVE, reset by any success. A single 404 is routine — some
+ *    endpoints simply do not exist on a given VTOP deployment, and
+ *    attendance_insights.js probes a list of them on purpose. A healthy
+ *    session answers something in between; a dead one answers nothing.
+ *  - WINDOWED. Three 404s an hour apart are three unrelated events, not a
+ *    broken session, so the run expires.
+ *  - LOGIN PATHS EXCLUDED. A 404 on the login POST means a bad sign-in
+ *    attempt, which is the one moment when telling someone to sign in again
+ *    is both obvious and useless.
+ *
+ * The counter lives in worker memory and is therefore lost if MV3 evicts the
+ * worker mid-run. That is the safe direction to fail: a lost run means one
+ * missed warning, and the next three clicks re-detect it, whereas persisting
+ * it would let a run from yesterday's session warn about today's.
+ */
+const CONTENT_404_TRIP = 3;
+const CONTENT_404_WINDOW_MS = 2 * 60 * 1000;
+// A 404 here says something other than "this session is finished".
+const CONTENT_404_IGNORED =
+  /\/vtop\/(?:login|vtopLogin|doLogin|initialProcess|logout|get\/new\/captcha)/i;
+const content404 = new Map(); // tabId -> { count, since, warned }
+
+const noteContentStatus = (details) => {
+  const tabId = details.tabId;
+  if (typeof tabId !== "number" || tabId < 0) return;
+
+  /*
+   * A real navigation starts a new session; nothing counted before it
+   * describes the one on screen now.
+   *
+   * Read off the main_frame request rather than chrome.tabs.onUpdated on
+   * purpose. An unfiltered onUpdated listener wakes this worker for every tab
+   * load anywhere in the browser, which is the same "one message per event,
+   * whether or not it concerns us" budget that produced the Page Unresponsive
+   * freeze. This event is one we already receive, and only for VTOP.
+   *
+   * VTOP's menu clicks are AJAX and never change the tab's document, so they
+   * do not land here — which is exactly right: a run of 404s must survive the
+   * clicks that produce it and end only at a genuine reload or sign-in.
+   */
+  if (details.type === "main_frame") {
+    content404.delete(tabId);
+    return;
+  }
+  // VTOP drives its content area with POSTed AJAX; a 404 on a stylesheet or a
+  // favicon says nothing about the session
+  if (details.method !== "POST") return;
+  if (details.url.indexOf("/vtop/") === -1) return;
+  if (CONTENT_404_IGNORED.test(details.url)) return;
+
+  if (details.statusCode !== 404) {
+    // VTOP answered something. Whatever run was building, it is over.
+    if (details.statusCode < 400) content404.delete(tabId);
+    return;
+  }
+
+  const now = Date.now();
+  const run = content404.get(tabId);
+  if (!run || now - run.since > CONTENT_404_WINDOW_MS) {
+    content404.set(tabId, { count: 1, since: now, warned: false });
+    return;
+  }
+  run.count += 1;
+  if (run.count < CONTENT_404_TRIP || run.warned) return;
+  run.warned = true; // one banner per run, not one per click
+  chrome.tabs.sendMessage(
+    tabId,
+    { message: "session_dead", failures: run.count },
+    () => {
+      // no content script on this page (or it navigated away mid-send)
+      void chrome.runtime.lastError;
+    }
+  );
+};
+
+chrome.tabs.onRemoved.addListener((tabId) => content404.delete(tabId));
+
 /* Fires after the completion of a request */
 chrome.webRequest.onCompleted.addListener(
   async (details) => {
     const link = details["url"];
+    noteContentStatus(details);
     // deliver to the tab that made this request, not the focused tab
     const notify = (m) => returnMessage(m, details.tabId);
     // NOTE: "showOfflineIcon" used to be broadcast here, i.e. once per

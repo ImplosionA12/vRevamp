@@ -1,5 +1,98 @@
 These are the changes made to the project: 
 
+## The session state nothing could see: shell healthy, content POSTs 404 (2026-08-18)
+
+ROADMAP had this open as *"`session_repair` misses the state users actually
+hit"*. It is the state heavy use produces, and until now vRevamp was silent
+through it — which reads, from the student's side, as the extension being
+broken along with the portal.
+
+### Why the existing heal could never find it
+
+`js/session_repair.js` judges the **document**, and in this state the document
+is fine. `/vtop/content` answers 200, the top bar still shows the student's
+name, and no Tomcat 404 page renders anywhere. What is actually happening is
+one layer down: every menu click POSTs, gets a **404**, and the content area
+goes blank. The two signatures the script does heal — a rendered Tomcat page,
+and the poisoned cookie (404 with cookies, 200 without) — are both absent.
+
+So the evidence exists only in the network layer, and a content script cannot
+reach it either: VTOP's menu clicks are jQuery AJAX in the page's **MAIN**
+world, and our scripts run isolated. There is nothing to intercept from there.
+
+**The service worker can see all of it.** `chrome.webRequest` reports every
+request regardless of world and carries the status code, and the `webRequest`
+permission was already granted for the routing listener that has been running
+since the beginning. The detector is ~30 lines added to an event we were
+already receiving — no new permission, no new listener, no page instrumentation.
+
+### Detection, never repair
+
+It counts and then tells the student. It does not retry and does not replay an
+endpoint, because repeating failed POSTs is what damages the session in the
+first place (ROADMAP rule 4). The response to "VTOP is refusing everything" has
+to be to stop and hand it back.
+
+Three guards against crying wolf, each of them a 404 that happens on a
+perfectly healthy session:
+
+| guard | the false positive it prevents |
+|---|---|
+| **consecutive**, reset by any success | `attendance_insights.js` probes a list of endpoints on purpose and most of them 404 every time; a healthy session answers *something* in between |
+| **windowed** (2 min) | three 404s an hour apart are three unrelated events, not a broken session |
+| **login paths excluded** | a 404 on the login POST is a failed sign-in — the one moment when "try signing in again" is both obvious and useless |
+
+The run is reset by the tab's next `main_frame` request. That is read off the
+webRequest event we already get rather than from `chrome.tabs.onUpdated`,
+deliberately: an unfiltered `onUpdated` listener wakes the worker for every tab
+load **anywhere in the browser**, which is the same "one wake-up per event,
+whether or not it concerns us" budget that produced the 2026-08-07 Page
+Unresponsive freeze. VTOP's menu clicks are AJAX and never change the tab's
+document, so a run correctly survives the clicks that build it and ends only at
+a genuine reload or sign-in.
+
+The counter lives in worker memory, so MV3 eviction loses a part-built run.
+That is the safe direction to fail: a lost run costs one missed warning and the
+next three clicks re-detect it, whereas persisting it would let yesterday's
+session warn about today's.
+
+### One banner, and the advice is now clickable
+
+`js/shared/vtop.js` already drew a red "the session has gone stale" bar when
+its own circuit breaker tripped. Two things can now reach that conclusion — the
+breaker, from the requests **vRevamp** sends, and this detector, from the 404s
+**VTOP's own menu clicks** get. They describe the same broken session, so
+`showBanner` is exported as `vrVtop.banner` and keyed on its existing id: the
+second one to notice reuses the bar instead of stacking a second red block.
+
+The banner also gained an optional action button, because the old text said
+*"sign out of VTOP and sign in again"* and then left the student to find their
+own way there — which is a dead end exactly when it matters. `/vtop/login`
+answers **404 while a session cookie is in the jar**, so "just go to the login
+page" can fail for the same reason everything else is failing. The button
+therefore clears this site's cookies first (the same worker route the
+poisoned-cookie heal already uses) and only then navigates.
+
+Deliberately **not** automatic. Clearing cookies under someone mid-page throws
+away whatever form they were filling in, and this detector *infers* a dead
+session from three refusals rather than knowing it. A button lets the student
+decide and costs nothing when the inference is wrong.
+
+### Tests
+
+14 new assertions, **checked to fail against the old code before being kept** —
+the three detection assertions fail and the harness then dies on the reset
+check, i.e. the banner half never even runs, because none of it existed. Both
+halves are covered: a detector that fires into a page with no listener is no
+better than no detector.
+
+Suite is **440 passed, 0 failed**; lint unchanged at 0 errors / 24 warnings.
+
+**Still unverified live** — this fires on a state that takes heavy use to
+reach, and it has not been seen on a real session yet. The failure mode to
+watch for is the opposite of the old one: a banner appearing on a session that
+is actually fine.
+
 ## The OAuth prompt, round two — and the home card now names debarment (2026-08-17, later)
 
 Reported after reloading the build below: *"the oauth should presist thats what

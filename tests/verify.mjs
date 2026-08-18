@@ -3638,6 +3638,238 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ====== session repair: shell healthy, content POSTs 404 ======
+   *
+   * The state the block above is structurally blind to: /vtop/content still
+   * answers 200, the top bar still shows the student, no Tomcat page renders —
+   * and every menu click POSTs, 404s, and blanks the content area. The
+   * evidence exists only in the network layer, so the detector lives in the
+   * service worker and the banner arrives as a message. Both halves are
+   * tested, because a detector firing into a page with no listener is no
+   * better than no detector.
+   */
+  console.log("\n=== session repair: shell healthy, content POSTs 404 ===");
+  {
+    /* ---- half one: the worker's detector ---- */
+    const manifest = JSON.parse(read("manifest.json"));
+    const evt = () => ({ addListener: () => {}, removeListener: () => {} });
+    const nsProxy = (seed = {}) =>
+      new Proxy({ ...seed }, {
+        get(t, k) {
+          if (k in t) return t[k];
+          if (typeof k === "string" && /^on[A-Z]/.test(k)) return (t[k] = evt());
+          return (t[k] = (...a) => {
+            const cb = a[a.length - 1];
+            if (typeof cb === "function") return cb(undefined);
+            return Promise.resolve(undefined);
+          });
+        },
+      });
+
+    let onCompleted = null;
+    const sent = [];
+    const chromeStub = {
+      runtime: nsProxy({ lastError: null, getManifest: () => manifest, id: "test" }),
+      webRequest: nsProxy({
+        onCompleted: { addListener: (fn) => { onCompleted = fn; }, removeListener: () => {} },
+      }),
+      tabs: nsProxy({
+        sendMessage: (tabId, msg) => { sent.push({ tabId, msg }); },
+        onRemoved: evt(),
+        query: (_q, cb) => cb([]),
+      }),
+      storage: { local: nsProxy(), session: nsProxy(), sync: nsProxy() },
+    };
+    for (const perm of manifest.permissions || []) {
+      if (!(perm in chromeStub)) chromeStub[perm] = nsProxy();
+    }
+    if (manifest.action) chromeStub.action = nsProxy();
+
+    const ctx = vm.createContext({
+      chrome: chromeStub,
+      console: { log: () => {}, warn: () => {}, error: () => {} },
+      setTimeout, clearTimeout, setInterval, clearInterval,
+      fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+      URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, atob, btoa,
+    });
+    ctx.self = ctx;
+    ctx.globalThis = ctx;
+    vm.runInContext(read("service_worker/background.js"), ctx, { filename: "background.js" });
+
+    // a path matching none of the routing branches, so this measures the
+    // detector and nothing else
+    const NEUTRAL = "https://vtop.vitap.ac.in/vtop/academics/common/StudentGrade";
+    const hit = (over = {}) =>
+      onCompleted({
+        url: NEUTRAL, method: "POST", statusCode: 404, tabId: 7,
+        type: "xmlhttprequest", ...over,
+      });
+
+    if (typeof onCompleted !== "function") {
+      ok("worker registers a webRequest.onCompleted listener", false, "missing");
+    } else {
+      hit();
+      hit();
+      ok("two 404s in a row say nothing yet", sent.length === 0, JSON.stringify(sent));
+
+      hit();
+      ok(
+        "the third consecutive 404 warns the tab that made them",
+        sent.length === 1 &&
+          sent[0].tabId === 7 &&
+          sent[0].msg.message === "session_dead" &&
+          sent[0].msg.failures === 3,
+        JSON.stringify(sent)
+      );
+
+      hit();
+      hit();
+      ok("and it warns once per run, not once per click", sent.length === 1, JSON.stringify(sent));
+
+      // a success means VTOP is answering; whatever run was building is over
+      sent.length = 0;
+      hit({ statusCode: 200 });
+      hit();
+      hit();
+      ok("one success resets the run", sent.length === 0, JSON.stringify(sent));
+      hit();
+      ok("…and the count restarts from there", sent.length === 1, JSON.stringify(sent));
+
+      /*
+       * The three ways this must NOT fire. Each is a 404 that happens on a
+       * perfectly healthy session, and each would make the banner into noise
+       * that students learn to dismiss.
+       */
+      sent.length = 0;
+      for (let i = 0; i < 5; i++) hit({ url: "https://vtop.vitap.ac.in/vtop/login", tabId: 8 });
+      ok("a failed sign-in is not a stale session", sent.length === 0, JSON.stringify(sent));
+
+      sent.length = 0;
+      for (let i = 0; i < 5; i++)
+        hit({ method: "GET", tabId: 9, url: "https://vtop.vitap.ac.in/vtop/assets/gone.css" });
+      ok("a missing asset is not a stale session", sent.length === 0, JSON.stringify(sent));
+
+      // A reload or a sign-in arrives as a main_frame request. VTOP menu
+      // clicks never do, so a run survives the clicks that build it and ends
+      // only at a genuine navigation.
+      sent.length = 0;
+      hit({ tabId: 10 });
+      hit({ tabId: 10 });
+      hit({ tabId: 10, type: "main_frame", method: "GET", statusCode: 200,
+            url: "https://vtop.vitap.ac.in/vtop/content" });
+      hit({ tabId: 10 });
+      hit({ tabId: 10 });
+      ok(
+        "a reload starts a new session, so the old count is dropped",
+        sent.length === 0,
+        JSON.stringify(sent)
+      );
+
+      sent.length = 0;
+      hit({ tabId: -1 });
+      hit({ tabId: -1 });
+      hit({ tabId: -1 });
+      ok("a request with no tab is counted against nothing", sent.length === 0, JSON.stringify(sent));
+    }
+
+    /* ---- half two: what the page does with that message ---- */
+    const stub = `(() => {
+      window.__sent = [];
+      window.__listeners = [];
+      window.chrome = { runtime: {
+        sendMessage: (m, cb) => { window.__sent.push(m); if (cb) cb(1); },
+        onMessage: { addListener: (fn) => window.__listeners.push(fn) },
+        get lastError() { return undefined; },
+      } };
+    })();`;
+    const page = await newPage(browser);
+    await page.route("https://vtop-stale.test/**", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<body><div id='vtopMainDiv'><p>Signed in as a student</p></div></body>",
+      })
+    );
+    await page.goto("https://vtop-stale.test/vtop/content");
+    await page.addScriptTag({ content: stub });
+    await inject(page, ["js/shared/click.js", "js/shared/vtop.js", "js/session_repair.js"]);
+
+    const fire = (failures) =>
+      page.evaluate(
+        (n) => window.__listeners.forEach((fn) => fn({ message: "session_dead", failures: n })),
+        failures
+      );
+    await fire(4);
+    const banner = await page.evaluate(() => {
+      const b = document.getElementById("vrevamp-session-banner");
+      return b && {
+        text: b.textContent,
+        buttons: [...b.querySelectorAll("button")].map((x) => ({
+          label: x.textContent, type: x.type, action: x.dataset.vrAction,
+        })),
+      };
+    });
+    ok(
+      "the message draws the banner, naming the count VTOP actually refused",
+      !!banner && /refused 4 page requests/.test(banner.text) && /sign in again/i.test(banner.text),
+      JSON.stringify(banner)
+    );
+    ok(
+      "with a recovery button that can never submit the VTOP form it sits in",
+      !!banner &&
+        banner.buttons.length === 1 &&
+        banner.buttons[0].type === "button" &&
+        banner.buttons[0].action === "session-recover",
+      JSON.stringify(banner && banner.buttons)
+    );
+
+    // the breaker and this detector describe the same broken session; the
+    // second one to notice must not stack a second red bar
+    await fire(9);
+    const stacked = await page.evaluate(
+      () => document.querySelectorAll("#vrevamp-session-banner").length
+    );
+    ok("a second warning does not stack a second banner", stacked === 1, `count=${stacked}`);
+
+    await page.click("[data-vr-action='session-recover']");
+    await page.waitForURL(/\/vtop\/login$/, { timeout: 5000 }).catch(() => {});
+    const landed = await page.evaluate(() => location.pathname);
+    ok(
+      "the recovery button lands on the login page",
+      landed === "/vtop/login",
+      `url=${landed}`
+    );
+    await page.close();
+
+    /*
+     * Clearing the cookies is the half of the recovery a student cannot do
+     * themselves: while the stale cookie is in the jar VTOP answers
+     * /vtop/login with a 404 too, so sending them there without clearing is
+     * the same dead end. Checked on its own page because the navigation above
+     * wipes the recorder — the stub here never calls the callback, so the
+     * handler never navigates and the record survives to be read.
+     */
+    const p2 = await newPage(browser);
+    await p2.route("https://vtop-stale2.test/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<body><div id='vtopMainDiv'></div></body>" })
+    );
+    await p2.goto("https://vtop-stale2.test/vtop/content");
+    await p2.addScriptTag({
+      content: stub.replace("if (cb) cb(1);", "/* never answers */"),
+    });
+    await inject(p2, ["js/shared/click.js", "js/shared/vtop.js", "js/session_repair.js"]);
+    await p2.evaluate(() =>
+      window.__listeners.forEach((fn) => fn({ message: "session_dead", failures: 3 }))
+    );
+    await p2.click("[data-vr-action='session-recover']");
+    const sent2 = await p2.evaluate(() => window.__sent);
+    ok(
+      "the recovery asks the worker to clear this site's cookies first",
+      sent2.length === 1 && sent2[0].message === "clear_site_cookies",
+      JSON.stringify(sent2)
+    );
+    await p2.close();
+  }
+
   /* ============ the VTOP circuit breaker ============
    *
    * `js/shared/vtop.js` is the thing standing between the student and *"make

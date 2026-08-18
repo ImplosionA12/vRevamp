@@ -88,20 +88,43 @@
     return text || null;
   };
 
-  const showBanner = (text) => {
-    if (document.getElementById(BANNER_ID)) return;
+  /*
+   * The one stale-session banner. Deliberately ONE, keyed on BANNER_ID: two
+   * things can now conclude the session is gone — this breaker, from the
+   * requests vRevamp itself sends, and js/session_repair.js, from the 404s
+   * VTOP's own menu clicks get (the service worker sees those; no content
+   * script can). Both routes describe the same broken session, so the second
+   * one to arrive must not stack a second red bar on top of the first.
+   *
+   * `action` is optional: { label, run }. It exists because the old banner
+   * said "sign out and sign in again" and then left the student to find their
+   * own way there — which is a dead end precisely when it matters, since a
+   * poisoned cookie makes /vtop/login answer 404 too. A button that clears the
+   * cookies first is the recovery, so the advice should be clickable.
+   */
+  const showBanner = (text, action) => {
+    if (document.getElementById(BANNER_ID)) return null;
     const bar = document.createElement("div");
     bar.id = BANNER_ID;
-    bar.textContent = text;
     bar.style.cssText =
       "margin:10px 0;padding:8px 12px;border-radius:4px;font-size:13px;" +
       "background:#fdecea;color:#8a1c12;border:1px solid #f5c6c0;";
+    const line = document.createElement("span");
+    line.textContent = text;
+    bar.appendChild(line);
+    if (action && action.label && typeof window.vrDelegate === "function") {
+      // registered per call: the handler is a closure, and only the
+      // data-vr-action attribute has to survive an innerHTML round-trip
+      window.vrDelegate("session-recover", action.run);
+      bar.appendChild(window.vrButton("session-recover", action.label));
+    }
     const anchor =
       document.querySelector(".table-responsive") ||
       document.querySelector("#vtopMainDiv") ||
       document.body;
     if (anchor === document.body) anchor.insertAdjacentElement("afterbegin", bar);
     else anchor.insertAdjacentElement("beforebegin", bar);
+    return bar;
   };
 
   // `count` is however many refusals actually did it — the probe route trips
@@ -218,6 +241,7 @@
     authorizedID,
     post,
     pool,
+    banner: showBanner,
     get tripped() {
       return state.tripped;
     },
