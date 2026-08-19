@@ -39,6 +39,34 @@
  *
  * The one surviving reload is for a genuinely empty document — a dead load with
  * no form and no text, where there is nothing to refresh in place.
+ *
+ * ---------------------------------------------------------------------------
+ * 2026-08-19: A LOGIN FORM WITH NO CAPTCHA OF EITHER KIND — still open
+ * ---------------------------------------------------------------------------
+ * Reported with a screenshot: /vtop/login, username and password filled,
+ * Submit there, and no captcha anywhere. Nothing here acts on that shape —
+ * `run()` reaches the reload branch, finds the page rendered, and returns.
+ *
+ * A capped reload was tried for it and REVERTED the same day, because it is
+ * provably the wrong instrument. Measured, not assumed — an unauthenticated
+ * `GET /vtop/login` returns **the role picker** (`#stdForm`, four
+ * Student/Employee/Parent/Alumni forms, no captcha of any kind, 23 KB). The
+ * username/password form is what `POST /vtop/prelogin/setup` (`_csrf` +
+ * `flag=VTOP`) answers with, at that same URL. So reloading from the login
+ * form lands the student back on the role picker — precisely the complaint
+ * this file was written to fix ("you keep doing the complete homepage where i
+ * have to choose student, parent or smth").
+ *
+ * What is still unknown is the one thing that decides the fix: whether that
+ * document carries a hidden `gResponse` (invisible reCAPTCHA, in which case
+ * nothing is wrong and there is nothing to heal) or is a broken render of the
+ * image variant (in which case the block has to be rebuilt, not reloaded).
+ * It could not be fetched to find out: the POST needs a `_csrf` bound to a
+ * session cookie, and re-issuing it against a live session is the thing rule 4
+ * forbids. It needs one reading of the real DOM while that page is on screen.
+ *
+ * Do not "fix" this from a screenshot. That is ROADMAP rule 1, and this note
+ * exists because it was nearly broken twice in one day.
  */
 (() => {
   const RELOAD_KEY = "vrevamp_login_reloads";
@@ -134,32 +162,11 @@
       return;
     }
 
-    /*
-     * A LOGIN FORM WITH NO CAPTCHA OF EITHER KIND — reported 2026-08-19 with a
-     * screenshot: /vtop/login, username and password filled, Submit there, and
-     * no captcha anywhere. "the normal original extension reloads this page
-     * until the captcha appears and u cant do it for some reason".
-     *
-     * True, and this is the branch that let it through. The old rule reloaded
-     * only for a document with no form AND no text; here the page is fully
-     * rendered and the form is right there, so `rendered` was true and run()
-     * returned having done nothing. ensureCaptcha() could not help either —
-     * fetchNewCaptcha() injects INTO #captchaBlock, and on this page shape
-     * there is no block to inject into.
-     *
-     * So the one instrument left is the one upstream used: reload, capped. The
-     * file's argument against reloading (see the header) is about /vtop/login
-     * reached by POSTing the role picker, where a reload re-issues that
-     * navigation and lands on Student/Employee/Parent/Alumni. That argument
-     * holds for the role-picker path and is why this is last, not first — it
-     * runs only when there is a login form present, no block to heal, and
-     * neither captcha variant on the page. MAX_RELOADS still caps it at three,
-     * so the worst case is three loads and then a page that is left alone.
-     */
+    // No captcha block and no form: a dead load. This is the only case a
+    // reload can help with, and it is capped so it can never become a loop.
     const rendered = document.body ? document.body.innerText.trim().length > 0 : false;
     const haveForm = !!document.getElementById("vtopLoginForm");
-    if (store === null) return;
-    if (rendered && !haveForm) return; // a rendered page that is not the login form
+    if (rendered || haveForm || store === null) return;
 
     const attempts = Number(store.getItem(RELOAD_KEY)) || 0;
     if (attempts >= MAX_RELOADS) return;

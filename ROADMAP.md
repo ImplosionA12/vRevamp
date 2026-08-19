@@ -257,6 +257,21 @@ Two conclusions, both now dated and first-hand:
 2. **The solver works, live, unaided** — six characters, correct, filled before
    the page settled, with no reload and the counter never set.
 
+#### 2026-08-19: a login form with NO captcha of either kind — STILL OPEN
+
+A capped reload was added for this shape and **reverted the same day**. Measured:
+unauthenticated `GET /vtop/login` returns the **role picker** (`#stdForm`, no
+captcha), and the username/password form is what `POST /vtop/prelogin/setup`
+(`_csrf` + `flag=VTOP`) answers with at that same URL — so reloading from the
+login form lands back on the role picker, the original complaint.
+
+**What is needed to fix it:** one reading of that document while it is on
+screen, checking for a hidden `gResponse`. If present it is invisible reCAPTCHA
+and nothing is wrong; if absent it is a failed render of the image variant and
+the block must be rebuilt, not reloaded. It cannot be fetched — the POST needs
+a `_csrf` bound to a session cookie, and replaying that on a live session is
+rule 4.
+
 #### The path that broke both captcha scripts — fixed the same day
 
 `/vtop/login` serves **two different documents depending on state**. Signed out
@@ -342,11 +357,15 @@ the first non-200.
 | Class Attendance | (menu `a[data-url]`) | handled by `js/attendance.js`, do not touch |
 
 `js/shared/auto_semester.js` now opens the first four on the ongoing semester.
-Note `chooseCurrentSemester()` picks **"Fall Semester 2026-27 Freshers"** over
-"Fall Semester 2026-27" — the names tie and document order wins. Not fixed in
-the shared chooser because attendance depends on it; the fallback walk absorbs
-it, and the Freshers semester answers a clean "Examination Schedule Details Not
-Found" rather than an error.
+
+**The dropdowns differ, and that is the whole story.** Attendance lists only the
+student's own registered semesters (8, tagged `- AMR`), so its index 1 is right
+by construction. Exam Schedule lists all 60+, including "Fall Semester 2026-27
+Freshers", which `chooseCurrentSemester()` picks over "Fall Semester 2026-27"
+because the names tie and document order wins. The shared chooser is NOT changed
+(attendance depends on it); instead the pick starts from the semester name
+already cached off the registration-scoped dropdown, and falls back to parsing
+only when nothing is cached.
 
 ### CAT-1 venue state as of 2026-08-19
 

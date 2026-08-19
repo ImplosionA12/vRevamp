@@ -1,5 +1,68 @@
 These are the changes made to the project: 
 
+## Two corrections the same day: the right semester, and a reload that was wrong (2026-08-19)
+
+Both of yesterday's-hour answers were challenged and both deserved it.
+
+### "i am not a fresher so it should select fall semester"
+
+Correct, and the fallback walk shipped an hour earlier was a workaround for a
+question vRevamp had already answered. **The two dropdowns are not the same
+list** — read live, signed in:
+
+| page | options | index 1 |
+|---|---|---|
+| Attendance | **8** — only the student's own registered semesters, tagged `- AMR` | `Fall Semester 2026-27 - AMR` (AP2026272) ✓ |
+| Exam Schedule | **60+** — every semester VIT-AP runs | `Fall Semester 2026-27 Freshers` (AP2026273) ✗ |
+
+That is the whole reason the attendance page "just works" and nothing else
+does: its list is already scoped to the student, so index 1 is right by
+construction. On a global list, `chooseCurrentSemester()` parses
+"…2026-27 Freshers" and "…2026-27" to the same start date and document order
+breaks the tie the wrong way for anyone past first year.
+
+So the pick now starts from what the student is **registered in**:
+`vrevamp_attendance_summary.semester` already records the name off the
+registration-scoped dropdown, and matching it against the options answers the
+question outright. Parsing remains the fallback for a first run with nothing
+cached. **`js/attendance.js` is still untouched** — a value it already writes is
+read, nothing more.
+
+Matching is exact after stripping the campus tag, never fuzzy, precisely so
+that "Fall Semester 2026-27 Freshers" cannot survive it. Verified against the
+live dropdowns: `"Fall Semester 2026-27 - AMR"` → `fall semester 2026-27` →
+matches exactly one option, `AP2026272`, on the first try; Freshers does not
+match.
+
+### The login reload — reverted, and it should not have shipped
+
+*"it didnt work again"*, with the same screenshot. It would not have, and worse,
+it would have reproduced the original complaint. Measured rather than assumed:
+
+- unauthenticated **`GET /vtop/login`** returns **the role picker** — `#stdForm`,
+  four Student/Employee/Parent/Alumni forms, 23 KB, no captcha of any kind
+- the username/password form is what **`POST /vtop/prelogin/setup`**
+  (`_csrf` + `flag=VTOP`) answers with, at that same URL
+
+So a reload from the login form lands the student back on the role picker,
+which is the exact thing this file was written to stop ("you keep doing the
+complete homepage where i have to choose student, parent or smth"). The header
+already said reloading could never be the fix here; the new branch contradicted
+it on the strength of a screenshot. Reverted.
+
+**What is still unknown is the one thing that decides the fix:** whether that
+document carries a hidden `gResponse` — invisible reCAPTCHA, in which case
+nothing is broken and there is nothing to heal — or is a failed render of the
+image variant, in which case the block must be rebuilt, not reloaded. It could
+not be fetched: the POST needs a `_csrf` bound to a session cookie, and
+re-issuing it against a live session is what rule 4 forbids. It needs one
+reading of the real DOM while that page is on screen, and the file now says so
+at the branch.
+
+This is ROADMAP rule 1 twice in one day, in the same session that quoted it.
+
+4 new assertions, 459 passed, 0 failed.
+
 ## Semester-gated pages open themselves, and the login page reloads again (2026-08-19)
 
 Two requests and one screenshot, all verified against the live portal on a

@@ -39,13 +39,26 @@
  *    NOT do — VTOP replaces the <select> along with everything else, taking
  *    the flag with it (the same durability trap js/shared/click.js documents).
  *
- * 2. **The wrong semester.** chooseCurrentSemester() picks by parsing the
- *    option names, and "Fall Semester 2026-27 Freshers" parses identically to
- *    "Fall Semester 2026-27" — a tie the sort resolves by document order, so
- *    the Freshers list can win for a student who is not one. Verified on the
- *    live dropdown: both exist, and only the second holds this student's
- *    exams. So a pick that renders nothing steps down semesterFallbackOrder()
- *    a few times, exactly as the attendance page does.
+ * 2. **The wrong semester — and why the attendance page never has this
+ *    problem.** The two dropdowns are not the same list at all. Read live,
+ *    signed in, 2026-08-19:
+ *
+ *      Attendance     8 options, only the student's OWN registered semesters,
+ *                     labelled "Fall Semester 2026-27 - AMR". Index 1 is
+ *                     already correct, which is why that page just works.
+ *      Exam Schedule  60+ options, every semester VIT-AP runs, including
+ *                     "Fall Semester 2026-27 Freshers" — which is what
+ *                     chooseCurrentSemester() lands on, since it parses
+ *                     identically to "Fall Semester 2026-27" and a tie goes
+ *                     to document order. A second-year student is not in it.
+ *
+ *    Stepping down the fallback list gets there eventually, but it is a
+ *    workaround for not knowing which semester the student is in — and vRevamp
+ *    already knows: `vrevamp_attendance_summary.semester` (and the exam cache)
+ *    record the name off a registration-scoped dropdown. So match the cached
+ *    name against the options FIRST, and fall back to parsing only when there
+ *    is no cache to go on. Nothing in the attendance code is touched; a value
+ *    it already writes is read.
  *
  * Never re-triggers when the page already has data on screen: the first thing
  * asked is `loaded()`, and a page that is showing something is left alone.
@@ -59,19 +72,71 @@
   const semesterSelect = () => document.getElementById("semesterSubId");
 
   /*
+   * "Fall Semester 2026-27 - AMR" and "Fall Semester 2026-27" are one semester
+   * written by two pages; the trailing " - AMR" is a campus tag the
+   * registration-scoped dropdowns add. Deliberately an EXACT match after that
+   * is stripped, never a fuzzy one: "Fall Semester 2026-27 Freshers" must not
+   * survive it, and avoiding exactly that string is the point.
+   */
+  const normaliseSemester = (text) =>
+    String(text || "")
+      .replace(/\s+-\s+[A-Za-z]{2,5}\s*$/, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+
+  // The semester vRevamp has already seen this student registered in, named by
+  // a page whose dropdown lists only their own. Read-only.
+  const knownSemesterNames = async () => {
+    try {
+      const store = await chrome.storage.local.get([
+        "vrevamp_attendance_summary",
+        "vrevamp_exam_schedule",
+      ]);
+      return [
+        store.vrevamp_attendance_summary && store.vrevamp_attendance_summary.semester,
+        store.vrevamp_exam_schedule && store.vrevamp_exam_schedule.semester,
+      ]
+        .filter(Boolean)
+        .map(normaliseSemester)
+        .filter(Boolean);
+    } catch {
+      return []; // storage gone — parsing still works, just less precisely
+    }
+  };
+
+  // Select the option naming a semester we know the student is in. True only
+  // when one actually matched.
+  const selectKnownSemester = (select, names) => {
+    if (!names.length) return false;
+    for (let i = 1; i < select.options.length; i++) {
+      const option = select.options[i];
+      if (!option.value) continue;
+      if (names.includes(normaliseSemester(option.innerText))) {
+        select.selectedIndex = i;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /*
    * `name`     which page this is, for the once-only guard
    * `loaded()` true when the page's own data is on screen
    * `submit()` how THIS page asks VTOP to load (change event, or a button)
    * `settleMs` how long to let VTOP answer before judging the result
    */
-  window.vrAutoSemester = ({ name, loaded, submit, settleMs = 1200, maxTries = 3 }) => {
+  window.vrAutoSemester = async ({ name, loaded, submit, settleMs = 1200, maxTries = 3 }) => {
     const select = semesterSelect();
     if (!select) return false; // not a semester-gated page (or not rendered yet)
     if (loaded()) return false; // already showing data — never touch it
     if (attempted.has(name)) return false;
     attempted.add(name);
 
-    if (typeof chooseCurrentSemester === "function") chooseCurrentSemester();
+    // What the student is REGISTERED in beats what the names parse to — see
+    // (2). Falls back to parsing only when nothing is cached yet.
+    const matched = selectKnownSemester(select, await knownSemesterNames());
+    if (!matched && typeof chooseCurrentSemester === "function") chooseCurrentSemester();
     // nothing sensible to pick (placeholder still selected): leave the page as
     // it is rather than submitting an empty semester
     if (!select.value || select.selectedIndex <= 0) return false;

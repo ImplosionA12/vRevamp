@@ -4441,7 +4441,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           <button class='btn'>Search</button>
           <div id='out'>${opts.out || ""}</div>
         </div></body>`);
-        await shim(p, { fixedMs: new Date("2026-08-19T21:00:00+05:30").getTime() });
+        await shim(p, {
+          fixedMs: new Date("2026-08-19T21:00:00+05:30").getTime(),
+          storage: opts.storage || {},
+        });
         await inject(p, ["js/utils/chooseCurrentSem.js", "js/shared/auto_semester.js"]);
         return p;
       };
@@ -4524,12 +4527,12 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // Data already on screen is never disturbed.
       {
         const p = await semPage({ out: "<table><tr><td>Exam Date</td></tr></table>" });
-        const r = await p.evaluate(() => {
+        const r = await p.evaluate(async () => {
           window.submits = [];
           document.querySelector("button").addEventListener("click", () =>
             window.submits.push(1)
           );
-          const started = window.vrAutoSemester({
+          const started = await window.vrAutoSemester({
             name: "exam_schedule",
             loaded: () =>
               Array.from(document.querySelectorAll("table")).some((t) =>
@@ -4547,17 +4550,87 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         await p.close();
       }
 
+      /*
+       * THE ONE THAT MATTERS, reported 2026-08-19: "i am not a fresher so it
+       * should select fall semester".
+       *
+       * The Exam Schedule dropdown lists every semester VIT-AP runs, and
+       * "Fall Semester 2026-27 Freshers" parses identically to "Fall Semester
+       * 2026-27" — chooseCurrentSemester() takes the first, which is the wrong
+       * one for anybody past first year. The attendance page never shows this
+       * because its dropdown holds only the student's own semesters, tagged
+       * " - AMR"; that name is cached, so it is the answer. Getting there via
+       * the fallback walk was a workaround for a question already answered.
+       */
+      {
+        const p = await semPage({
+          storage: {
+            vrevamp_attendance_summary: { semester: "Fall Semester 2026-27 - AMR" },
+          },
+        });
+        await p.evaluate(async () => {
+          window.submits = [];
+          document.querySelector("button").addEventListener("click", () => {
+            window.submits.push(document.getElementById("semesterSubId").value);
+            document.getElementById("out").innerHTML =
+              "<table><tr><td>Exam Date</td></tr></table>";
+          });
+          await window.vrAutoSemester({
+            name: "exam_schedule",
+            loaded: () =>
+              Array.from(document.querySelectorAll("table")).some((t) =>
+                /exam\s*date/i.test(t.innerText || "")
+              ),
+            submit: window.vrSemesterSearch,
+            settleMs: 100,
+          });
+        });
+        await delay(500);
+        const r = await p.evaluate(() => window.submits);
+        ok(
+          "it opens the semester the student is REGISTERED in, first try, not Freshers",
+          r.length === 1 && r[0] === "AP2",
+          JSON.stringify(r)
+        );
+        await p.close();
+      }
+
+      // With nothing cached it still has to work — just by parsing, as before.
+      {
+        const p = await semPage();
+        await p.evaluate(async () => {
+          window.submits = [];
+          document.querySelector("button").addEventListener("click", () => {
+            window.submits.push(document.getElementById("semesterSubId").value);
+          });
+          await window.vrAutoSemester({
+            name: "exam_schedule",
+            loaded: () => false,
+            submit: window.vrSemesterSearch,
+            settleMs: 60,
+          });
+        });
+        await delay(500);
+        const r = await p.evaluate(() => window.submits);
+        ok(
+          "with no cache it falls back to parsing rather than doing nothing",
+          r.length >= 1 && r[0] === "AP1",
+          JSON.stringify(r)
+        );
+        await p.close();
+      }
+
       // The onchange pages (Marks, Grades, Time Table) use the other submit.
       {
         const p = await semPage();
-        const r = await p.evaluate(() => {
+        const r = await p.evaluate(async () => {
           window.changes = [];
           document
             .getElementById("semesterSubId")
             .addEventListener("change", function () {
               window.changes.push(this.value);
             });
-          window.vrAutoSemester({
+          await window.vrAutoSemester({
             name: "mark_view",
             loaded: () => window.changes.length > 0,
             submit: window.vrSemesterChange,
