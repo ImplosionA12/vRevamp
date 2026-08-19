@@ -129,6 +129,16 @@ const vr_tt_schedule = () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "timetable_view_page") {
     try {
+      // same, via processViewTimeTable
+      if (typeof window.vrAutoSemester === "function")
+        window.vrAutoSemester({
+          name: "timetable_view",
+          loaded: () =>
+            Array.from(document.querySelectorAll("table")).some((t) =>
+              /theory|lab|slot/i.test(t.innerText || "")
+            ),
+          submit: window.vrSemesterChange,
+        });
       // try to display the timetable data if it exists
       getTimeTable((d) => {
         if (d && d.header && d.data) displayTableData(d.header, d.data);

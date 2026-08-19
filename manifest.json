@@ -16,6 +16,7 @@
         "js/shared/google_auth.js",
         "js/shared/vtop.js",
         "js/utils/chooseCurrentSem.js",
+        "js/shared/auto_semester.js",
         "js/utils/filterRepeated.js",
 
         "js/store/store.js",

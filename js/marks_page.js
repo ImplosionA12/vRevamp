@@ -101,6 +101,17 @@ const flagAttendanceRisk = async () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "mark_view_page") {
     try {
+      // open on the ongoing semester rather than an empty picker — this page
+      // loads from #semesterSubId's own onchange (doViewExamMark)
+      if (typeof window.vrAutoSemester === "function")
+        window.vrAutoSemester({
+          name: "mark_view",
+          loaded: () =>
+            Array.from(document.querySelectorAll("table")).some((t) =>
+              /course\s*code|course\s*title/i.test(t.innerText || "")
+            ),
+          submit: window.vrSemesterChange,
+        });
       modify_marks_page();
       flagAttendanceRisk().catch((error) =>
         console.warn("vRevamp attendance flag:", error)

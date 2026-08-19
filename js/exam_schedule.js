@@ -1077,6 +1077,32 @@ const exam_schedule_sync_with_retries = () => {
   tick();
 };
 
+/*
+ * Is the schedule actually on screen? Checked by CONTENT, not by the presence
+ * of a table: this page renders its semester picker inside markup of its own,
+ * and "a table exists" would be true before any exam had loaded.
+ */
+const exam_schedule_rendered = () =>
+  Array.from(document.querySelectorAll("table")).some((t) =>
+    /exam\s*date|venue/i.test(t.innerText || "")
+  );
+
 chrome.runtime.onMessage.addListener((request) => {
-  if (request.message === "exam_schedule") exam_schedule_sync_with_retries();
+  if (request.message === "exam_schedule") {
+    /*
+     * Pick the semester and press Search, so the page opens showing the
+     * schedule instead of an empty form (asked for 2026-08-19). This page is
+     * the one that needed it most: its #semesterSubId carries no onchange, so
+     * unlike Marks/Grades/Time Table a change event alone renders nothing —
+     * verified live the same day. Three manual steps stood between opening the
+     * page and the venue watcher below ever running.
+     */
+    if (typeof window.vrAutoSemester === "function")
+      window.vrAutoSemester({
+        name: "exam_schedule",
+        loaded: exam_schedule_rendered,
+        submit: window.vrSemesterSearch,
+      });
+    exam_schedule_sync_with_retries();
+  }
 });

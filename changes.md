@@ -1,5 +1,89 @@
 These are the changes made to the project: 
 
+## Semester-gated pages open themselves, and the login page reloads again (2026-08-19)
+
+Two requests and one screenshot, all verified against the live portal on a
+signed-in session rather than reasoned about from fixtures.
+
+### 1. "when i click attendance i dont choose the semester, keep it like tht"
+
+Read off the real pages, signed in, the same day:
+
+| page | data-url | how it loads |
+|---|---|---|
+| Marks View | `examinations/StudentMarkView` | `onchange="doViewExamMark();"` |
+| Grades | `examinations/examGradeView/StudentGradeView` | `onchange="doViewExamGrade();"` |
+| Time Table | `academics/common/StudentTimeTable` | `onchange="processViewTimeTable();"` |
+| **Exam Schedule** | `examinations/StudExamSchedule` | **no onchange — a Search button** |
+
+Only `js/attendance.js` did this before, and it is left untouched: it was read
+as the model, not reused, at the user's explicit instruction. The shared piece
+is new (`js/shared/auto_semester.js`) and the four pages call it.
+
+Exam Schedule is the one that mattered. Its `#semesterSubId` carries **no
+onchange at all**, so a change event renders nothing and the page needs its
+`<button class="btn btn-primary btn-block">Search</button>` pressed. Three
+manual steps stood between opening that page and the venue watcher running —
+which is a large part of why the automatic "your exam room has been published"
+mail so rarely fired.
+
+**The wrong semester is picked first, and that is fine.** `chooseCurrentSemester()`
+parses option names, and "Fall Semester 2026-27 Freshers" parses identically to
+"Fall Semester 2026-27" — a tie that document order wins, so the Freshers list
+is chosen for a student who is not one. Confirmed on the live dropdown. Rather
+than change the shared chooser (attendance uses it, and attendance is not to be
+touched), a pick that renders nothing steps down `semesterFallbackOrder()`.
+Checked live: the Freshers semester answers a clean **"Examination Schedule
+Details Not Found"** — a 200 with a message, no error and no 404 — so the walk
+costs one extra request and nothing else.
+
+**Verified end-to-end on the real portal:** a fresh Exam Schedule page with an
+empty picker auto-selected, searched, stepped past Freshers, and rendered the
+student's actual CAT-1 table.
+
+#### The property a live check cannot safely show: it cannot loop
+
+These hooks fire on a message that arrives after *every* VTOP AJAX render. A
+semester that legitimately has no rows would re-trigger on its own response,
+forever, POSTing as fast as VTOP answers — the repeated-failure state
+`session_repair` was built for two days ago. The guard is a module-scoped
+`Set`: it survives VTOP's innerHTML re-renders because a content script's world
+does, and resets only on a real navigation. A `dataset` flag would NOT do —
+VTOP replaces the `<select>` along with everything else and takes the flag with
+it, the same durability trap `js/shared/click.js` documents. The test fires the
+hook eight times against a page that never renders and asserts at most four
+submits; it records three.
+
+### 2. The login page stopped reloading itself
+
+Screenshot: `/vtop/login`, username and password filled, Submit there, and no
+captcha of either kind — *"the normal original extension reloads this page
+until the captcha appears and u cant do it for some reason"*.
+
+True, and the branch that let it through is exact: `refreshTillCaptcha.js`
+reloaded only for a document with **no form and no text**. Here the page is
+fully rendered and the form is right there, so `rendered` was true and `run()`
+returned having done nothing. The in-place heal could not help either —
+`fetchNewCaptcha()` injects *into* `#captchaBlock`, and on this shape there is
+no block to inject into.
+
+So the capped reload is back, last in the chain rather than first. The file's
+argument against reloading still holds and is why it is last: it applies to
+`/vtop/login` reached by POSTing the role picker, where a reload re-issues that
+navigation and lands on Student/Employee/Parent/Alumni. This branch is reached
+only with a login form present, no block to heal, and neither captcha variant
+on the page. The role picker has `#stdForm`, not `#vtopLoginForm`, so it is
+excluded; the OTP step was already excluded above it. `MAX_RELOADS` still caps
+it at three.
+
+### Also, while the session was open
+
+The home card's stale-attendance line was reported missing. It was not: the
+card renders, and the line simply was not due — the summary was under a day
+old. Read off the live card, not inferred.
+
+11 new assertions. 457 passed, 0 failed. Lint unchanged at 0 errors.
+
 ## The stale-attendance line now does the chore instead of naming it (2026-08-19)
 
 `(attendance data is 2 day(s) old — open the Attendance page to refresh)` —

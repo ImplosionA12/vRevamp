@@ -4352,8 +4352,13 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
       // A role whose menu has no Class Attendance entry must not be given a
       // button that cannot work — it gets the instruction that is still true.
+      // The menu has to be PRESENT for that judgement: an empty document is
+      // "the sidebar has not rendered yet", which is the next case down.
       page = await newPage(browser);
-      await page.setContent("<body><div id='main-section'></div></body>");
+      await page.setContent(
+        "<body><a data-url='examinations/StudentMarkView'>Marks</a>" +
+          "<div id='main-section'></div></body>"
+      );
       await shim(page, { fixedMs: during, storage: staleStore });
       await inject(page, [
         "js/shared/click.js",
@@ -4374,6 +4379,199 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         JSON.stringify(noMenu).slice(0, 200)
       );
       await page.close();
+
+      /*
+       * …but a menu that has not rendered YET is not the same thing, and
+       * treating it as "this role cannot" is how the button goes missing on a
+       * page that could have offered it. The card can render before VTOP has
+       * written the sidebar, so with no menu anchors at all the button is
+       * offered and the link is resolved at click time instead.
+       */
+      page = await newPage(browser);
+      await page.setContent("<body><div id='main-section'></div></body>");
+      await shim(page, { fixedMs: during, storage: staleStore });
+      await inject(page, [
+        "js/shared/click.js",
+        "js/utils/chooseCurrentSem.js",
+        "js/home_notices.js",
+      ]);
+      await delay(1200);
+      const notYet = await page.evaluate(
+        () => !!document.querySelector('[data-vr-action="home-attendance-refresh"]')
+      );
+      ok(
+        "a sidebar that has not rendered yet still gets the button",
+        notYet === true,
+        String(notYet)
+      );
+      await page.close();
+    }
+
+    /* ============ vrAutoSemester: open the page, not the picker ============
+     *
+     * Asked for 2026-08-19 ("when i click attendance i dont choose the
+     * semester, you should keep it like tht"). Shapes read off the live portal
+     * the same day: Marks/Grades/Time Table load from #semesterSubId's own
+     * onchange, Exam Schedule has NO onchange and needs its Search button —
+     * which is why its venue watcher so rarely ran.
+     *
+     * Verified end-to-end on the real portal too: a fresh Exam Schedule page
+     * with an empty picker auto-selected, searched, found "Examination
+     * Schedule Details Not Found" on "Fall Semester 2026-27 Freshers" (which
+     * is what chooseCurrentSemester picks — the names tie and document order
+     * wins), stepped down, and rendered the real CAT-1 table.
+     *
+     * The property that matters most here is the one a live check cannot show
+     * safely: that it CANNOT loop. These hooks fire after every VTOP AJAX
+     * render, so a semester that legitimately has no rows would otherwise
+     * re-trigger on its own response forever — the repeated-POST state
+     * session_repair exists for.
+     */
+    console.log("\n=== vrAutoSemester: semester-gated pages open themselves ===");
+    {
+      const semPage = async (opts = {}) => {
+        const p = await newPage(browser);
+        await p.setContent(`<body><div id='main-section'>
+          <select id='semesterSubId'>
+            <option value=''>-- Choose Semester --</option>
+            <option value='AP1'>Fall Semester 2026-27 Freshers</option>
+            <option value='AP2'>Fall Semester 2026-27</option>
+            <option value='AP3'>Winter Semester 2025-26</option>
+          </select>
+          <button class='btn'>Search</button>
+          <div id='out'>${opts.out || ""}</div>
+        </div></body>`);
+        await shim(p, { fixedMs: new Date("2026-08-19T21:00:00+05:30").getTime() });
+        await inject(p, ["js/utils/chooseCurrentSem.js", "js/shared/auto_semester.js"]);
+        return p;
+      };
+
+      // The Exam Schedule shape: a Search button, and the first pick is wrong.
+      {
+        const p = await semPage();
+        await p.evaluate(() => {
+          window.submits = [];
+          document.querySelector("button").addEventListener("click", () => {
+            const v = document.getElementById("semesterSubId").value;
+            window.submits.push(v);
+            // only the student's own semester has a schedule
+            document.getElementById("out").innerHTML =
+              v === "AP2"
+                ? "<table><tr><td>Exam Date</td><td>Venue</td></tr></table>"
+                : "Examination Schedule Details Not Found";
+          });
+          window.vrAutoSemester({
+            name: "exam_schedule",
+            loaded: () =>
+              Array.from(document.querySelectorAll("table")).some((t) =>
+                /exam\s*date|venue/i.test(t.innerText || "")
+              ),
+            submit: window.vrSemesterSearch,
+            settleMs: 120,
+          });
+        });
+        await delay(900);
+        const r = await p.evaluate(() => ({
+          submits: window.submits,
+          value: document.getElementById("semesterSubId").value,
+          rendered: /Exam Date/.test(document.getElementById("out").innerText),
+        }));
+        ok(
+          "it presses Search itself instead of leaving an empty picker",
+          r.submits.length >= 1 && r.submits[0] === "AP1",
+          JSON.stringify(r)
+        );
+        ok(
+          "a semester with no schedule steps down to the one that has it",
+          r.rendered && r.value === "AP2",
+          JSON.stringify(r)
+        );
+        await p.close();
+      }
+
+      // THE SAFETY PROPERTY: re-fired messages must not re-submit.
+      {
+        const p = await semPage();
+        await p.evaluate(async () => {
+          window.submits = [];
+          document.querySelector("button").addEventListener("click", () => {
+            window.submits.push(document.getElementById("semesterSubId").value);
+            // every semester comes back empty — the loop bait
+            document.getElementById("out").innerHTML = "Details Not Found";
+          });
+          const run = () =>
+            window.vrAutoSemester({
+              name: "exam_schedule",
+              loaded: () => false,
+              submit: window.vrSemesterSearch,
+              settleMs: 60,
+            });
+          for (let i = 0; i < 8; i++) {
+            run();
+            await new Promise((r) => setTimeout(r, 60));
+          }
+        });
+        await delay(900);
+        const submits = await p.evaluate(() => window.submits);
+        ok(
+          "a page that never renders is tried a few times and then left alone",
+          submits.length > 0 && submits.length <= 4,
+          `${submits.length} submits: ${JSON.stringify(submits)}`
+        );
+        await p.close();
+      }
+
+      // Data already on screen is never disturbed.
+      {
+        const p = await semPage({ out: "<table><tr><td>Exam Date</td></tr></table>" });
+        const r = await p.evaluate(() => {
+          window.submits = [];
+          document.querySelector("button").addEventListener("click", () =>
+            window.submits.push(1)
+          );
+          const started = window.vrAutoSemester({
+            name: "exam_schedule",
+            loaded: () =>
+              Array.from(document.querySelectorAll("table")).some((t) =>
+                /exam\s*date/i.test(t.innerText || "")
+              ),
+            submit: window.vrSemesterSearch,
+          });
+          return { started, submits: window.submits.length };
+        });
+        ok(
+          "a page already showing its data is left completely alone",
+          r.started === false && r.submits === 0,
+          JSON.stringify(r)
+        );
+        await p.close();
+      }
+
+      // The onchange pages (Marks, Grades, Time Table) use the other submit.
+      {
+        const p = await semPage();
+        const r = await p.evaluate(() => {
+          window.changes = [];
+          document
+            .getElementById("semesterSubId")
+            .addEventListener("change", function () {
+              window.changes.push(this.value);
+            });
+          window.vrAutoSemester({
+            name: "mark_view",
+            loaded: () => window.changes.length > 0,
+            submit: window.vrSemesterChange,
+            settleMs: 60,
+          });
+          return { changes: window.changes };
+        });
+        ok(
+          "the onchange pages are driven by a change event, not a button",
+          r.changes.length === 1 && r.changes[0] === "AP1",
+          JSON.stringify(r)
+        );
+        await p.close();
+      }
     }
 
     // next-class card, legacy timetable blob (no semester/savedAt stamp):

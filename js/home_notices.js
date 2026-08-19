@@ -14,10 +14,21 @@
    * shortcut has been navigating this way since the beginning, and the entry
    * simply is not present for every role.
    */
+  const menuLinks = () =>
+    Array.from(document.getElementsByTagName("a")).filter((a) => a.dataset && a.dataset.url);
+
+  /*
+   * textContent, NOT innerText. innerText is layout-dependent and returns ""
+   * for anything not currently rendered — and VTOP's sidebar is collapsed on
+   * the home page at exactly the width most students use. Matching on
+   * innerText there finds nothing, silently, and the card falls back to the
+   * instruction as though the menu entry did not exist. (js/navbarap.js uses
+   * innerText and gets away with it because it runs against an expanded
+   * navbar; this runs against whatever state the home page is in.)
+   */
   const attendanceMenuLink = () =>
-    Array.from(document.getElementsByTagName("a"))
-      .filter((a) => a.dataset && a.dataset.url)
-      .find((a) => /class\s*attendance/i.test(a.innerText || "")) || null;
+    menuLinks().find((a) => /class\s*attendance/i.test(a.textContent || a.innerText || "")) ||
+    null;
 
   /*
    * The click is a synthetic one from the isolated world, which is fine here
@@ -320,8 +331,18 @@
           `(attendance data is ${summaryAgeDays} day(s) old)`,
           "#888"
         );
+        /*
+         * Offer the button when the entry is there, and ALSO when the menu is
+         * not in the DOM yet — the card can render before VTOP has written the
+         * sidebar, and the handler resolves the link at click time anyway. The
+         * one case that must not get a button is a menu that IS present and
+         * genuinely has no Class Attendance entry: that is a role which cannot
+         * use it, and navbarap.js already learned what emitting a button for a
+         * missing menu entry does.
+         */
         const menu = attendanceMenuLink();
-        if (menu && typeof window.vrButton === "function") {
+        const canRefresh = !!menu || menuLinks().length === 0;
+        if (canRefresh && typeof window.vrButton === "function") {
           const refresh = window.vrButton("home-attendance-refresh", "Refresh now");
           refresh.style.cssText =
             "margin-left:6px;padding:0 6px;font-size:11px;line-height:18px;" +

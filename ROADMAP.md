@@ -331,6 +331,29 @@ does this for the detail endpoint, but its filter needs `detail`/`display` in
 the URL and the summary POST has neither), replay once, and stop permanently on
 the first non-200.
 
+### Live-read page shapes, 2026-08-19 (signed in — not from fixtures)
+
+| page | data-url | loads via |
+|---|---|---|
+| Marks View | `examinations/StudentMarkView` | `doViewExamMark()` on change |
+| Grades | `examinations/examGradeView/StudentGradeView` | `doViewExamGrade()` on change |
+| Time Table | `academics/common/StudentTimeTable` | `processViewTimeTable()` on change |
+| Exam Schedule | `examinations/StudExamSchedule` | **Search button — no onchange** |
+| Class Attendance | (menu `a[data-url]`) | handled by `js/attendance.js`, do not touch |
+
+`js/shared/auto_semester.js` now opens the first four on the ongoing semester.
+Note `chooseCurrentSemester()` picks **"Fall Semester 2026-27 Freshers"** over
+"Fall Semester 2026-27" — the names tie and document order wins. Not fixed in
+the shared chooser because attendance depends on it; the fallback walk absorbs
+it, and the Freshers semester answers a clean "Examination Schedule Details Not
+Found" rather than an error.
+
+### CAT-1 venue state as of 2026-08-19
+
+Exams 1–3 (17/18/19 Aug) have venues; **20, 21 and 24 Aug still show `-`**.
+The venue watcher is correctly silent — there is nothing published to mail. Any
+future "the venue mail is broken" report should start by checking this column.
+
 ---
 
 ## Cleanups (small, safe, unglamorous)

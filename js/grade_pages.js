@@ -79,6 +79,13 @@ let addGpaRow = (root, credits) => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "exam_grade") {
     try {
+      // same, via doViewExamGrade
+      if (typeof window.vrAutoSemester === "function")
+        window.vrAutoSemester({
+          name: "exam_grade",
+          loaded: () => !!document.getElementById("studentGradeView"),
+          submit: window.vrSemesterChange,
+        });
       modify_grade_page();
     } catch (error) {
       console.log(error);

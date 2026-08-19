@@ -134,11 +134,32 @@
       return;
     }
 
-    // No captcha block and no form: a dead load. This is the only case a
-    // reload can help with, and it is capped so it can never become a loop.
+    /*
+     * A LOGIN FORM WITH NO CAPTCHA OF EITHER KIND — reported 2026-08-19 with a
+     * screenshot: /vtop/login, username and password filled, Submit there, and
+     * no captcha anywhere. "the normal original extension reloads this page
+     * until the captcha appears and u cant do it for some reason".
+     *
+     * True, and this is the branch that let it through. The old rule reloaded
+     * only for a document with no form AND no text; here the page is fully
+     * rendered and the form is right there, so `rendered` was true and run()
+     * returned having done nothing. ensureCaptcha() could not help either —
+     * fetchNewCaptcha() injects INTO #captchaBlock, and on this page shape
+     * there is no block to inject into.
+     *
+     * So the one instrument left is the one upstream used: reload, capped. The
+     * file's argument against reloading (see the header) is about /vtop/login
+     * reached by POSTing the role picker, where a reload re-issues that
+     * navigation and lands on Student/Employee/Parent/Alumni. That argument
+     * holds for the role-picker path and is why this is last, not first — it
+     * runs only when there is a login form present, no block to heal, and
+     * neither captcha variant on the page. MAX_RELOADS still caps it at three,
+     * so the worst case is three loads and then a page that is left alone.
+     */
     const rendered = document.body ? document.body.innerText.trim().length > 0 : false;
     const haveForm = !!document.getElementById("vtopLoginForm");
-    if (rendered || haveForm || store === null) return;
+    if (store === null) return;
+    if (rendered && !haveForm) return; // a rendered page that is not the login form
 
     const attempts = Number(store.getItem(RELOAD_KEY)) || 0;
     if (attempts >= MAX_RELOADS) return;
