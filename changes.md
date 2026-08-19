@@ -1,5 +1,107 @@
 These are the changes made to the project: 
 
+## The stale-attendance line now does the chore instead of naming it (2026-08-19)
+
+`(attendance data is 2 day(s) old — open the Attendance page to refresh)` —
+*"this one it should be auto na"*. Fair: the card knows the data is stale, it
+knows where fresh data comes from, and it was asking someone else to go get it.
+
+### It stops one step short of automatic, deliberately
+
+The only way to refresh without the page is to replay VTOP's own attendance
+POST from the home page. That is ROADMAP rule 4 — replaying VTOP endpoints
+with a scraped `_csrf` is what returns 404s and ends the session — and the
+state it produces is the exact one `session_repair` had to be built for
+yesterday. A once-a-day replay of a *captured real* request is a narrower bet
+than the one that caused the damage, but it is the same bet, and losing it
+costs a working VTOP session mid-semester. Offered as an option and declined in
+favour of the safe route.
+
+The sanctioned route is to drive the real control, and one already exists:
+VTOP's menu anchors carry `data-url`, and `js/navbarap.js` has navigated by
+clicking them since the beginning. So the nag becomes the click it was asking
+for — one button, the same page, no endpoint touched, no session at risk.
+
+`attendance_insights.js` then runs exactly as it always does and re-saves
+`vrevamp_attendance_summary` on its own. Nothing new parses anything.
+
+### Two things the button had to get right
+
+**It is not offered when it cannot work.** Not every role has a Class
+Attendance entry (`navbarap.js` learned this the hard way — it used to emit a
+button for a missing menu index and clicking it threw `[undefined].click()`).
+With no entry found, the line reverts to the instruction, which is still true.
+
+**It is a `vrButton`/`vrDelegate` pair**, not an `onclick`: this card is
+re-rendered and round-tripped through `innerHTML` like everything else on this
+page, and a property handler does not survive that (see `js/shared/click.js`).
+
+### What the tests do and do not prove
+
+Four assertions: the line drops the chore text, the button appears, clicking it
+clicks VTOP's own menu entry, and a menu without the entry gets the instruction
+and no dead button. Against the old code the first two fail; the third cannot
+run at all (it is guarded on the button existing), and the fourth is a
+regression guard that passes either way and is kept as one.
+
+What they cannot cover is the world boundary — in the fixture the click and the
+listener are in the same world. That direction is settled elsewhere and not by
+guesswork: `js/attendance.js` drives `#semesterSubId` with a `change` event
+dispatched from the isolated world, and ROADMAP rule 4 names that as the route
+that works. (Rule 2 — "a synthetic click never reaches an isolated-world
+handler" — is about the opposite direction: clicks arriving at *our* handlers.)
+
+## The account chooser came back — because the OTP scan is a different question (2026-08-19)
+
+Reported with a screenshot: Google's "Choose an account to continue to VEramp"
+on top of the VTOP OTP page. The 2026-08-17 work was supposed to end this, and
+for the flow it covered it did. This was a different flow.
+
+### Two accounts, one memory slot
+
+`prompt=none` cannot pick between the accounts signed into a profile, so the
+silent pre-flight only works when the request names one. The worker learns that
+name once and reuses it — but it learns it **only from a grant carrying
+`userinfo.email`**, and the OTP scanner's grant is `gmail.readonly` alone.
+Widening a RESTRICTED scope just to read back an address is a bad trade, so
+that flow could never learn anything. Its token lives an hour and a student
+signs in maybe weekly, so the cache was always cold: silent attempt with no
+hint, fail, window. **Every time.**
+
+The obvious repair — let it use the account the calendar/mail grant already
+remembered — is worse, and it is worth being explicit about why. That grant
+runs under the personal account; VTOP mails the OTP to the student address.
+Handing the mailbox flow the app account means the scan reads the wrong inbox
+and reports "no OTP found" forever. Same screen, worse ending, harder to
+diagnose.
+
+So the account is remembered **per flow**, keyed by the token's own storage
+key, and the mailbox flow inherits nothing. It reads its own address back out
+of Gmail (`users/me/profile`, already inside `gmail.readonly`) after the
+student picks, and names it from the next scan on.
+
+### The chooser stays — once
+
+`granted` (the flag meaning "some Google grant exists") suppresses the account
+chooser, which is right for the app flow: re-asking someone who has already
+picked is the whole complaint. It is wrong here. A calendar grant says nothing
+about which inbox holds the OTP, and with the chooser suppressed and no hint to
+go on, the student is sent silently at whichever account Google prefers with no
+way to say otherwise. So `granted` no longer suppresses the chooser on the
+mailbox flow while that mailbox is unknown — which is what
+`vrevamp_gmail_signin` already documented as its intent, unenforced.
+
+Expected from here: **one more chooser on the next "Fill OTP from mail" — pick
+the inbox VTOP actually writes to — then silence.**
+
+Sign-out drops the per-flow accounts along with everything else, or the next
+student to use the browser walks straight past the chooser into the previous
+one's inbox. The "switch account" path drops the app flows' copies too, since
+that is the same stale name by another route.
+
+7 new assertions, checked to fail against the old code before being kept.
+447 passed, 0 failed.
+
 ## The session state nothing could see: shell healthy, content POSTs 404 (2026-08-18)
 
 ROADMAP had this open as *"`session_repair` misses the state users actually

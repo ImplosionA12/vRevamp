@@ -8,6 +8,39 @@
   const CACHE_PREFIX = "vrevamp_calendar_";
   const DAY_MS = 24 * 60 * 60 * 1000;
 
+  /*
+   * VTOP's own Class Attendance menu entry. Found the way js/navbarap.js finds
+   * it — the menu anchors are the ones carrying data-url — because that
+   * shortcut has been navigating this way since the beginning, and the entry
+   * simply is not present for every role.
+   */
+  const attendanceMenuLink = () =>
+    Array.from(document.getElementsByTagName("a"))
+      .filter((a) => a.dataset && a.dataset.url)
+      .find((a) => /class\s*attendance/i.test(a.innerText || "")) || null;
+
+  /*
+   * The click is a synthetic one from the isolated world, which is fine here
+   * and only here: it is VTOP's handler that has to receive it, not ours.
+   * js/attendance.js drives #semesterSubId with a dispatched `change` the same
+   * way, and ROADMAP rule 4 names that as the sanctioned route. (The rule that
+   * a synthetic click never arrives is about OUR handlers, which live in the
+   * isolated world — the reverse direction.)
+   */
+  if (typeof window.vrDelegate === "function") {
+    window.vrDelegate("home-attendance-refresh", (button) => {
+      const menu = attendanceMenuLink();
+      if (!menu) {
+        button.textContent = "open Attendance from the menu";
+        button.disabled = true;
+        return;
+      }
+      button.textContent = "opening…";
+      button.disabled = true;
+      menu.click();
+    });
+  }
+
   const todayMidnight = () => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -270,12 +303,37 @@
       }
 
       if (summaryAgeDays !== null && summaryAgeDays >= 1) {
-        body.appendChild(
-          line(
-            `(attendance data is ${summaryAgeDays} day(s) old — open the Attendance page to refresh)`,
-            "#888"
-          )
+        /*
+         * "open the Attendance page to refresh" is a chore the card can do
+         * itself — asked for 2026-08-19 as "this one should be auto na".
+         *
+         * It stops one step short of automatic, on purpose. The only way to
+         * refresh without the page is to replay VTOP's own attendance POST,
+         * and replaying VTOP endpoints is what returns 404s and ends the
+         * session (ROADMAP rule 4) — the exact failure session_repair now
+         * has to warn about. Driving the real menu entry is the sanctioned
+         * route, and it is the same mechanism the navbar shortcut has used
+         * all along: VTOP's menu anchors carry data-url, and a click on one
+         * navigates. So the nag becomes the click it was asking for.
+         */
+        const row = line(
+          `(attendance data is ${summaryAgeDays} day(s) old)`,
+          "#888"
         );
+        const menu = attendanceMenuLink();
+        if (menu && typeof window.vrButton === "function") {
+          const refresh = window.vrButton("home-attendance-refresh", "Refresh now");
+          refresh.style.cssText =
+            "margin-left:6px;padding:0 6px;font-size:11px;line-height:18px;" +
+            "background:rgb(73,117,182);border:none;border-radius:3px;color:#fff;";
+          row.appendChild(refresh);
+        } else {
+          // a role whose menu has no Class Attendance entry, or the navbar
+          // never rendered: the old instruction is still the true one
+          row.textContent =
+            `(attendance data is ${summaryAgeDays} day(s) old — open the Attendance page to refresh)`;
+        }
+        body.appendChild(row);
       }
     }
 

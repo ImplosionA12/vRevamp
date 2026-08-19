@@ -4285,6 +4285,97 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ok("mid-semester: FAT countdown shown", !!text && /FAT starts in/.test(text));
     await page.close();
 
+    /* ===== the stale-attendance line does the chore instead of naming it =====
+     *
+     * Asked for 2026-08-19: "(attendance data is 2 day(s) old — open the
+     * Attendance page to refresh)… this one it should be auto na".
+     *
+     * It refreshes by clicking VTOP's own Class Attendance menu entry, not by
+     * replaying the attendance POST — that is ROADMAP rule 4, and the state it
+     * produces is the one session_repair now has to warn about. What this
+     * cannot cover is the world boundary: here the click and the listener are
+     * in the same world. That direction is settled by js/attendance.js, which
+     * drives #semesterSubId with a dispatched `change` from the isolated world
+     * and is the route rule 4 names as sanctioned.
+     */
+    {
+      const stale = {
+        fetchedAt: during - 2 * 86400000,
+        semester: oldSem,
+        subjects: oldSummary.subjects,
+      };
+      const staleStore = {
+        ["vrevamp_calendar_" + oldSem.toLowerCase()]: oldCalendar,
+        vrevamp_attendance_summary: stale,
+      };
+
+      page = await newPage(browser);
+      await page.setContent(
+        "<body><a id='attmenu' data-url='academics/common/StudentAttendance'>Class Attendance</a>" +
+          "<div id='main-section'></div></body>"
+      );
+      await shim(page, { fixedMs: during, storage: staleStore });
+      await inject(page, [
+        "js/shared/click.js",
+        "js/utils/chooseCurrentSem.js",
+        "js/home_notices.js",
+      ]);
+      await delay(1200);
+      await page.evaluate(() => {
+        window.__menuClicks = 0;
+        document
+          .getElementById("attmenu")
+          .addEventListener("click", () => (window.__menuClicks += 1));
+      });
+      const shown = await page.evaluate(() => {
+        const el = document.getElementById("vrevamp-home-notices");
+        return el ? el.textContent : null;
+      });
+      ok(
+        "a 2-day-old summary still says so, without the chore",
+        !!shown && /attendance data is 2 day\(s\) old/.test(shown) && !/open the Attendance page/.test(shown),
+        (shown || "no card").slice(-160)
+      );
+      const btn = await page.$('[data-vr-action="home-attendance-refresh"]');
+      ok("and it offers the refresh instead", !!btn, String(!!btn));
+      if (btn) {
+        await page.click('[data-vr-action="home-attendance-refresh"]');
+        await delay(200);
+        const clicks = await page.evaluate(() => window.__menuClicks);
+        ok(
+          "clicking it drives VTOP's own Class Attendance menu entry",
+          clicks === 1,
+          String(clicks)
+        );
+      }
+      await page.close();
+
+      // A role whose menu has no Class Attendance entry must not be given a
+      // button that cannot work — it gets the instruction that is still true.
+      page = await newPage(browser);
+      await page.setContent("<body><div id='main-section'></div></body>");
+      await shim(page, { fixedMs: during, storage: staleStore });
+      await inject(page, [
+        "js/shared/click.js",
+        "js/utils/chooseCurrentSem.js",
+        "js/home_notices.js",
+      ]);
+      await delay(1200);
+      const noMenu = await page.evaluate(() => {
+        const el = document.getElementById("vrevamp-home-notices");
+        return {
+          text: el ? el.textContent : null,
+          button: !!document.querySelector('[data-vr-action="home-attendance-refresh"]'),
+        };
+      });
+      ok(
+        "with no menu entry it falls back to the instruction, not a dead button",
+        !noMenu.button && /open the Attendance page to refresh/.test(noMenu.text || ""),
+        JSON.stringify(noMenu).slice(0, 200)
+      );
+      await page.close();
+    }
+
     // next-class card, legacy timetable blob (no semester/savedAt stamp):
     // old-sem calendar is over → stale message, not "Done for the day"
     const wd = DAY_CODES[new Date(fixed).getDay()];
@@ -5986,12 +6077,104 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
     }
 
+    /*
+     * The OTP scanner is a DIFFERENT account question — reported 2026-08-19 as
+     * "got asked again", with the chooser on screen and the VTOP OTP page
+     * behind it. It reads a mailbox with gmail.readonly, and the mailbox VTOP
+     * writes to is not the account the calendar/mail grant runs under. So the
+     * app account must not leak into it, and the app grant must not suppress
+     * the one chooser that is genuinely needed.
+     */
+    {
+      const gmailFetch = (url) =>
+        /gmail\/v1\/users\/me\/profile/.test(url)
+          ? Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve({ emailAddress: "student@vitapstudent.ac.in" }),
+            })
+          : Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+
+      const { ask, calls, store } = bootAuth({
+        store: {
+          vrevamp_gmail_client_id: "999-gmail.apps.googleusercontent.com",
+          // everything the app flow leaves behind after a successful sign-in
+          vrevamp_google_account: "personal@gmail.com",
+          vrevamp_google_granted: true,
+        },
+        fetch: gmailFetch,
+        webAuth: (url, details) =>
+          details.interactive
+            ? Promise.resolve(
+                "https://test-ext-id.chromiumapp.org/#access_token=GMAIL-TOKEN&expires_in=3600"
+              )
+            : Promise.reject(new Error("User interaction required.")),
+      });
+      const r = await ask({ message: "vrevamp_gmail_signin" });
+      const loud = calls.webAuthFlows.filter((f) => f.interactive)[0] || {};
+      ok(
+        "the mailbox flow never names the app account (that scans the wrong inbox)",
+        r && r.ok === true && !/login_hint=/.test(loud.url || ""),
+        loud.url || "no interactive flow"
+      );
+      ok(
+        "and an app grant does NOT suppress the chooser — only this pick names the inbox",
+        /[?&]prompt=select_account/.test(loud.url || ""),
+        loud.url || "no interactive flow"
+      );
+      ok(
+        "the chosen mailbox is learned from Gmail itself, per flow, without widening the scope",
+        (store.vrevamp_google_accounts || {}).vrevamp_gmail_token ===
+          "student@vitapstudent.ac.in" &&
+          !/userinfo\.email/.test(loud.url || ""),
+        JSON.stringify(store.vrevamp_google_accounts)
+      );
+      ok(
+        "and learning it leaves the app account alone",
+        store.vrevamp_google_account === "personal@gmail.com",
+        JSON.stringify(store.vrevamp_google_account)
+      );
+    }
+
+    // Second scan, an hour later with the token expired: this is the click the
+    // student kept being asked about, and it must be silent now.
+    {
+      const { ask, calls } = bootAuth({
+        store: {
+          vrevamp_gmail_client_id: "999-gmail.apps.googleusercontent.com",
+          vrevamp_google_granted: true,
+          vrevamp_google_accounts: { vrevamp_gmail_token: "student@vitapstudent.ac.in" },
+        },
+        webAuth: () =>
+          Promise.resolve(
+            "https://test-ext-id.chromiumapp.org/#access_token=GMAIL-TOKEN&expires_in=3600"
+          ),
+      });
+      await ask({ message: "vrevamp_gmail_signin" });
+      const first = calls.webAuthFlows[0] || {};
+      ok(
+        "a remembered mailbox makes the next scan silent, naming that mailbox",
+        first.interactive === false &&
+          /[?&]prompt=none/.test(first.url || "") &&
+          String(first.url).includes(
+            "login_hint=" + encodeURIComponent("student@vitapstudent.ac.in")
+          ),
+        JSON.stringify(first)
+      );
+      ok(
+        "and no window opens at all once it succeeds",
+        !calls.webAuthFlows.some((f) => f.interactive),
+        JSON.stringify(calls.webAuthFlows.map((f) => f.interactive))
+      );
+    }
+
     // Signing out has to put both back, or the student cannot switch account.
     {
       const { ask, store } = bootAuth({
         store: {
           vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
           vrevamp_google_account: "student@vitapstudent.ac.in",
+          vrevamp_google_accounts: { vrevamp_gmail_token: "student@vitapstudent.ac.in" },
           vrevamp_google_granted: true,
           vrevamp_google_app_token: { token: "OLD", exp: Date.now() + 3600000 },
         },
@@ -6003,6 +6186,12 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           !store.vrevamp_google_account &&
           !store.vrevamp_google_granted,
         JSON.stringify(Object.keys(store))
+      );
+      ok(
+        "…including the per-flow mailbox, or the next student lands in this one's inbox",
+        !store.vrevamp_google_accounts ||
+          !store.vrevamp_google_accounts.vrevamp_gmail_token,
+        JSON.stringify(store.vrevamp_google_accounts)
       );
     }
 

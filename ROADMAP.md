@@ -64,6 +64,24 @@ window appears more often than that, the grant is genuinely being lost;
 re-diagnose from `chrome://extensions` → service worker console, not from the
 Console.
 
+### 2026-08-19: it came back — for the OTP scan, which is a different question
+
+Reported with a screenshot: the account chooser over the VTOP OTP page. The
+fix above covers the flow that carries `userinfo.email`; the OTP scanner
+carries `gmail.readonly` alone, so it could never learn which account answered
+and its silent pre-flight had nothing to name. Every scan opened a window.
+
+Inheriting the app flow's account would be worse — it points at the personal
+account and VTOP mails the OTP to the student address, so the scan would read
+the wrong inbox and say "no OTP found" forever. (The old-code test run proves
+this was live: it sent `login_hint=personal@gmail.com` on the mailbox flow.)
+
+Accounts are now remembered **per flow**, the mailbox flow inherits nothing and
+reads its own address from `users/me/profile`, and an app grant no longer
+suppresses the chooser there while the mailbox is unknown. **Expect one more
+chooser on the next "Fill OTP from mail" — that pick names the inbox — then
+silence.** Not yet seen live; see changes.md, 2026-08-19.
+
 **What this unlocks beyond the exam page:** the timetable import should now stop
 opening one editor per class and write everything through the API in one click,
 with a re-import *replacing* the previous one (`deleteOldImports` runs first).
@@ -178,9 +196,12 @@ against it on a real session. See §1. **A large part of the historical
 
 ### Login OTP autofill
 
-Code-complete (`js/vtop_otp.js`, `js/otp/mail_scan.js`), never exercised —
-VTOP has not demanded an OTP on any session we've watched. Not broken; never
-ran.
+Code-complete (`js/vtop_otp.js`, `js/otp/mail_scan.js`). **2026-08-19: VTOP
+demanded one at last** — `/vtop/login/error` with "An OTP has been sent to your
+email", the Fill-OTP-from-mail button on screen. What that first real run
+exposed was the account handling, not the scan (see §1). The scan itself still
+has not been watched end-to-end: it needs the mailbox picked once, and then a
+second OTP login to prove the silent path.
 
 ### DA reminders
 
@@ -294,6 +315,21 @@ Do **not** try to fix this by replaying VTOP endpoints — that is what caused i
 **Not yet seen live.** It fires on a state that takes heavy use to reach. The
 failure mode to watch for is now the opposite one: a banner on a healthy
 session. See changes.md, 2026-08-18.
+
+### ~~"attendance data is N days old" should refresh itself~~ — SETTLED 2026-08-19
+
+It now refreshes with one click, by clicking VTOP's own Class Attendance menu
+entry (`a[data-url]`, the route `js/navbarap.js` has always used).
+
+**True automatic was offered and declined.** The only way to refresh without the
+page is to replay VTOP's attendance POST from the home page — rule 4, and the
+state §"session_repair" exists for. A once-a-day replay of a captured real
+request is a narrower bet than the one that caused the damage, but it is the
+same bet, and losing it costs a working session mid-semester. If it is ever
+revisited: capture the request from `chrome.webRequest` (the learner already
+does this for the detail endpoint, but its filter needs `detail`/`display` in
+the URL and the summary POST has neither), replay once, and stop permanently on
+the first non-200.
 
 ---
 

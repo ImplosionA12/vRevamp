@@ -176,6 +176,35 @@ const SILENT_BACKOFF_MS = 60000;
 const GOOGLE_HINT_KEY = "vrevamp_google_account";
 
 /*
+ * ROUND THREE, 2026-08-19 — "got asked again", with the account chooser on
+ * screen and the VTOP OTP page behind it.
+ *
+ * Everything above is about ONE account: the one that approved calendar.events
+ * and gmail.send. The OTP scanner is not that flow. It reads a MAILBOX with
+ * gmail.readonly, and on this profile the mailbox VTOP writes to is the student
+ * address while the account everything else runs under is the personal one.
+ * A single remembered account cannot serve both, and using one for the other is
+ * worse than not knowing:
+ *
+ *   - no hint at all → `prompt=none` cannot choose between the accounts signed
+ *     into the profile, so the silent pre-flight fails and the chooser opens.
+ *     The OTP token lives an hour and a student logs in maybe weekly, so the
+ *     cache is always cold and the chooser is on screen EVERY time. That is
+ *     what was reported.
+ *   - the app account's hint reused here → the scan silently reads the wrong
+ *     mailbox and reports "no OTP found" forever, which is the same screen with
+ *     a worse ending.
+ *
+ * So the account is remembered PER FLOW, keyed by the token's own storage key,
+ * and the mailbox flow never inherits the app flow's account. The chooser is
+ * still correct the first time — picking the mailbox is a real decision only
+ * the student can make (see `vrevamp_gmail_signin`) — and `granted` must not
+ * suppress it, because a calendar grant says nothing about which inbox holds
+ * the OTP. From the second scan on there is a hint, and it is silent.
+ */
+const GOOGLE_ACCOUNTS_KEY = "vrevamp_google_accounts";
+
+/*
  * ROUND TWO, 2026-08-17 — "the oauth should persist, that's what i asked".
  *
  * The three causes above were all real and all fixed, and a consent screen was
@@ -213,9 +242,42 @@ const SILENT_TIMEOUT_MS = 15000;
 // picked an account is the exact behaviour being complained about.
 const GRANTED_KEY = "vrevamp_google_granted";
 
-async function googleHint() {
-  const stored = (await chrome.storage.local.get([GOOGLE_HINT_KEY]))[GOOGLE_HINT_KEY];
+// Which account should this particular flow name? Its own, if one has ever
+// answered for it; otherwise the app account — except for the mailbox flow,
+// which inherits nothing (see GOOGLE_ACCOUNTS_KEY). Called with no argument it
+// still answers "the account vRevamp signed in as", which is all the status
+// report wants.
+async function googleHint(storeKey) {
+  const all = await chrome.storage.local.get([GOOGLE_HINT_KEY, GOOGLE_ACCOUNTS_KEY]);
+  const own = storeKey && (all[GOOGLE_ACCOUNTS_KEY] || {})[storeKey];
+  if (own) return String(own);
+  if (storeKey === GMAIL_TOKEN_KEY) return null;
+  const stored = all[GOOGLE_HINT_KEY];
   return stored ? String(stored) : null;
+}
+
+// Remember the account this flow actually resolved to, so the next one can name
+// it and stay silent. Stored per flow, alongside — not instead of — the app
+// account that the rest of the worker reads.
+async function rememberAccount(storeKey, email, alsoGlobal) {
+  const all = await chrome.storage.local.get([GOOGLE_ACCOUNTS_KEY]);
+  const patch = {
+    [GOOGLE_ACCOUNTS_KEY]: { ...(all[GOOGLE_ACCOUNTS_KEY] || {}), [storeKey]: email },
+  };
+  if (alsoGlobal) patch[GOOGLE_HINT_KEY] = email;
+  await chrome.storage.local.set(patch);
+}
+
+// Drop remembered accounts for the given flows (all of them when none named).
+async function forgetAccounts(storeKeys) {
+  if (!storeKeys) {
+    await chrome.storage.local.remove([GOOGLE_ACCOUNTS_KEY, GOOGLE_HINT_KEY]);
+    return;
+  }
+  const all = await chrome.storage.local.get([GOOGLE_ACCOUNTS_KEY]);
+  const map = { ...(all[GOOGLE_ACCOUNTS_KEY] || {}) };
+  for (const k of storeKeys) delete map[k];
+  await chrome.storage.local.set({ [GOOGLE_ACCOUNTS_KEY]: map });
 }
 
 // Why the last attempt for this scope failed, in Google's own words. Without
@@ -321,8 +383,15 @@ async function webAuthToken({ clientId, scope, storeKey, interactive, stale }) {
   const silentBlocked = Date.now() < (silentBlockedUntil.get(storeKey) || 0);
   if (!interactive && silentBlocked) return null;
 
-  const hint = await googleHint();
-  const granted = !!(await chrome.storage.local.get([GRANTED_KEY]))[GRANTED_KEY];
+  // The mailbox flow gets its own account or none — never the app account's.
+  const mailbox = storeKey === GMAIL_TOKEN_KEY;
+  const hint = await googleHint(storeKey);
+  const knownGrant = !!(await chrome.storage.local.get([GRANTED_KEY]))[GRANTED_KEY];
+  // A calendar/mail grant does not say which inbox holds the OTP, so it must
+  // not be the thing that suppresses the chooser on the mailbox flow. Left
+  // true, the student is sent silently at the wrong account with no way to say
+  // so; left false, they pick once and are never asked again.
+  const granted = knownGrant && !(mailbox && !hint);
 
   const keep = async (result) => {
     lastAuthError.delete(storeKey);
@@ -332,11 +401,19 @@ async function webAuthToken({ clientId, scope, storeKey, interactive, stale }) {
       [GRANTED_KEY]: true,
     });
     // Learn which account this is, once, so every later refresh can be silent.
-    // Only possible when the grant includes userinfo.email — which is precisely
-    // why it was folded into the merged scope rather than left optional.
-    if (!hint && /userinfo\.email/.test(scope)) {
-      const who = await googleSelfEmail(result.token);
-      if (who) await chrome.storage.local.set({ [GOOGLE_HINT_KEY]: who });
+    // userinfo.email is on the merged grant precisely so this is possible — and
+    // the mailbox flow, which cannot carry it (widening a RESTRICTED ask to
+    // learn an address would be a bad trade), reads the same thing out of Gmail
+    // itself. Only that flow's own entry is written; the app account is set
+    // only by a grant that actually proved it.
+    if (!hint) {
+      const knowsEmail = /userinfo\.email/.test(scope);
+      const who = knowsEmail
+        ? await googleSelfEmail(result.token)
+        : /gmail\./.test(scope)
+          ? await gmailSelfEmail(result.token)
+          : null;
+      if (who) await rememberAccount(storeKey, who, knowsEmail);
     }
     return result.token;
   };
@@ -411,6 +488,8 @@ async function googleToken({ interactive, stale, feature }) {
     // GRANTED_KEY goes too: it is the flag that suppresses the account
     // chooser, and this is the one path that genuinely needs the chooser back.
     await chrome.storage.local.remove([GOOGLE_HINT_KEY, GRANTED_KEY]);
+    // the per-flow copy is the same stale name by another route
+    await forgetAccounts([APP_TOKEN_KEY, CALENDAR_TOKEN_KEY, GMAIL_SEND_TOKEN_KEY]);
     const retry = await webAuthToken({
       clientId,
       scope: APP_SCOPE,
@@ -443,6 +522,10 @@ async function forgetGoogleTokens() {
     CALENDAR_TOKEN_KEY,
     GMAIL_SEND_TOKEN_KEY,
     GOOGLE_HINT_KEY,
+    // the per-flow accounts go with it: a sign-out that left the mailbox
+    // remembered would send the next student straight past the chooser into
+    // the previous one's inbox
+    GOOGLE_ACCOUNTS_KEY,
     // without this a signed-out student gets no account chooser on the way
     // back in, because "a grant exists" is exactly what sign-out revokes
     GRANTED_KEY,
@@ -575,6 +658,28 @@ function b64(text) {
   return btoa(binary);
 }
 const b64url = (text) => b64(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+/*
+ * Whose mailbox does a gmail.readonly token read? The OTP scanner's grant
+ * carries no userinfo.email — widening a RESTRICTED scope to learn an address
+ * would be the wrong trade — but Gmail will name its own mailbox, and that
+ * address is the login_hint that keeps every later scan off the account
+ * chooser. Failure is survivable: the flow still works, it just asks again.
+ */
+async function gmailSelfEmail(token) {
+  try {
+    const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.emailAddress) return String(j.emailAddress);
+    }
+  } catch {
+    /* the scan itself is what matters; a missing hint only costs a screen */
+  }
+  return null;
+}
 
 // Whose mailbox is this token for? Needed only to address the mail to the
 // sender themselves; nothing else reads it.
