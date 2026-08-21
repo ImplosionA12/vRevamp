@@ -381,7 +381,7 @@ let da_page_2026 = async () => {
       else if (missed > 0) {
         cell.textContent = `⚠ ${missed} past due (not uploaded)`;
         cell.style.background = "rgb(238, 75, 43,0.35)";
-      } else cell.textContent = "✅ all submitted";
+      } else cell.textContent = "✅ No dues";
       continue;
     }
     const days = Math.ceil((dueMs(upcoming[0].due) - now) / 86400000);
@@ -417,17 +417,40 @@ let da_page_2026 = async () => {
       "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;cursor:pointer;";
     cell.appendChild(mailBtn);
 
-    // 📅 one-tap: prefilled Google Calendar event per upcoming due — opens
-    // in a new tab, the student just presses Save. No sign-in setup at all.
-    upcoming.forEach((a) => {
+    /*
+     * 📅 one-tap: a prefilled Google Calendar event — opens in a new tab, the
+     * student just presses Save. No sign-in setup at all.
+     *
+     * ONE link, for the soonest due. It used to render one per upcoming due,
+     * and once the blank-cell fix (same day) started counting every posted
+     * assignment, that became six dated links stacked in a ~90px column —
+     * "right now it loooks horrible wha is that stretching", 2026-08-22. Each
+     * link wrapped onto two lines and drove the row several hundred pixels
+     * tall, which is a worse failure than a missing shortcut: it pushed the
+     * actual table off the screen.
+     *
+     * Nothing is lost by showing one. 🔔 already schedules a notification for
+     * every due, ✉ creates a calendar event for every due, and this is the
+     * no-sign-in shortcut for the next one — which is the only one a student
+     * is acting on today. The rest are named in the tooltip.
+     */
+    [upcoming[0]].forEach((a) => {
       const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
       if (!m || !DA_MONTHS[m[2]]) return;
       const day = `${m[3]}${DA_MONTHS[m[2]]}${m[1].padStart(2, "0")}`;
       const link = document.createElement("a");
       link.className = "vrevamp-da-gcal";
-      link.textContent = upcoming.length > 1 ? `📅 ${a.due}` : "📅 gcal";
+      link.textContent = "📅 gcal";
       link.title =
-        "one tap: opens Google Calendar with this due prefilled — just press Save (no sign-in setup)";
+        `one tap: opens Google Calendar with ${a.title} (${a.due}) prefilled — ` +
+        "just press Save (no sign-in setup)" +
+        (upcoming.length > 1
+          ? `. ${upcoming.length - 1} more upcoming: use 🔔 or ✉ to cover them all — ` +
+            upcoming
+              .slice(1)
+              .map((x) => `${x.title} (${x.due})`)
+              .join(", ")
+          : "");
       link.target = "_blank";
       link.rel = "noopener";
       link.style.cssText =
@@ -838,6 +861,12 @@ let sort = () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "da_upload") {
     try {
+      // Second chance only. The call that answers the picker is the one
+      // auto_semester.js makes on "semester_page_open" — this message arrives
+      // for the DATA load, i.e. after a semester has been chosen, so on an
+      // answered page it is a no-op. See js/marks_page.js for the same shape.
+      if (typeof window.vrAutoSemesterFor === "function")
+        window.vrAutoSemesterFor("da_upload");
       const is2026 = [...document.querySelectorAll("table")].some(
         (t) =>
           t.rows[0] &&

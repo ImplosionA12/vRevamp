@@ -1,5 +1,45 @@
 These are the changes made to the project: 
 
+## The assignments page answers its own picker, and stops stretching (2026-08-22)
+
+Three things, after the blank-cell fix was live-verified on the real page:
+**21 assignments still to upload** where it had said "1 past due", and seven 🔔
+buttons where there had been none.
+
+**Reminders, verified by pressing them.** Not inferred from the code — clicked
+on the live page: a per-course 🔔 returned `✓ 2 reminder(s)`, and the summary
+bar's *"remind me about all of them"* returned `✓ 42 reminder(s)` — 21 upcoming
+dues across every subject, two each (6 PM the evening before, 8 AM on the day).
+The chain is real end to end: `vrLocalReminders` → the worker's
+`schedule_local_reminders` → `chrome.alarms.create` → `chrome.notifications`,
+with `alarms` and `notifications` both in the manifest, alarms surviving a
+browser restart, and re-scheduling under the same tag replacing rather than
+stacking. That button could only ever have said "already due" before today's
+fix, because `upcoming` was empty by construction.
+
+**The stretching.** *"right now it loooks horrible wha is that stretching"* —
+one 📅 link was rendered per upcoming due, so the moment the blank-cell fix
+started counting every posted assignment, six dated links stacked in a ~90px
+column, each wrapping onto two lines, and drove single rows several hundred
+pixels tall. That is a worse failure than a missing shortcut: it pushed the
+table itself off the screen. Now one link, for the soonest due, labelled
+`📅 gcal`, with the rest named in its tooltip. Nothing is lost — 🔔 already
+schedules every due and ✉ creates a calendar event for every due; 📅 is the
+no-sign-in shortcut for the one being acted on today.
+
+**The picker.** `examinations/StudentDA` joins the registry, so the page opens
+on the current semester instead of an empty dropdown. Read live: the page is
+`examinations/StudentDA` and its data POST is
+`examinations/doDigitalAssignment` — neither is a substring of the other, so
+this one needs no exclusion. Unlike Grades, which was deliberately removed from
+the registry, this page is not "one semester you came to look at": it is the
+list of everything you owe, and answering the picker is what makes the dues
+column and every reminder on it appear at all.
+
+Wording: a course with nothing outstanding now says **"✅ No dues"** rather than
+"all submitted" — asked for, and it is also the more honest of the two on a
+page where "submitted" and "not yet posted" are different states.
+
 ## A timetable describes an ordinary week; an exam block is not one (2026-08-22)
 
 *"it says i have a next class on hompage but until the last exam coplete or

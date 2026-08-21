@@ -1211,6 +1211,18 @@ const SEMESTER_PAGE_URLS = [
    */
   ["academics/common/StudentTimeTable", "timetable_view"],
   /*
+   * Digital Assignment Upload, added 2026-08-22 by request. Read live that
+   * day: the page is examinations/StudentDA and the data POST it makes once a
+   * semester is chosen is examinations/doDigitalAssignment — neither is a
+   * substring of the other, so no exclusion is needed here.
+   *
+   * Unlike Grades, this page is not "one semester you came to look at": it is
+   * the list of everything you owe, and it is the current semester's list
+   * every time. Answering the picker is what makes the dues column and its
+   * reminders appear at all.
+   */
+  ["examinations/StudentDA", "da_upload"],
+  /*
    * Attendance joined the registry on 2026-08-21, reported as "even the auto
    * selecter in the attendance modue isnt wokingg". It had its own copy of
    * this logic in js/attendance.js and none of the fixes the others got — in

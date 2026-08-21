@@ -3475,7 +3475,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok(
       "the course row stops claiming everything is submitted",
-      !!seen.cell && !/all submitted/.test(seen.cell),
+      !!seen.cell && !/No dues/.test(seen.cell),
       String(seen.cell)
     );
     ok(
@@ -3580,7 +3580,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     ok(
       "all-submitted course says so; past-due course warns",
-      states[0] === "✅ all submitted" && states[1] === "⚠ 3 past due (not uploaded)",
+      states[0] === "✅ No dues" && states[1] === "⚠ 3 past due (not uploaded)",
       JSON.stringify(states)
     );
 
@@ -7678,6 +7678,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         ["examinations/StudentMarkView", "mark_view"],
         ["academics/common/StudentTimeTable", "timetable_view"],
         ["academics/common/StudentAttendance", "attendance"],
+        // added 2026-08-22: the DA page is the list of everything you owe, and
+        // answering its picker is what makes the dues column and its reminders
+        // appear at all
+        ["examinations/StudentDA", "da_upload"],
       ];
       for (const [path, page] of cases) {
         const msgs = load(path);
@@ -7699,6 +7703,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         ["examinations/doSearchExamScheduleForStudent", "exam_schedule"],
         ["examinations/doStudentMarkView", "mark_view_page"],
         ["examinations/examGradeView/doStudentGradeView", "exam_grade"],
+        ["examinations/doDigitalAssignment", "da_upload"],
       ];
       for (const [path, still] of after) {
         const msgs = load(path);

@@ -352,6 +352,16 @@
      * course at 0/0, which is rows without data), and the page that owns it
      * should keep owning it.
      */
+    /*
+     * The DA page's own table is the course list — "Class Nbr / Course Code /
+     * Course Title" — which is what appears once a semester is chosen, and
+     * what the dues column is then written into. Asked for 2026-08-22, after
+     * the reminders it feeds were verified working.
+     */
+    da_upload: {
+      loaded: () => anyTableMatching(/class\s*nbr|course\s*code/i),
+      submit: () => window.vrSemesterChange(),
+    },
     attendance: {
       loaded: () =>
         typeof attendanceHasData === "function"
