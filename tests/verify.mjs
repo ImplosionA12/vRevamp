@@ -3456,7 +3456,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const seen = await page.evaluate(() => {
       const bar = document.getElementById("vrevamp-da-summary");
       const cell = [...document.querySelectorAll("td")].find((t) =>
-        /all submitted|past due|day\(s\) left/.test(t.textContent)
+        /No dues|past due|d left/.test(t.textContent)
       );
       return {
         cell: cell ? cell.textContent.replace(/\s+/g, " ").trim() : null,
@@ -3566,8 +3566,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       return t.rows[1].cells[7] ? t.rows[1].cells[7].textContent : null;
     });
     ok(
+      // compact since 2026-08-22: "10-Jul · 4d left", not "10-Jul-2026 (4
+      // day(s) left)" wrapped across a 90px column
       "dues cell shows nearest un-submitted due (skips past-due + uploaded)",
-      !!cellText && cellText.includes("10-Jul-2026") && cellText.includes("(4 day(s) left)"),
+      !!cellText && cellText.includes("10-Jul") && /4d left/.test(cellText),
       cellText || "no cell"
     );
     ok("header gained the Upcoming Dues column", await page.evaluate(() => {
@@ -3646,7 +3648,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ok(
       "📅 one-tap gcal link on the upcoming due only",
       daLinks.total === 1 && daLinks.row1.length === 1 &&
-        daLinks.row1[0].t === "📅 gcal" && daLinks.row1[0].target === "_blank",
+        daLinks.row1[0].t === "📅" && daLinks.row1[0].target === "_blank",
       JSON.stringify(daLinks)
     );
     ok(

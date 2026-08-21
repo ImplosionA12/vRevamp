@@ -388,7 +388,11 @@ let da_page_2026 = async () => {
     cell.style.background =
       days <= 3 ? "rgb(238, 75, 43,0.6)" : "rgb(170, 255, 0,0.6)";
     const span = document.createElement("span");
-    span.textContent = `${upcoming[0].due} (${days} day(s) left)`;
+    // one line, not three: "05-Sep · 14d" instead of "05-Sep-2026 (14 day(s)
+    // left)" wrapped across a 90px column
+    span.style.cssText = "font-size:11px;white-space:nowrap;";
+    span.textContent = `${upcoming[0].due.replace(/-d{4}$/, "")} · ${days}d left`;
+    span.title = `${upcoming[0].title} — due ${upcoming[0].due}`;
     cell.appendChild(span);
     // Everything both buttons need, written onto the buttons themselves. See
     // the handlers above for why this is an attribute and not a closure.
@@ -399,23 +403,43 @@ let da_page_2026 = async () => {
       dues: upcoming.map((a) => ({ due: a.due, title: a.title })),
     });
 
+    /*
+     * ONE ROW OF ICONS, and the reason is measured rather than aesthetic.
+     *
+     * "those boxes look the ugliest dude dont enlarge them like that at all"
+     * (2026-08-22). This column is about 90px wide. Labelled controls —
+     * "🔔 remind me", "✉ email", "📅 gcal" — each wrapped onto two lines and
+     * stacked, so a single course row grew to several hundred pixels and
+     * pushed VTOP's own table off the screen. The words were never carrying
+     * the meaning anyway: the title attribute says far more than three
+     * squeezed words ever did, and it says it on hover where there is room.
+     *
+     * nowrap on the strip is the part that actually holds the height down —
+     * without it the three icons still wrap one per line in a narrow column.
+     */
+    const strip = document.createElement("div");
+    strip.className = "vrevamp-da-actions";
+    strip.style.cssText =
+      "margin-top:3px;white-space:nowrap;line-height:1;font-size:13px;";
+    cell.appendChild(strip);
+
     // 🔔 Chrome notifications for every upcoming due of this course — 6 PM
     // the evening before and 8 AM on the due day. No Google sign-in.
-    const btn = window.vrButton("da-bell", "🔔 remind me", { vrDues: payload });
+    const btn = window.vrButton("da-bell", "🔔", { vrDues: payload });
     btn.className = "vrevamp-da-remind";
     btn.title =
-      "Chrome notification the evening before (6 PM) and the morning of (8 AM) each due — no sign-in needed";
+      `Remind me — Chrome notification the evening before (6 PM) and the morning of (8 AM) for each of the ${upcoming.length} upcoming due(s). No sign-in needed.`;
     btn.style.cssText =
-      "display:inline-block;margin-top:4px;font-size:11px;cursor:pointer;";
-    cell.appendChild(btn);
+      "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
+    strip.appendChild(btn);
 
     // ✉ optional Google Calendar events with an email 24 h before each due
-    const mailBtn = window.vrButton("da-mail", "✉ email", { vrDues: payload });
+    const mailBtn = window.vrButton("da-mail", "✉", { vrDues: payload });
     mailBtn.className = "vrevamp-da-remind";
-    mailBtn.title = `Google Calendar event per upcoming due, email ${DA_REMINDER_LEAD_MIN / 60} h before — needs one-time Google consent`;
+    mailBtn.title = `Email me — a Google Calendar event per upcoming due, mailed ${DA_REMINDER_LEAD_MIN / 60} h before. Needs one-time Google consent.`;
     mailBtn.style.cssText =
-      "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;cursor:pointer;";
-    cell.appendChild(mailBtn);
+      "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
+    strip.appendChild(mailBtn);
 
     /*
      * 📅 one-tap: a prefilled Google Calendar event — opens in a new tab, the
@@ -440,7 +464,7 @@ let da_page_2026 = async () => {
       const day = `${m[3]}${DA_MONTHS[m[2]]}${m[1].padStart(2, "0")}`;
       const link = document.createElement("a");
       link.className = "vrevamp-da-gcal";
-      link.textContent = "📅 gcal";
+      link.textContent = "📅";
       link.title =
         `one tap: opens Google Calendar with ${a.title} (${a.due}) prefilled — ` +
         "just press Save (no sign-in setup)" +
@@ -454,7 +478,7 @@ let da_page_2026 = async () => {
       link.target = "_blank";
       link.rel = "noopener";
       link.style.cssText =
-        "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;";
+        "display:inline-block;padding:0 3px;font-size:13px;text-decoration:none;line-height:1;";
       link.href = window.vrGcalTemplateUrl({
         title: `DA due: ${meta.course_code} — ${a.title}`,
         start: `${day}T200000`,
@@ -463,7 +487,7 @@ let da_page_2026 = async () => {
           `${meta.course_title}\nDue ${a.due}\n\n` +
           "Tip: add an Email notification to this event (or set one as your Google Calendar default) to get it mailed to you.",
       });
-      cell.appendChild(link);
+      strip.appendChild(link);
     });
   }
 

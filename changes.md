@@ -1,5 +1,47 @@
 These are the changes made to the project: 
 
+## The dues cell stops being three wrapped lines (2026-08-22)
+
+*"those boxes look the ugliest dude dont enlarge them like that at all"*.
+
+The Upcoming Dues column is about 90px wide, and it was being handed labelled
+controls — `🔔 remind me`, `✉ email`, `📅 gcal` — plus `05-Sep-2026 (14 day(s)
+left)`. Every one of them wrapped onto two lines and stacked, so a single
+course row grew to several hundred pixels and pushed VTOP's own table off the
+screen. Today's blank-cell fix made it worse by counting every posted
+assignment, which is what turned one calendar link into six.
+
+The words were never carrying the meaning. A `title` attribute says far more
+than three squeezed words, and says it on hover where there is room:
+
+| before | after |
+|---|---|
+| `05-Sep-2026 (14 day(s) left)` | `05-Sep · 14d left` |
+| `🔔 remind me` `✉ email` `📅 gcal`, stacked, each wrapped | `🔔 ✉ 📅` on one line |
+| one 📅 per due — six of them | one 📅, for the soonest |
+
+`white-space: nowrap` on the icon strip is the part that actually holds the
+height down; without it the three icons still wrap one per line in a column
+that narrow.
+
+Nothing is lost. 🔔 still schedules every upcoming due, ✉ still creates a
+calendar event for every one, and each tooltip now names the count and what the
+control does.
+
+### Also: the QP-attachment idea is dead, and that is a finding not a failure
+
+Asked whether the reminder mail could carry the question paper. Read live: the
+QP column exists on every assignment row and is **empty on all of them** —
+confirmed by the student, "no one uploaded". The extension can technically
+fetch a file VTOP holds and attach it through `gmail.send`, but faculty do not
+put question papers there, so the feature would have built cleanly and then
+done nothing on every row. Not built, deliberately.
+
+One thing confirmed while checking: Google consent is **once, not per feature**.
+The worker requests `calendar.events + gmail.send + userinfo.email` as a single
+combined scope, with narrow per-feature scopes only as a fallback if Google
+rejects the combined request.
+
 ## The assignments page answers its own picker, and stops stretching (2026-08-22)
 
 Three things, after the blank-cell fix was live-verified on the real page:
