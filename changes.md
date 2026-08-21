@@ -1,5 +1,50 @@
 These are the changes made to the project: 
 
+## A timetable describes an ordinary week; an exam block is not one (2026-08-22)
+
+*"it says i have a next class on hompage but until the last exam coplete or
+check the calender until the cat exams over there wont be classes, and the bunk
+calculator should calculate for until cat 2 how many are bunkable at max"*.
+
+The next-class card reads the saved timetable and nothing else, so during a CAT
+it cheerfully announced the class that would have run. It now knows about exam
+blocks, and so does the projection behind every bunkable number.
+
+**The block comes from the cached exam schedule, not the calendar's CAT flags.**
+That is the part worth writing down: the academic calendar marks a day "CAT-2"
+only where an exam is actually sat, so a day mid-block with no exam of your own
+would look like an ordinary teaching day — and that is exactly the case being
+asked about. The exam schedule carries dated rows per exam, so first-to-last of
+a type is the block, and every day inside it counts.
+
+Three states, and the middle one is the whole point:
+
+| today | what the card says |
+|---|---|
+| an exam of yours | `📝 CAT-2 today: CSE1005 @ CB-324, report 09:30 AM — no regular classes.` |
+| inside the block, no exam of yours | `📝 CAT-2 block runs to 1 Jul — no regular classes, and no exam of yours today.` |
+| outside any block | unchanged — the timetable is right again |
+
+The stale-timetable warning still outranks the exam line. If the saved
+timetable is last semester's, that is the thing to fix, and a confident exam
+line on top of it would only bury it.
+
+The same block days are now skipped by `countClassesUntil`, which feeds "Left
+this sem" and every bunkable column — classes that will never be held were
+being counted as skippable. The set is empty when nothing is cached, so this
+can only ever remove phantom classes, never invent them.
+
+### While checking, two things turned out to be right already
+
+- **"Bunkable before CAT-2" exists** and reads 6–7 for theory subjects. CAT-1's
+  column is simply gone because CAT-1 has passed — retrospective columns are
+  dropped on purpose.
+- **Labs are counted to the LAB FAT**, and read `3 lab(s)` in that column. The
+  `Only 1 lab(s) can be Skipped` seen on the attendance row is a different
+  number answering a different question: the 75% alert column is instantaneous
+  (classes held so far, no calendar), while the bunk table projects forward.
+  Both are correct; they were being compared to each other.
+
 ## A blank cell is not a submission (assignments, 2026-08-22)
 
 *"go to assigments age the due date and all of them look off the mark, an i

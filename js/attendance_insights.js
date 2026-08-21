@@ -655,12 +655,59 @@
   // Classes this subject still has on instructional days after today and
   // before untilIso (exclusive); untilIso null = through the last
   // instructional day
+  /*
+   * Days inside an exam block, from the cached exam schedule — first to last
+   * dated exam of a type. Asked for 2026-08-22: "until the cat exams over
+   * there wont be classes". Regular classes do not run while a CAT or FAT
+   * block is on, so counting those days as class days inflates "Left this sem"
+   * and every bunkable column with classes that will never be held.
+   *
+   * Taken from the exam schedule rather than the calendar's own CAT flags on
+   * purpose: the calendar marks only the days an exam is actually sat, and a
+   * day mid-block with no exam of your own is still a day with no classes.
+   * Empty when nothing is cached, so this can only ever remove phantom
+   * classes — never invent them.
+   */
+  let examBlockDays = new Set();
+
+  const loadExamBlockDays = async () => {
+    try {
+      const cached = (await chrome.storage.local.get("vrevamp_exam_schedule"))
+        .vrevamp_exam_schedule;
+      const dates = (((cached || {}).exams) || [])
+        .map((e) => e && e.dateIso)
+        .filter(Boolean)
+        .sort();
+      if (!dates.length) return;
+      const byType = {};
+      (((cached || {}).exams) || []).forEach((e) => {
+        if (!e || !e.dateIso) return;
+        const t = e.type || "Exam";
+        const w = byType[t] || (byType[t] = { from: e.dateIso, to: e.dateIso });
+        if (e.dateIso < w.from) w.from = e.dateIso;
+        if (e.dateIso > w.to) w.to = e.dateIso;
+      });
+      const days = new Set();
+      Object.values(byType).forEach(({ from, to }) => {
+        const [fy, fm, fd] = from.split("-").map(Number);
+        const [ty, tm, td] = to.split("-").map(Number);
+        const end = new Date(ty, tm - 1, td);
+        for (let d = new Date(fy, fm - 1, fd); d <= end; d.setDate(d.getDate() + 1))
+          days.add(isoOf(d));
+      });
+      examBlockDays = days;
+    } catch (error) {
+      console.warn("vRevamp insights: exam blocks unavailable", error);
+    }
+  };
+
   const countClassesUntil = (calendar, meetings, untilIso) => {
     const todayIso = isoOf(new Date());
     let count = 0;
     calendar.instructionalDays.forEach((iso) => {
       if (iso <= todayIso) return;
       if (untilIso && iso >= untilIso) return;
+      if (examBlockDays.has(iso)) return; // exam block: no regular classes
       count += meetings[wdOfIso(iso)] || 0;
     });
     return count;
@@ -1548,6 +1595,9 @@
     }
     running = true;
     try {
+      // before any projection: the days no class will be held on because an
+      // exam block is running (2026-08-22)
+      await loadExamBlockDays();
       await doRun();
     } finally {
       running = false;

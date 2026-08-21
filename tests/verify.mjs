@@ -258,6 +258,82 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ok("shows in-class-now for CSE1005", !!text && /In class now: CSE1005/.test(text), text || "");
     ok("shows ends-in-20-min", !!text && /ends in 20 min/.test(text), text || "");
     await page.close();
+
+    /* ---- exam blocks: the timetable is the wrong thing to read out ----
+     *
+     * Asked 2026-08-22: "it says i have a next class on hompage but until the
+     * last exam coplete ... until the cat exams over there wont be classes".
+     * A timetable describes an ordinary week; an exam block is precisely the
+     * week that is not ordinary, and the card had no way to know.
+     *
+     * The block is first-to-last dated exam of a type, so a day INSIDE it
+     * with no exam of your own still has no classes — the case being asked
+     * about. Same fixture and same clock as above, so the only thing that
+     * changes the answer is the cached schedule.
+     */
+    const examCard = async (exams) => {
+      const p = await newPage(browser);
+      await p.setContent("<body><div id='main-section'></div></body>");
+      await shim(p, {
+        fixedMs: fixed,
+        storage: {
+          "timeTable-V1": timetable,
+          vrevamp_exam_schedule: { semester: "Fall Semester 2026-27", exams },
+        },
+      });
+      await inject(p, [
+        "js/store/store.js",
+        "js/store/saveTimeTableDetails.js",
+        "js/utils/filterRepeated.js",
+        "js/next_class.js",
+      ]);
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1200);
+      const out = await p.evaluate(() => {
+        const el = document.getElementById("vrevamp-next-class");
+        return el ? el.textContent : null;
+      });
+      await p.close();
+      return out;
+    };
+
+    // today is 2026-06-29; the CAT-2 block runs 29 Jun - 03 Jul
+    const withExamToday = await examCard([
+      { type: "CAT-2", code: "CSE1005", dateIso: "2026-06-29", reporting: "09:30 AM", venue: "CB-324", start: "1000" },
+      { type: "CAT-2", code: "MAT2001", dateIso: "2026-07-03", reporting: "09:30 AM", venue: "CB-101", start: "1000" },
+    ]);
+    ok(
+      "an exam day says so instead of announcing the class that will not run",
+      !!withExamToday &&
+        /CAT-2 today: CSE1005/.test(withExamToday) &&
+        /no regular classes/.test(withExamToday) &&
+        !/In class now/.test(withExamToday),
+      withExamToday || "no card"
+    );
+
+    // a day inside the block with no exam of your own — the case being asked
+    // about, and the one a per-day check would get wrong
+    const insideBlock = await examCard([
+      { type: "CAT-2", code: "CSE1005", dateIso: "2026-06-27", reporting: "09:30 AM", venue: "CB-324" },
+      { type: "CAT-2", code: "MAT2001", dateIso: "2026-07-01", reporting: "09:30 AM", venue: "CB-101" },
+    ]);
+    ok(
+      "a block day with no exam of your own still has no classes",
+      !!insideBlock &&
+        /CAT-2 block runs to 1 Jul/.test(insideBlock) &&
+        !/In class now/.test(insideBlock),
+      insideBlock || "no card"
+    );
+
+    // and outside the block nothing changes — the timetable is right again
+    const outsideBlock = await examCard([
+      { type: "FAT", code: "CSE1005", dateIso: "2026-07-20", reporting: "09:30 AM", venue: "CB-324" },
+    ]);
+    ok(
+      "outside any block the timetable is read out exactly as before",
+      !!outsideBlock && /In class now: CSE1005/.test(outsideBlock),
+      outsideBlock || "no card"
+    );
   }
 
   /* =================== Feature 3: CGPA what-if simulator =================== */

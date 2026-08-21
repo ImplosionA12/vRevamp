@@ -108,6 +108,77 @@
       mins % 60
     ).padStart(2, "0")}`;
 
+  /* -------------------------------------------------------------------------
+   * EXAM BLOCKS — asked for 2026-08-22
+   * -------------------------------------------------------------------------
+   * "it says i have a next class on hompage but until the last exam coplete
+   * ... until the cat exams over there wont be classes".
+   *
+   * Right, and the card had no way to know: it reads the saved timetable and
+   * nothing else, so during a CAT it cheerfully announces the class that
+   * would have run. A timetable says what happens in an ordinary week; an
+   * exam block is precisely the week that is not ordinary.
+   *
+   * The block is taken from the cached exam schedule rather than the academic
+   * calendar, deliberately. The calendar marks a day "CAT-2" only where an
+   * exam is actually sat, and whether it ALSO marks it instructional varies;
+   * the exam schedule carries dated rows per exam, so first-to-last of a type
+   * is the block — and a day inside it with no exam of your own is still a day
+   * with no classes, which is exactly the case the student is asking about.
+   */
+  // LOCAL "YYYY-MM-DD". toISOString() is UTC, which east of Greenwich rolls
+  // the date over before midnight local — the same trap home_notices.js and
+  // attendance_insights.js both document.
+  const isoToday = () => {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  const examWindows = (schedule) => {
+    const byType = {};
+    (((schedule || {}).exams) || []).forEach((exam) => {
+      if (!exam || !exam.dateIso) return;
+      const type = exam.type || "Exam";
+      const window = byType[type];
+      if (!window) {
+        byType[type] = { type, from: exam.dateIso, to: exam.dateIso };
+        return;
+      }
+      if (exam.dateIso < window.from) window.from = exam.dateIso;
+      if (exam.dateIso > window.to) window.to = exam.dateIso;
+    });
+    return Object.keys(byType).map((k) => byType[k]);
+  };
+
+  const examBlockOn = (schedule, iso) =>
+    examWindows(schedule).find((w) => iso >= w.from && iso <= w.to) || null;
+
+  const describeExamDay = (schedule, block, iso) => {
+    const mine = (((schedule || {}).exams) || [])
+      .filter((e) => e.dateIso === iso)
+      .sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+    if (mine.length) {
+      const first = mine[0];
+      const when = first.reporting ? `, report ${first.reporting}` : "";
+      const where = first.venue && first.venue !== "-" ? ` @ ${first.venue}` : "";
+      const more = mine.length > 1 ? ` (+${mine.length - 1} more today)` : "";
+      return {
+        tone: "#c0392b",
+        text: `\u{1F4DD} ${block.type} today: ${first.code}${where}${when}${more} — no regular classes.`,
+      };
+    }
+    const [y, m, d] = block.to.split("-").map(Number);
+    const until = new Date(y, m - 1, d).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+    });
+    return {
+      tone: "#b8860b",
+      text: `\u{1F4DD} ${block.type} block runs to ${until} — no regular classes, and no exam of yours today.`,
+    };
+  };
+
   const describe = (classes) => {
     if (classes === null) return null; // no saved timetable
     const now = new Date();
@@ -188,12 +259,33 @@
       timetable = await getSavedTimetable();
       timetableStale = await checkStale(timetable);
     }
+    /*
+     * The exam block outranks the timetable, but NOT the stale-timetable
+     * warning: if the saved timetable is last semester's, that is the thing
+     * the student has to fix, and a confident exam line on top of it would
+     * only bury it. It is read fresh each render — this runs once a minute,
+     * a storage read is cheap, and a schedule cached mid-session should take
+     * effect without a reload.
+     */
+    let examLine = null;
+    if (!timetableStale) {
+      try {
+        const iso = isoToday();
+        const cached = (await chrome.storage.local.get("vrevamp_exam_schedule"))
+          .vrevamp_exam_schedule;
+        const block = examBlockOn(cached, iso);
+        if (block) examLine = describeExamDay(cached, block, iso);
+      } catch (error) {
+        console.warn("vRevamp next-class:", error); // no schedule cached yet
+      }
+    }
+
     const info = timetableStale
       ? {
           tone: "#b8860b",
           text: "\u{1F5D3}️ Saved timetable looks like last semester's — open the Time Table page once to refresh it.",
         }
-      : describe(todaysClasses(timetable));
+      : examLine || describe(todaysClasses(timetable));
     if (!info) return true; // no timetable saved — stay silent
     let card = document.getElementById(CARD_ID);
     if (!card) {
