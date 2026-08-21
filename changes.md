@@ -1,5 +1,43 @@
 These are the changes made to the project: 
 
+## A blank cell is not a submission (assignments, 2026-08-22)
+
+*"go to assigments age the due date and all of them look off the mark, an i
+cant see remainders"*. Two symptoms, one cause, found by reading SWE3004's real
+table on the live page:
+
+| # | Title | Due | Document Details |
+|---|---|---|---|
+| 1 | Experiment-1 | 31-Jul-2026 | File Not Uploaded |
+| 2 | Experiment-2 | 16-Aug-2026 | 16 Aug 2026 02:30 PM |
+| 3 | Experiment-3 | 05-Sep-2026 | *(blank)* |
+| 4 | Experiment-4 | 19-Sep-2026 | *(blank)* |
+| 5 | Experiment-5 | 18-Oct-2026 | *(blank)* |
+| 6 | Experiment-6 | 08-Nov-2026 | *(blank)* |
+
+The test was `!/file not uploaded/`. A blank cell does not match it, so `!false`
+answered **uploaded** — and four assignments nobody has uploaded counted as
+done. The course row therefore said "⚠ 1 past due" with nothing upcoming, which
+is why the dates on screen did not match the ones in the page.
+
+And it is the same reason there were no reminders. Every reminder control —
+🔔, the calendar links, the email list — lives behind `upcoming.length`, and
+upcoming was empty by construction. The bell could never appear on precisely
+the rows a bell is for.
+
+VTOP writes "File Not Uploaded" only once the upload window has opened; for an
+assignment posted but not yet open it writes nothing at all. So absence of
+evidence was being read as evidence of submission.
+
+Inverted: a row counts as uploaded only on POSITIVE evidence — VTOP's own
+upload timestamp, or a download link for the file it holds. Blank is not
+uploaded. The failure mode now costs a reminder for something already done,
+instead of silence about something still owed.
+
+Every fixture in the suite happened to fill that cell, which is exactly why the
+tests stayed green while the page was wrong. The new one is the live shape,
+blanks and all.
+
 ## "Refresh now" stops navigating and actually refreshes (2026-08-22)
 
 *"remove that comment, see the old extention from git and see how it works and

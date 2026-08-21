@@ -45,6 +45,54 @@ const da_header_index = (row, re) =>
   [...row.cells].findIndex((c) => re.test(c.textContent));
 
 // detail fragment (processDigitalAssignment): course info table + the
+/*
+ * Is this assignment uploaded? Asked of the "Document Details" cell.
+ *
+ * ---------------------------------------------------------------------------
+ * Reported 2026-08-22: "the due date and all of them look off the mark, and i
+ * cant see remainders". Both symptoms, one cause, found by reading the real
+ * table on the live page:
+ *
+ *   | # | Title        | Due         | Document Details      |
+ *   |---|--------------|-------------|-----------------------|
+ *   | 1 | Experiment-1 | 31-Jul-2026 | File Not Uploaded     |
+ *   | 2 | Experiment-2 | 16-Aug-2026 | 16 Aug 2026 02:30 PM  |
+ *   | 3 | Experiment-3 | 05-Sep-2026 | (blank)               |
+ *   | 4 | Experiment-4 | 19-Sep-2026 | (blank)               |
+ *   | 5 | Experiment-5 | 18-Oct-2026 | (blank)               |
+ *   | 6 | Experiment-6 | 08-Nov-2026 | (blank)               |
+ *
+ * The old test was `!/file not uploaded/`. A BLANK cell does not match it, so
+ * `!false` said uploaded — and rows 3 to 6, four assignments nobody has
+ * uploaded, counted as done. The course row therefore reported "1 past due"
+ * and nothing upcoming, which is why the dates on screen did not match the
+ * ones in the page, and why no 🔔 ever appeared: every reminder control lives
+ * behind `upcoming.length`, and upcoming was empty by construction.
+ *
+ * VTOP writes "File Not Uploaded" only once the upload window has opened. For
+ * an assignment posted but not yet open it writes nothing at all — so absence
+ * of evidence was being read as evidence of submission, on exactly the rows a
+ * reminder is FOR.
+ *
+ * Inverted: a row counts as uploaded only on POSITIVE evidence — VTOP's own
+ * upload timestamp, or a download link for the file it holds. Blank is not
+ * uploaded. The failure mode now costs a reminder for something already done,
+ * instead of silence about something still owed.
+ */
+const da_is_uploaded = (cell) => {
+  if (!cell) return false;
+  const text = (cell.textContent || "").replace(/\s+/g, " ").trim();
+  if (/file\s*not\s*uploaded/i.test(text)) return false;
+  if (!text) return false; // posted, not yet uploaded — the case that was lost
+  // a file VTOP will hand back is proof it holds one
+  if (cell.querySelector("a[href], a[onclick]")) return true;
+  // "16 Aug 2026 02:30 PM" / "16-Aug-2026" — VTOP's record of the upload
+  return (
+    /\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}/.test(text) ||
+    /\d{1,2}-[A-Za-z]{3,4}-\d{4}/.test(text)
+  );
+};
+
 // assignment list (Title / Due Date / Document Details), found by header text
 const parse_da_detail = (doc) => {
   const tables = [...doc.querySelectorAll("table")];
@@ -73,9 +121,7 @@ const parse_da_detail = (doc) => {
       items.push({
         title: r.cells[iTitle] ? r.cells[iTitle].textContent.trim() : "",
         due,
-        uploaded: r.cells[iDoc]
-          ? !/file\s*not\s*uploaded/i.test(r.cells[iDoc].textContent)
-          : true,
+        uploaded: da_is_uploaded(r.cells[iDoc]),
       });
     }
   }

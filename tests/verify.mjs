@@ -3313,6 +3313,108 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ====== DA page: a blank "Document Details" is NOT a submission ======
+   *
+   * READ OFF THE LIVE PAGE 2026-08-22, reported as "the due date and all of
+   * them look off the mark, and i cant see remainders". SWE3004's real table:
+   * one row saying "File Not Uploaded", one carrying an upload timestamp, and
+   * FOUR future rows whose Document Details cell is empty because VTOP has not
+   * opened the upload window yet.
+   *
+   * The old predicate was `!/file not uploaded/`, so a blank cell answered
+   * "uploaded" and those four counted as done. The course row said "1 past
+   * due", nothing was upcoming, and every reminder control lives behind
+   * `upcoming.length` — so no 🔔 could ever appear, on precisely the rows a
+   * reminder is for. Absence of evidence was being read as evidence of
+   * submission.
+   *
+   * Every fixture above happens to fill that cell, which is why the suite
+   * stayed green while the live page was wrong.
+   */
+  console.log("\n=== DA page: a blank Document Details is not a submission ===");
+  {
+    const fixed = new Date("2026-08-21T09:00:00+05:30").getTime();
+    const blankHtml = `
+      <table class="customTable">
+        <tr><td>Semester</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Class Number</td></tr>
+        <tr><td>Fall 26-27</td><td>SWE3004</td><td>Front End Design and Testing</td><td>ELA</td><td>AP2026272001506</td></tr>
+      </table>
+      <table class="customTable">
+        <tr><td>Sl.No.</td><td>Title</td><td>Max. Mark</td><td>Weightage %</td><td>Due Date</td><td>QP</td><td>Document Details</td></tr>
+        <tr><td>Last Updated On</td><td>Upload/Edit</td><td>Download</td></tr>
+        <tr><td>1</td><td>Experiment-1</td><td>10</td><td>10</td><td>31-Jul-2026</td><td></td>
+            <td><span style="color:red">File Not Uploaded</span></td><td></td><td></td></tr>
+        <tr><td>2</td><td>Experiment-2</td><td>10</td><td>10</td><td>16-Aug-2026</td><td></td>
+            <td>16 Aug 2026 02:30 PM</td><td></td><td></td></tr>
+        <tr><td>3</td><td>Experiment-3</td><td>10</td><td>10</td><td>05-Sep-2026</td><td></td>
+            <td></td><td></td><td></td></tr>
+        <tr><td>4</td><td>Experiment-4</td><td>10</td><td>10</td><td>19-Sep-2026</td><td></td>
+            <td></td><td></td><td></td></tr>
+      </table>`;
+    const page = await newPage(browser);
+    await page.route("https://vtop-blank.test/**", (route) => {
+      if (route.request().url().includes("processDigitalAssignment"))
+        return route.fulfill({ contentType: "text/html", body: blankHtml });
+      route.fulfill({
+        contentType: "text/html",
+        body: `<body>
+          <span class="navbar-text text-light small fw-bold">24MIC7198 (STUDENT)</span>
+          <input name="_csrf" value="t0k">
+          <table class="customTable">
+            <tr><td>Sl.No</td><td>Class Nbr</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Faculty Name</td><td>Dashboard</td></tr>
+            <tr><td>1</td><td>AP2026272001506</td><td>SWE3004</td><td>Front End Design and Testing</td><td>ELA</td><td>K L S Praneeth</td><td><a>view</a></td></tr>
+          </table></body>`,
+      });
+    });
+    await page.goto("https://vtop-blank.test/vtop/content");
+    await shim(page, { fixedMs: fixed, storage: {} });
+    await inject(page, [
+      "js/shared/click.js",
+      "js/shared/google_auth.js",
+      "js/shared/vtop.js",
+      "js/da_upload.js",
+    ]);
+    await page.evaluate(() => window.__dispatch("da_upload"));
+    await delay(900);
+
+    const seen = await page.evaluate(() => {
+      const bar = document.getElementById("vrevamp-da-summary");
+      const cell = [...document.querySelectorAll("td")].find((t) =>
+        /all submitted|past due|day\(s\) left/.test(t.textContent)
+      );
+      return {
+        cell: cell ? cell.textContent.replace(/\s+/g, " ").trim() : null,
+        barText: bar ? bar.textContent.replace(/\s+/g, " ") : null,
+        buttons: bar ? [...bar.querySelectorAll("button")].map((b) => b.textContent) : [],
+        dues: [...document.querySelectorAll("[data-vr-dues]")]
+          .map((b) => JSON.parse(b.dataset.vrDues))
+          .flatMap((d) => d.dues.map((x) => x.due)),
+      };
+    });
+
+    ok(
+      "the two blank-cell assignments are counted as still owed, not submitted",
+      !!seen.dues && seen.dues.includes("05-Sep-2026") && seen.dues.includes("19-Sep-2026"),
+      JSON.stringify(seen.dues)
+    );
+    ok(
+      "the course row stops claiming everything is submitted",
+      !!seen.cell && !/all submitted/.test(seen.cell),
+      String(seen.cell)
+    );
+    ok(
+      "🔔 comes back — there is now something in the future to remind about",
+      seen.buttons.some((b) => /remind me/.test(b)),
+      JSON.stringify(seen.buttons)
+    );
+    ok(
+      "the row VTOP timestamped is still read as uploaded",
+      !seen.dues.includes("16-Aug-2026"),
+      JSON.stringify(seen.dues)
+    );
+    await page.close();
+  }
+
   /* ============ DA page 2026: dues column + email reminder ============ */
   console.log("\n=== DA page (2026): upcoming dues + 🔔 email reminder ===");
   {
