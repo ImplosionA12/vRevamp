@@ -996,9 +996,11 @@ function sleep(ms) {
  * (user switched tabs while the page loads), and then every message was
  * silently dropped, killing all message-driven features on that tab.
  */
-const returnMessage = (messageToReturn, tabId) => {
+// `extra` rides along in the same envelope, for the messages that carry more
+// than their own name (semester_page_open names WHICH page opened).
+const returnMessage = (messageToReturn, tabId, extra) => {
   const send = (id) =>
-    chrome.tabs.sendMessage(id, { message: messageToReturn }, () => {
+    chrome.tabs.sendMessage(id, { message: messageToReturn, ...(extra || {}) }, () => {
       // No content script listening on this page; ignore.
       void chrome.runtime.lastError;
     });
@@ -1181,6 +1183,51 @@ const noteContentStatus = (details) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => content404.delete(tabId));
 
+/*
+ * The four semester-gated pages, by the URL VTOP POSTs when the page ITSELF is
+ * opened — not the endpoint it POSTs afterwards to fetch that semester's data.
+ * Read off the live portal 2026-08-19; the pairs are one apart by a "do"
+ * prefix, so each key keeps its parent path to stay unambiguous:
+ *
+ *   examinations/StudentMarkView          vs examinations/doStudentMarkView
+ *   examGradeView/StudentGradeView        vs examGradeView/doStudentGradeView
+ *   examinations/StudExamSchedule         vs examinations/doSearchExamScheduleForStudent
+ *   academics/common/StudentTimeTable     vs processViewTimeTable
+ *
+ * The names on the right are what js/shared/auto_semester.js registers under.
+ */
+const SEMESTER_PAGE_URLS = [
+  ["examinations/StudExamSchedule", "exam_schedule"],
+  ["examinations/StudentMarkView", "mark_view"],
+  /*
+   * Grades (examGradeView/StudentGradeView) is deliberately NOT here. Asked
+   * 2026-08-21: "in the grades you dont use this module at all so remove it in
+   * grades — and in grade history you provide the chance to change and check
+   * the grade". Right call: that page shows ONE semester, so a semester picked
+   * for you is a semester you did not ask for, while Grade History lists every
+   * subject ever taken and is where the calculator lives. The "exam_grade"
+   * DATA message below is untouched — grade_pages.js still decorates the table
+   * once a semester is chosen by hand.
+   */
+  ["academics/common/StudentTimeTable", "timetable_view"],
+  /*
+   * Attendance joined the registry on 2026-08-21, reported as "even the auto
+   * selecter in the attendance modue isnt wokingg". It had its own copy of
+   * this logic in js/attendance.js and none of the fixes the others got — in
+   * particular it read #semesterSubId the instant this message arrived, which
+   * is BEFORE VTOP's jQuery has written the picker, so the select was usually
+   * null and the page sat on "-- Choose Semester --".
+   *
+   * The third element is the exclusion, and it is not optional here: the
+   * per-subject endpoints (processViewStudentAttendanceDetail,
+   * …DetailDisplay) also contain "StudentAttendance", and the insights script
+   * fetches one per row. Without it, opening attendance would announce a
+   * freshly opened picker a dozen times over — the load loop this whole
+   * registry is written to avoid.
+   */
+  ["StudentAttendance", "attendance", /Detail|Display/],
+];
+
 /* Fires after the completion of a request */
 chrome.webRequest.onCompleted.addListener(
   async (details) => {
@@ -1196,6 +1243,35 @@ chrome.webRequest.onCompleted.addListener(
     // produced the "Page Unresponsive" freeze in 8055f0e. The icon needs no
     // message at all: showOfflineIcon.js renders itself on load and is
     // idempotent.
+    /*
+     * PAGE OPEN — a different event from the data POST, on the same page.
+     *
+     * A semester-gated page arrives in TWO steps. The menu click POSTs the
+     * page's own data-url and gets back a form with an empty #semesterSubId;
+     * only once a semester is chosen does VTOP POST the *data* endpoint. Every
+     * branch in the chain below listens for the second step — which is right
+     * for the scripts that decorate a rendered table, and exactly wrong for
+     * js/shared/auto_semester.js, whose entire job is to answer the picker.
+     * It was being told about the page only after somebody had answered it by
+     * hand, so on three of the four pages it could never run at all.
+     *
+     * Checked against the data-urls read live on 2026-08-19 (ROADMAP §"Live-
+     * read page shapes"): of the four, only the Time Table's happened to
+     * collide with an existing branch ("StudentTimeTable"), which is why that
+     * one page opened itself and Marks, Grades and Exam Schedule looked like
+     * the feature had never been built. Exam Schedule is the one that cost the
+     * most: its venue watcher only runs when its table renders.
+     *
+     * Deliberately NOT folded into the chain below as a widened match. This is
+     * a second event about the same URL, and widening e.g. the marks branch to
+     * catch it would also re-run modify_marks_page() against an empty form and
+     * cache that empty page over a good one. Separate event, separate message.
+     */
+    const opened = SEMESTER_PAGE_URLS.find(
+      ([path, , not]) => link.indexOf(path) !== -1 && !(not && not.test(link))
+    );
+    if (opened) returnMessage("semester_page_open", details.tabId, { page: opened[1] });
+
     if (link.indexOf("doStudentMarkView") !== -1) {
       notify("mark_view_page");
     } else if (link.indexOf("StudentTimeTable") !== -1) {
@@ -2239,6 +2315,45 @@ chrome.webRequest.onBeforeRequest.addListener(
       record.params = params;
     }
     chrome.storage.local.set({ vrevamp_detail_request: record });
+  },
+  { urls: VTOP_URLS },
+  ["requestBody"]
+);
+
+/*
+ * Learns the exam-schedule SEARCH request, the same way the block above learns
+ * the attendance-detail one and for the same reason: so the venue watcher can
+ * ask VTOP the question the student's own Search button asks, without anybody
+ * having to guess the parameter names.
+ *
+ * This is what lets js/exam_schedule.js check for a newly published venue from
+ * ANY VTOP page instead of only from the exam schedule page — the complaint
+ * being that the mail waited until that page was opened by hand. Recorded on
+ * the student's own click (or on the one auto_semester.js makes for them), so
+ * nothing here is invented: it is their request, replayed later with a fresh
+ * token, at most once every few hours, and only when they have already asked
+ * for these mails.
+ *
+ * `_csrf`, `authorizedID` and `x` are dropped on purpose — a stored token is
+ * stale by definition, and window.vrVtop.post supplies live ones per call.
+ */
+const EXAM_SEARCH_AUTH_PARAMS = ["_csrf", "authorizedID", "x"];
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+    if (details.url.indexOf("doSearchExamScheduleForStudent") === -1) return;
+    const path = details.url
+      .replace(/^https?:\/\/[^/]+\//, "")
+      .replace(/^vtop\//, "")
+      .split("?")[0];
+    const params = {};
+    const formData = (details.requestBody && details.requestBody.formData) || {};
+    Object.entries(formData).forEach(([key, value]) => {
+      if (EXAM_SEARCH_AUTH_PARAMS.includes(key)) return;
+      params[key] = Array.isArray(value) ? value[0] : value;
+    });
+    chrome.storage.local.set({ vrevamp_exam_search_request: { path, params } });
   },
   { urls: VTOP_URLS },
   ["requestBody"]

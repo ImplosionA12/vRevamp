@@ -98,26 +98,30 @@ let view_attendance_page = () => {
   });
 };
 
-/* Auto-semester: chooseCurrentSemester() picks the ongoing semester, but it
-   only sets the dropdown — VTOP never loads anything until its onchange
-   fires. Worse, during a sem transition the newest semester exists in the
-   dropdown with no attendance rows yet, so the "right" pick renders an empty
-   page. So: trigger VTOP's own load for the pick, and while the response has
-   no attendance rows, step down the fallback list (next most recent
-   semester) until one has data. */
-let autoSemQueue = null;
+/* Auto-semester. This page had the first implementation and the other four
+   were built from it — which is how it ended up the LAST to be fixed. Reported
+   2026-08-21 ("even the auto selecter in the attendance modue isnt wokingg"),
+   with the picker sitting on "-- Choose Semester --":
 
-const semesterSelect = () => document.getElementById("semesterSubId");
+   the handler below read #semesterSubId the moment "view_attendance_page"
+   arrived, and that message rides webRequest.onCompleted, which fires when the
+   RESPONSE completes — VTOP's jQuery writes the picker into the DOM after
+   that. So the select was usually null and the page was simply never answered.
+   js/shared/auto_semester.js already waits for it with a capped poll, and now
+   owns this page too (registered as "attendance"): one place that knows when
+   the picker exists, how to choose, and how to submit.
 
-// dispatching change runs VTOP's inline onchange (processStudentAttendance)
-const triggerAttendanceLoad = () => {
-  const sel = semesterSelect();
-  if (sel) sel.dispatchEvent(new Event("change", { bubbles: true }));
-};
+   The step-down walk is gone with it, for the reason measured the same day on
+   the Marks page: "no rows" does not mean "wrong semester", it usually means
+   the semester has only just begun. Stepping down answered that by showing
+   LAST semester's attendance under this semester's heading, which is a wrong
+   answer rather than an empty one. */
+
 
 // "Has data" = at least one row with Total Classes > 0. A just-opened
 // semester lists every registered course as 0/0 — that still means there's
-// no attendance to look at, so keep stepping down.
+// no attendance to look at. Kept here, and borrowed by the registry entry in
+// js/shared/auto_semester.js, because this page is the one that knows.
 const attendanceHasData = () => {
   const table = document.querySelector(".table-responsive table");
   if (!table) return false;
@@ -138,21 +142,12 @@ const attendanceHasData = () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "view_attendance_page") {
     try {
-      // if usable data is already on screen, leave it alone — re-triggering
-      // here on a repeated message caused a reload loop
-      if (!attendanceHasData()) {
-        chooseCurrentSemester();
-        const sel = semesterSelect();
-        if (sel && sel.selectedIndex > 0) {
-          autoSemQueue =
-            typeof semesterFallbackOrder === "function"
-              ? semesterFallbackOrder()
-                  .filter((i) => i !== sel.selectedIndex)
-                  .slice(0, 3)
-              : [];
-          triggerAttendanceLoad();
-        }
-      }
+      // Second chance only. The call that does the work is the one
+      // auto_semester.js makes on "semester_page_open", which waits for the
+      // picker to exist; by the time THIS message arrives the page has usually
+      // been answered, and on an answered page the call is a no-op.
+      if (typeof window.vrAutoSemesterFor === "function")
+        window.vrAutoSemesterFor("attendance");
     } catch (error) {
       console.error(error);
     } finally {
@@ -165,19 +160,6 @@ chrome.runtime.onMessage.addListener((request) => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "view_attendance") {
     try {
-      // schedule the empty-sem check BEFORE decorating, so a failure in the
-      // decorator can never skip the fallback walk. Give VTOP a moment to
-      // insert the response HTML before judging it.
-      setTimeout(() => {
-        if (!autoSemQueue) return;
-        const sel = semesterSelect();
-        if (attendanceHasData() || autoSemQueue.length === 0 || !sel) {
-          autoSemQueue = null; // found data (or nothing left to try)
-          return;
-        }
-        sel.selectedIndex = autoSemQueue.shift();
-        triggerAttendanceLoad();
-      }, 700);
       view_attendance_page();
     } catch (error) {
       console.error(error);

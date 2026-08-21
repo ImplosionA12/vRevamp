@@ -25,8 +25,12 @@ const exam_time_to_24h = (time_text) => {
 const exam_header_index = (row, re) =>
   [...row.cells].findIndex((c) => re.test(c.textContent));
 
-const find_schedule_table = () => {
-  for (const table of document.querySelectorAll("table")) {
+// `root` is document on the page itself, and a DOMParser document when the
+// venue watcher fetches the schedule in the background from some other VTOP
+// page. Everything below it reads textContent and .cells, both of which work
+// on a detached document with no layout.
+const find_schedule_table = (root = document) => {
+  for (const table of root.querySelectorAll("table")) {
     for (let i = 0; i < Math.min(table.rows.length, 4); i++) {
       const row = table.rows[i];
       if (
@@ -580,6 +584,61 @@ const exam_mail_body = (exams, examType, semester, opts) => {
 };
 
 /*
+ * The parsed schedule, cached under `vrevamp_exam_schedule`.
+ *
+ * Written from two places now — the page itself, and the background venue
+ * check below, which holds a FRESHER copy of exactly this table than the page
+ * cached last time. Everything that reads this key (the .ics export, the
+ * timetable → Calendar import, the daily digest, and the semester the auto
+ * picker matches on) therefore keeps up to date without the student opening
+ * the exam schedule page.
+ *
+ * `semesterId` is new and is what makes the background check possible at all:
+ * the cache used to record only the semester's NAME, and a name cannot be
+ * POSTed back to VTOP.
+ */
+const exam_schedule_cache = (table, cols, semester, semesterId) => {
+  try {
+    const cached = [];
+    for (let i = 0; i < table.rows.length; i++) {
+      const head = table.rows[i].children[0];
+      if (!head || head.className !== "panelHead-secondary") continue;
+      const type = vr_group_type(head);
+      exam_rows_of_group(table, i, cols).forEach((exam) => {
+        const times = exam.time.split("-");
+        cached.push({
+          type,
+          code: exam.code,
+          title: exam.title,
+          slot: exam.slot,
+          session: exam.session,
+          reporting: exam.reporting,
+          venue: exam.venue,
+          seatLoc: exam.seatLoc,
+          seatNo: exam.seatNo,
+          dateIso: exam_date_iso(exam.date),
+          start: exam_time_to_24h(times[0] || ""),
+          end: exam_time_to_24h(times[1] || ""),
+        });
+      });
+    }
+    if (!cached.length) return;
+    const sem = document.querySelector("#semesterSubId");
+    const onPage = sem && sem.selectedIndex >= 0 ? sem.options[sem.selectedIndex] : null;
+    chrome.storage.local.set({
+      vrevamp_exam_schedule: {
+        fetchedAt: Date.now(),
+        semester: semester || (onPage ? onPage.innerText.trim() : ""),
+        semesterId: semesterId || (sem ? sem.value : "") || "",
+        exams: cached,
+      },
+    });
+  } catch (error) {
+    console.warn("vRevamp exam schedule: cache", error);
+  }
+};
+
+/*
  * ===================== the venue watcher =====================
  *
  * Asked for 2026-08-16: *"before the exam it should come with the venue
@@ -611,6 +670,7 @@ const exam_mail_body = (exams, examType, semester, opts) => {
  * a *change* — a venue corrected from CB-324 to CB-101 mails again, and an
  * unchanged one never does.
  */
+
 const EXAM_MAIL_STATE_KEY = "vrevamp_exam_mail_state";
 
 // "-", "", "--", whitespace — VTOP's several ways of writing "not yet"
@@ -672,12 +732,18 @@ const exam_mail_remember = async (examType, exams, optIn) => {
 // send the same mail several times over.
 let exam_venue_watch_busy = false;
 
-const exam_venue_watch = async (table, cols) => {
-  if (exam_venue_watch_busy) return null;
+// `semesterName` is supplied by the background check, which has no picker on
+// screen to read it off. `opts.holdsLock` says the caller already owns
+// exam_venue_watch_busy — it does the fetch, and holding the flag across that
+// fetch is what stops the page path and the background path from both
+// deciding to send the same mail.
+const exam_venue_watch = async (table, cols, semesterName, opts) => {
+  const holdsLock = !!(opts && opts.holdsLock);
+  if (!holdsLock && exam_venue_watch_busy) return null;
   const state = await exam_mail_state();
   if (!state.optIn) return null; // 📧 has never been pressed — stay silent
 
-  exam_venue_watch_busy = true;
+  if (!holdsLock) exam_venue_watch_busy = true;
   try {
     for (let i = 0; i < table.rows.length; i++) {
       const head = table.rows[i].children[0];
@@ -711,7 +777,8 @@ const exam_venue_watch = async (table, cols) => {
 
       const sem = document.querySelector("#semesterSubId");
       const semester =
-        sem && sem.selectedIndex >= 0 ? sem.options[sem.selectedIndex].innerText.trim() : "";
+        semesterName ||
+        (sem && sem.selectedIndex >= 0 ? sem.options[sem.selectedIndex].innerText.trim() : "");
       // The mail always carries the WHOLE upcoming group, not just the rows
       // that changed — the format the student asked for is the full list, and
       // a mail showing one exam out of six reads like something went wrong.
@@ -739,9 +806,136 @@ const exam_venue_watch = async (table, cols) => {
   } catch (error) {
     console.warn("vRevamp exam schedule: venue watch", error);
   } finally {
-    exam_venue_watch_busy = false;
+    if (!holdsLock) exam_venue_watch_busy = false;
   }
   return null;
+};
+
+/*
+ * ============ the venue watcher, without the exam schedule page ============
+ *
+ * Reported 2026-08-20: *"it waited until i open the exam schedule to mail me
+ * when the venue got updated"*. Exactly what the note above describes as the
+ * design — "the check runs where the data legitimately arrives" — and it is
+ * one page too narrow. Venues are published overnight in a batch; a student
+ * who opens VTOP for attendance and never touches Exam Schedule learns nothing
+ * until the day they happen to look.
+ *
+ * So the check now runs from ANY VTOP page, by asking VTOP the one question
+ * the Search button asks. What has NOT changed is the rule that mattered:
+ * nothing is fetched without the student present and signed in. There is still
+ * no alarm, no background session, no stored cookie — this is one POST on a
+ * page the student opened themselves, on their own live session.
+ *
+ * Every guard the ROADMAP asks for is on it:
+ *
+ *  1. **It is their own request, not a guessed one.** The service worker
+ *     records the real search POST (path and parameters) the first time it is
+ *     made — by them or by auto_semester.js — exactly as it already learns the
+ *     attendance-detail endpoint. Only if nothing has been recorded yet does
+ *     this fall back to a named guess, and that guess is marked `probe` so a
+ *     404 from it cannot trip the session breaker.
+ *  2. **Through window.vrVtop.post**, so it inherits the circuit breaker, the
+ *     single non-empty _csrf, and the "200 carrying a session-expired page"
+ *     check. Three refusals and vRevamp stops talking to VTOP entirely.
+ *  3. **Once every three hours at most**, and the clock is written BEFORE the
+ *     request, so a failure costs one POST per window rather than one per page
+ *     load. Compare the attendance refresh, which was declined as "a once-a-day
+ *     replay is the same bet": that one had no student-initiated original to
+ *     copy and no state that made it worth the risk. This one is a single read
+ *     of a page they have already opened, gated on them having asked for the
+ *     mail.
+ *  4. **Nothing to ask about, nothing sent.** It needs an opt-in, a cached
+ *     semester id, and at least one exam still ahead. Out of exam season this
+ *     costs one storage read per page and never touches the network.
+ *
+ * It also refreshes `vrevamp_exam_schedule` from what it fetched, so the .ics
+ * export, the Calendar import and the daily digest stop showing "-" for a
+ * venue that VTOP published days ago.
+ */
+const EXAM_BG_CHECK_KEY = "vrevamp_exam_bg_check";
+const EXAM_BG_MIN_GAP_MS = 3 * 3600 * 1000;
+// only used when the worker has never recorded a real one — see (1)
+const EXAM_BG_SEARCH_PATH = "examinations/doSearchExamScheduleForStudent";
+
+let exam_bg_inflight = false;
+
+const exam_bg_has_upcoming = (cache) => {
+  const now = new Date();
+  const todayIso =
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-` +
+    String(now.getDate()).padStart(2, "0");
+  return ((cache && cache.exams) || []).some((e) => e.dateIso && e.dateIso >= todayIso);
+};
+
+const exam_venue_background_check = async () => {
+  if (exam_bg_inflight) return null;
+  // The exam schedule page is showing the table already: the sync path watches
+  // it directly, and re-asking VTOP for what is on screen is pure waste.
+  if (find_schedule_table()) return null;
+
+  exam_bg_inflight = true;
+  try {
+    const state = await exam_mail_state();
+    if (!state.optIn) return null; // 📧 has never been pressed — stay silent
+
+    const store = await chrome.storage.local.get([
+      "vrevamp_exam_schedule",
+      "vrevamp_exam_search_request",
+      EXAM_BG_CHECK_KEY,
+    ]);
+    const cache = store.vrevamp_exam_schedule;
+    // no semester id means the exam page has not been opened since this
+    // version shipped — the next visit records one, and this starts working
+    if (!cache || !cache.semesterId) return null;
+    if (!exam_bg_has_upcoming(cache)) return null; // exam season is over
+
+    const last = (store[EXAM_BG_CHECK_KEY] || {}).at || 0;
+    if (Date.now() - last < EXAM_BG_MIN_GAP_MS) return null;
+
+    // Signed in, and the breaker has not already given up on this session.
+    if (!window.vrVtop || window.vrVtop.tripped) return null;
+    if (!window.vrVtop.csrf() || !window.vrVtop.authorizedID()) return null;
+
+    // BEFORE the request, deliberately — see (3).
+    await chrome.storage.local.set({ [EXAM_BG_CHECK_KEY]: { at: Date.now() } });
+
+    // Held across the fetch, not just across the send: the page path must not
+    // read the same "not mailed yet" state while this one is deciding to mail.
+    exam_venue_watch_busy = true;
+
+    const learned = store.vrevamp_exam_search_request;
+    const html = await window.vrVtop.post(
+      (learned && learned.path) || EXAM_BG_SEARCH_PATH,
+      { ...((learned && learned.params) || {}), semesterSubId: cache.semesterId },
+      { probe: !learned }
+    );
+    const found = find_schedule_table(window.vrVtop.parse(html));
+    if (!found) {
+      vr_log("venue watcher (background): the reply carried no schedule table");
+      return null;
+    }
+
+    exam_schedule_cache(found.table, found.cols, cache.semester, cache.semesterId);
+    const sent = await exam_venue_watch(found.table, found.cols, cache.semester, {
+      holdsLock: true,
+    });
+    vr_log(
+      sent
+        ? `venue watcher (background): mailed ${sent.sent} exam(s) to ${sent.to}`
+        : "venue watcher (background): checked, nothing new to mail"
+    );
+    return sent;
+  } catch (error) {
+    // A refusal here is already counted by vrVtop's breaker; this path stays
+    // quiet either way, because it runs on pages that have nothing to do with
+    // exams and must never put anything on screen.
+    vr_log("venue watcher (background): skipped —", String((error && error.message) || error));
+    return null;
+  } finally {
+    exam_venue_watch_busy = false;
+    exam_bg_inflight = false;
+  }
 };
 
 /*
@@ -894,43 +1088,7 @@ let exam_schedule_sync = () => {
 
   // cache the parsed schedule so the timetable → Google Calendar import can
   // add exam events without needing this page open at the time
-  try {
-    const cached = [];
-    for (let i = 0; i < table.rows.length; i++) {
-      const head = table.rows[i].children[0];
-      if (!head || head.className !== "panelHead-secondary") continue;
-      const type = vr_group_type(head);
-      exam_rows_of_group(table, i, cols).forEach((exam) => {
-        const times = exam.time.split("-");
-        cached.push({
-          type,
-          code: exam.code,
-          title: exam.title,
-          slot: exam.slot,
-          session: exam.session,
-          reporting: exam.reporting,
-          venue: exam.venue,
-          seatLoc: exam.seatLoc,
-          seatNo: exam.seatNo,
-          dateIso: exam_date_iso(exam.date),
-          start: exam_time_to_24h(times[0] || ""),
-          end: exam_time_to_24h(times[1] || ""),
-        });
-      });
-    }
-    if (cached.length) {
-      const sem = document.querySelector("#semesterSubId");
-      chrome.storage.local.set({
-        vrevamp_exam_schedule: {
-          fetchedAt: Date.now(),
-          semester: sem ? sem.options[sem.selectedIndex].innerText.trim() : "",
-          exams: cached,
-        },
-      });
-    }
-  } catch (error) {
-    console.warn("vRevamp exam schedule: cache", error);
-  }
+  exam_schedule_cache(table, cols);
 
   // Has VTOP published a venue since the last mail? If so, mail it — same
   // format, sent automatically. No-op unless 📧 has been pressed once, and
@@ -1077,32 +1235,44 @@ const exam_schedule_sync_with_retries = () => {
   tick();
 };
 
-/*
- * Is the schedule actually on screen? Checked by CONTENT, not by the presence
- * of a table: this page renders its semester picker inside markup of its own,
- * and "a table exists" would be true before any exam had loaded.
- */
-const exam_schedule_rendered = () =>
-  Array.from(document.querySelectorAll("table")).some((t) =>
-    /exam\s*date|venue/i.test(t.innerText || "")
-  );
-
 chrome.runtime.onMessage.addListener((request) => {
+  if (!request) return;
+
   if (request.message === "exam_schedule") {
     /*
      * Pick the semester and press Search, so the page opens showing the
-     * schedule instead of an empty form (asked for 2026-08-19). This page is
-     * the one that needed it most: its #semesterSubId carries no onchange, so
-     * unlike Marks/Grades/Time Table a change event alone renders nothing —
-     * verified live the same day. Three manual steps stood between opening the
-     * page and the venue watcher below ever running.
+     * schedule instead of an empty form (asked for 2026-08-19). The call that
+     * does the work is the one auto_semester.js makes on "semester_page_open";
+     * by the time THIS message arrives a semester has already been searched,
+     * so this is a second chance and a no-op on a rendered page.
      */
-    if (typeof window.vrAutoSemester === "function")
-      window.vrAutoSemester({
-        name: "exam_schedule",
-        loaded: exam_schedule_rendered,
-        submit: window.vrSemesterSearch,
-      });
+    if (typeof window.vrAutoSemesterFor === "function")
+      window.vrAutoSemesterFor("exam_schedule");
     exam_schedule_sync_with_retries();
+    return;
+  }
+
+  // Any arrival on VTOP is a chance to notice a newly published venue, whether
+  // or not the exam schedule page is the one being opened — see the background
+  // check above. Cheap and rate-limited, so extra triggers cost nothing.
+  if (
+    request.message === "nav_bar_change" ||
+    request.message === "vtop2_nav_bar" ||
+    request.message === "view_attendance_page" ||
+    // …but not when the page opening IS the exam schedule: auto_semester.js is
+    // about to search it for real, and asking VTOP the same question twice
+    // would also spend the three-hour budget on the one page that never
+    // needed it
+    (request.message === "semester_page_open" && request.page !== "exam_schedule")
+  ) {
+    exam_venue_background_check();
   }
 });
+
+/*
+ * …and once per page, without waiting for a message at all. The messages above
+ * cover the common arrivals, but they are routed off specific URLs and a
+ * student who lands somewhere unrouted would still get nothing. This costs one
+ * storage read on a page with no exams pending.
+ */
+setTimeout(exam_venue_background_check, 6000);

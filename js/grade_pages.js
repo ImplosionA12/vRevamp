@@ -79,13 +79,10 @@ let addGpaRow = (root, credits) => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "exam_grade") {
     try {
-      // same, via doViewExamGrade
-      if (typeof window.vrAutoSemester === "function")
-        window.vrAutoSemester({
-          name: "exam_grade",
-          loaded: () => !!document.getElementById("studentGradeView"),
-          submit: window.vrSemesterChange,
-        });
+      // No auto-semester here by design (2026-08-21): this page shows one
+      // semester at a time, so picking one for the student picks what they
+      // came to look at. Grade History is where every subject is listed and
+      // where the calculator lives. We decorate whatever they chose.
       modify_grade_page();
     } catch (error) {
       console.log(error);

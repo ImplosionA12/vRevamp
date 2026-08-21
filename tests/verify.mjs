@@ -182,6 +182,9 @@ const initScript = (fixedMs, storageSeed) => `
     downloads: { download: () => {} },
   };
   window.__dispatch = (message) => window.__listeners.forEach((l) => { try { l({ message }, {}, () => {}); } catch(e){ console.error('listener', e);} });
+  // the same, for the messages that carry more than their own name
+  // (semester_page_open names WHICH page opened)
+  window.__dispatchMsg = (msg) => window.__listeners.forEach((l) => { try { l(msg, {}, () => {}); } catch(e){ console.error('listener', e);} });
   // capture .ics / png downloads triggered via anchor clicks
   const realClick = HTMLAnchorElement.prototype.click;
   HTMLAnchorElement.prototype.click = function(){
@@ -1908,94 +1911,142 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
-  /* ============ attendance: auto-semester with empty-sem fallback ============ */
-  console.log("\n=== attendance auto-semester: triggers load, steps past empty semesters ===");
+  /* ========== attendance: one decisive pick, and never a walk ==========
+   *
+   * REWRITTEN 2026-08-21. The old block asserted the step-down walk —
+   * "walked Fall 26-27 -> Summer II -> Winter (3 loads, stops there)" — which
+   * is the behaviour that had to go. Measured on the live Marks page the same
+   * day: a semester with no rows is almost always a semester that has only
+   * just begun, not a wrong guess. Answering that by loading LAST semester
+   * under this semester's heading is a wrong answer rather than an empty one.
+   *
+   * The page is also no longer driven by attendance.js's own copy of the
+   * logic: it is registered as "attendance" in js/shared/auto_semester.js and
+   * answers `semester_page_open`, which is the message that fires when the
+   * PICKER arrives rather than after somebody has already answered it.
+   */
+  console.log("\n=== attendance auto-semester: one decisive pick, no walk ===");
   {
-    // sem-transition window: Fall 2026-27 exists in the dropdown (started
-    // 4 days ago per the heuristic) but every course is 0/0 — registered,
-    // no attendance posted; Summer II has no table at all. The auto-select
-    // must trigger VTOP's own onchange load and walk down to Winter
-    // 2025-26, the newest semester with actual attendance.
     const fixed = new Date("2026-07-05T10:00:00+05:30").getTime();
-    const page = await newPage(browser);
-    await page.setContent(`<body><div class="box-body">
-      <select id="semesterSubId">
-        <option value="">-- Choose Semester --</option>
-        <option value="AP2026272">FALL SEMESTER 2026-27 - AMR</option>
-        <option value="AP2025267">Summer Semester-II 2025-26 - AMR</option>
-        <option value="AP2025264">Winter Semester 2025-26 - AMR</option>
-      </select>
-      <div id="content-area"></div>
-    </div></body>`);
-    await shim(page, { fixedMs: fixed });
-    // stand-in for VTOP's processStudentAttendance(): render rows only for
-    // Winter, then fire view_attendance like the service worker would
-    await page.addScriptTag({ content: `
-      window.__semChanges = 0;
-      const sel = document.getElementById("semesterSubId");
-      sel.addEventListener("change", () => {
-        window.__semChanges++;
-        const t = sel.options[sel.selectedIndex].text;
-        const c = document.getElementById("content-area");
-        const tbl = (rows) =>
-          '<div class="table-responsive"><table>' +
-          '<thead><tr><th>Sl.No.</th><th>Course Detail</th><th>Attended Classes</th><th>Total Classes</th></tr></thead>' +
-          "<tbody>" + rows + "</tbody></table></div>";
-        if (/winter/i.test(t))
-          c.innerHTML = tbl("<tr><td>1</td><td>ECE2015 - Theory</td><td>48</td><td>58</td></tr>");
-        else if (/fall/i.test(t))
-          // registered courses, nothing posted yet — must count as "no data"
-          c.innerHTML = tbl("<tr><td>1</td><td>SWE2009 - Theory</td><td>0</td><td>0</td></tr>");
-        else c.innerHTML = "";
-        setTimeout(() => window.__dispatch("view_attendance"), 50);
+
+    // `fallRows` is what VTOP returns for the semester the student is in:
+    // real attendance in one case, registered-but-nothing-posted in the other.
+    const attendancePage = async (fallRows) => {
+      const page = await newPage(browser);
+      await page.setContent(`<body><div class="box-body">
+        <select id="semesterSubId">
+          <option value="">-- Choose Semester --</option>
+          <option value="AP2026272">FALL SEMESTER 2026-27 - AMR</option>
+          <option value="AP2025267">Summer Semester-II 2025-26 - AMR</option>
+          <option value="AP2025264">Winter Semester 2025-26 - AMR</option>
+        </select>
+        <div id="content-area"></div>
+      </div></body>`);
+      await shim(page, { fixedMs: fixed });
+      // stand-in for VTOP's processStudentAttendance(), then the data message
+      // the service worker sends once the rows come back
+      await page.addScriptTag({
+        content: `
+        window.__semChanges = 0;
+        const sel = document.getElementById("semesterSubId");
+        sel.addEventListener("change", () => {
+          window.__semChanges++;
+          const t = sel.options[sel.selectedIndex].text;
+          const c = document.getElementById("content-area");
+          const tbl = (rows) =>
+            '<div class="table-responsive"><table>' +
+            '<thead><tr><th>Sl.No.</th><th>Course Detail</th><th>Attended Classes</th><th>Total Classes</th></tr></thead>' +
+            "<tbody>" + rows + "</tbody></table></div>";
+          if (/winter/i.test(t))
+            c.innerHTML = tbl("<tr><td>1</td><td>ECE2015 - Theory</td><td>40</td><td>50</td></tr>");
+          else if (/fall/i.test(t)) c.innerHTML = tbl(${JSON.stringify(fallRows)});
+          else c.innerHTML = "";
+          setTimeout(() => window.__dispatch("view_attendance"), 50);
+        });
+      `,
       });
-    ` });
-    await inject(page, [
-      "js/store/store.js",
-      "js/store/saveAttendancePage.js",
-      "js/utils/chooseCurrentSem.js",
-      "js/attendance.js",
-    ]);
-    await page.evaluate(() => window.__dispatch("view_attendance_page"));
-    await delay(3000);
+      await inject(page, [
+        "js/store/store.js",
+        "js/store/saveAttendancePage.js",
+        "js/utils/chooseCurrentSem.js",
+        "js/shared/auto_semester.js",
+        "js/attendance.js",
+      ]);
+      return page;
+    };
 
-    const state = await page.evaluate(() => {
-      const sel = document.getElementById("semesterSubId");
-      return {
-        selected: sel.options[sel.selectedIndex].text,
-        changes: window.__semChanges,
-        rows: document.querySelectorAll(".table-responsive tbody tr").length,
-        alert: (document.querySelector(".vrevamp-bunk-cell") || {}).textContent || null,
-      };
-    });
-    ok(
-      "walked Fall 26-27 -> Summer II -> Winter (3 loads, stops there)",
-      /winter/i.test(state.selected) && state.changes === 3,
-      `selected="${state.selected}" loads=${state.changes}`
-    );
-    ok("attendance rows loaded without manual reselect", state.rows === 1);
-    // 48/58 at the 75% limit -> floor((4*48 - 3*58)/3) = 6 skippable
-    ok(
-      "75% alert column decorated on the auto-loaded table",
-      state.alert === "Only 6 class(es) can be Skipped",
-      state.alert || "no alert cell"
-    );
+    const readState = (page) =>
+      page.evaluate(() => {
+        const sel = document.getElementById("semesterSubId");
+        return {
+          selected: sel.options[sel.selectedIndex].text,
+          changes: window.__semChanges,
+          rows: document.querySelectorAll(".table-responsive tbody tr").length,
+          alert: (document.querySelector(".vrevamp-bunk-cell") || {}).textContent || null,
+        };
+      });
 
-    // loop regression: a repeated view_attendance_page (e.g. a detail fetch
-    // misrouted by the service worker) must NOT re-trigger a load while
-    // usable data is on screen
-    await page.evaluate(() => window.__dispatch("view_attendance_page"));
-    await delay(1200);
-    const after = await page.evaluate(() => ({
-      changes: window.__semChanges,
-      selected: document.getElementById("semesterSubId").selectedOptions[0].text,
-    }));
-    ok(
-      "repeated page message does not reload (no loop)",
-      after.changes === 3 && /winter/i.test(after.selected),
-      `loads=${after.changes} selected="${after.selected}"`
-    );
-    await page.close();
+    // The ordinary case: the semester the student is in has attendance.
+    {
+      const page = await attendancePage(
+        "<tr><td>1</td><td>ECE2015 - Theory</td><td>48</td><td>58</td></tr>"
+      );
+      await page.evaluate(() =>
+        window.__dispatchMsg({ message: "semester_page_open", page: "attendance" })
+      );
+      await delay(1500);
+      const state = await readState(page);
+      ok(
+        "the picker is answered with the student's own semester, once",
+        /fall/i.test(state.selected) && state.changes === 1,
+        `selected="${state.selected}" loads=${state.changes}`
+      );
+      ok("attendance rows loaded without a manual reselect", state.rows === 1);
+      // 48/58 at the 75% limit -> floor((4*48 - 3*58)/3) = 6 skippable
+      ok(
+        "75% alert column decorated on the auto-loaded table",
+        state.alert === "Only 6 class(es) can be Skipped",
+        state.alert || "no alert cell"
+      );
+
+      // loop regression: a repeated page message (e.g. a detail fetch the
+      // worker misrouted) must not re-trigger a load
+      await page.evaluate(() =>
+        window.__dispatchMsg({ message: "semester_page_open", page: "attendance" })
+      );
+      await page.evaluate(() => window.__dispatch("view_attendance_page"));
+      await delay(1200);
+      const after = await readState(page);
+      ok(
+        "repeated page messages do not reload (no loop)",
+        after.changes === 1 && /fall/i.test(after.selected),
+        `loads=${after.changes} selected="${after.selected}"`
+      );
+      await page.close();
+    }
+
+    /*
+     * THE ONE THE WALK USED TO GET WRONG: registration is done, the semester
+     * has begun, and every course still reads 0/0 because no class has been
+     * marked yet. The old code read that as "wrong semester" and loaded Winter
+     * 2025-26 instead. It must now stay put and show an honest empty table.
+     */
+    {
+      const page = await attendancePage(
+        "<tr><td>1</td><td>SWE2009 - Theory</td><td>0</td><td>0</td></tr>"
+      );
+      await page.evaluate(() =>
+        window.__dispatchMsg({ message: "semester_page_open", page: "attendance" })
+      );
+      await delay(1800);
+      const state = await readState(page);
+      ok(
+        "a semester with nothing posted yet is not 'corrected' to the last one",
+        /fall/i.test(state.selected) && state.changes === 1,
+        `selected="${state.selected}" loads=${state.changes}`
+      );
+      await page.close();
+    }
   }
 
   /* ============ login page: reload guard (flicker regression) ============ */
@@ -2106,17 +2157,34 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       `reloads=${picker.reloads} captchaFetches=${captchaHits}`
     );
 
-    // --- reCAPTCHA page: healthy, nothing missing ---
+    /* --- reCAPTCHA page: the one you cannot log in from ---
+     *
+     * INVERTED 2026-08-22. This used to assert "left alone", on the strength
+     * of a DOM reading showing the page rendered exactly as VTOP intended.
+     * It does — and it still will not authenticate: "without the captcha we
+     * cant login no matter how many times i click submit". Rendering correctly
+     * and working are different properties, and only the first is visible in
+     * the DOM. So the page is reloaded until VTOP serves the image captcha.
+     *
+     * Both halves matter: it must ask, and it must stop asking. Injected more
+     * times than the budget allows, the reload count must equal the cap and
+     * not the number of injections.
+     */
     await page.goto("https://vtop.test/recaptcha");
     await page.addScriptTag({ content: trapReloads });
     await resetCounter();
     captchaHits = 0;
-    for (let i = 0; i < 3; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
-    await delay(300);
+    for (let i = 0; i < 8; i++) await inject(page, ["js/captcha/refreshTillCaptcha.js"]);
+    await delay(500);
     const recap = await state();
     ok(
-      "reCAPTCHA login page is left alone (invisible captcha is not a missing one)",
-      recap.reloads === 0 && recap.counter === null && captchaHits === 0,
+      "reCAPTCHA login page is reloaded to hunt for the image captcha",
+      recap.reloads > 0 && captchaHits === 0,
+      JSON.stringify({ ...recap, captchaHits })
+    );
+    ok(
+      "…and the hunt is capped, so it can never become a reload loop",
+      recap.reloads === 5 && recap.counter === "5",
       JSON.stringify({ ...recap, captchaHits })
     );
 
@@ -2171,7 +2239,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       JSON.stringify({ ...otp, captchaHits })
     );
 
-    // --- a dead load is the ONLY thing a reload is still used for ---
+    // --- a dead load is reloaded too, on the same shared budget ---
     await page.goto("https://vtop.test/empty");
     await page.addScriptTag({ content: trapReloads });
     await resetCounter();
@@ -2179,7 +2247,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const empty = await state();
     ok(
       "a genuinely empty page is retried, capped per tab so it cannot loop",
-      empty.reloads === 3 && empty.counter === "3",
+      empty.reloads === 5 && empty.counter === "5",
       `reloads=${empty.reloads} counter=${empty.counter}`
     );
 
@@ -4481,18 +4549,26 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         }));
         ok(
           "it presses Search itself instead of leaving an empty picker",
-          r.submits.length >= 1 && r.submits[0] === "AP1",
+          r.submits.length >= 1 && r.submits[0] === "AP2",
           JSON.stringify(r)
         );
         ok(
-          "a semester with no schedule steps down to the one that has it",
-          r.rendered && r.value === "AP2",
+          "it lands on the student's own semester without a second attempt",
+          r.rendered && r.value === "AP2" && r.submits.length === 1,
           JSON.stringify(r)
         );
         await p.close();
       }
 
-      // THE SAFETY PROPERTY: re-fired messages must not re-submit.
+      /*
+       * THE SAFETY PROPERTY: re-fired messages must not re-submit — and, since
+       * 2026-08-21, a semester that renders nothing must not be "corrected"
+       * either. Measured live that day: the Marks page shows ZERO tables for
+       * the semester the student is actually in, because it is August and no
+       * marks have been published. The old walk read that as a wrong guess and
+       * stepped through Freshers → Transport → Fast Track, ending on a junk
+       * semester after four POSTs. Empty is an answer; one submit, and stop.
+       */
       {
         const p = await semPage();
         await p.evaluate(async () => {
@@ -4517,8 +4593,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         await delay(900);
         const submits = await p.evaluate(() => window.submits);
         ok(
-          "a page that never renders is tried a few times and then left alone",
-          submits.length > 0 && submits.length <= 4,
+          "a semester that renders nothing is submitted once and then left alone",
+          submits.length === 1,
           `${submits.length} submits: ${JSON.stringify(submits)}`
         );
         await p.close();
@@ -4614,7 +4690,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         const r = await p.evaluate(() => window.submits);
         ok(
           "with no cache it falls back to parsing rather than doing nothing",
-          r.length >= 1 && r[0] === "AP1",
+          r.length >= 1 && r[0] === "AP2",
           JSON.stringify(r)
         );
         await p.close();
@@ -4640,7 +4716,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         });
         ok(
           "the onchange pages are driven by a change event, not a button",
-          r.changes.length === 1 && r.changes[0] === "AP1",
+          r.changes.length === 1 && r.changes[0] === "AP2",
           JSON.stringify(r)
         );
         await p.close();
@@ -7197,6 +7273,1205 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       (urgent ? urgent.html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ") : "no mail").slice(0, 200)
     );
     await page.close();
+  }
+
+  /* ====== the page-open message: the wiring auto_semester.js never had ======
+   *
+   * Reported 2026-08-20: "the auto selecter of semester didnt work". The
+   * picking was fine; nothing ever asked it to pick. Every caller hung off the
+   * message the worker sends for that page, and those are all routed off the
+   * page's DATA endpoint — which VTOP only POSTs once a semester has been
+   * chosen by hand. Of the four data-urls exactly one, the Time Table's,
+   * happened to collide with an existing branch.
+   *
+   * These assertions were checked against the pre-fix worker first: the four
+   * "announces ..." ones all failed there, and the "data load, not a page
+   * open" ones passed, which is the pair that says the fix is the missing half
+   * rather than a re-labelling of what was already sent.
+   */
+  console.log("\n=== semester_page_open: the message that announces the picker ===");
+  {
+    const manifest = JSON.parse(read("manifest.json"));
+    const evt = () => ({ addListener: () => {}, removeListener: () => {} });
+    const nsProxy = (seed = {}) =>
+      new Proxy({ ...seed }, {
+        get(t, k) {
+          if (k in t) return t[k];
+          if (typeof k === "string" && /^on[A-Z]/.test(k)) return (t[k] = evt());
+          return (t[k] = (...a) => {
+            const cb = a[a.length - 1];
+            if (typeof cb === "function") return cb(undefined);
+            return Promise.resolve(undefined);
+          });
+        },
+      });
+
+    let onCompleted = null;
+    const onBefore = [];
+    const sent = [];
+    const store = {};
+    const chromeStub = {
+      runtime: nsProxy({ lastError: null, getManifest: () => manifest, id: "test" }),
+      webRequest: nsProxy({
+        onCompleted: { addListener: (fn) => { onCompleted = fn; }, removeListener: () => {} },
+        onBeforeRequest: { addListener: (fn) => onBefore.push(fn), removeListener: () => {} },
+      }),
+      tabs: nsProxy({
+        sendMessage: (tabId, msg) => { sent.push({ tabId, msg }); },
+        onRemoved: evt(),
+        query: (_q, cb) => cb([]),
+      }),
+      storage: {
+        local: nsProxy({
+          get: (keys) => {
+            const out = {};
+            for (const k of [].concat(keys)) if (k in store) out[k] = store[k];
+            return Promise.resolve(out);
+          },
+          set: (obj) => (Object.assign(store, obj), Promise.resolve()),
+        }),
+        session: nsProxy(),
+        sync: nsProxy(),
+      },
+    };
+    for (const perm of manifest.permissions || []) if (!(perm in chromeStub)) chromeStub[perm] = nsProxy();
+    if (manifest.action) chromeStub.action = nsProxy();
+
+    const ctx = vm.createContext({
+      chrome: chromeStub,
+      console: { log: () => {}, warn: () => {}, error: () => {} },
+      setTimeout, clearTimeout, setInterval, clearInterval,
+      fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+      URL, URLSearchParams, TextEncoder, TextDecoder, structuredClone, atob, btoa,
+    });
+    ctx.self = ctx;
+    ctx.globalThis = ctx;
+    vm.runInContext(read("service_worker/background.js"), ctx, { filename: "background.js" });
+
+    const VT = "https://vtop.vitap.ac.in/vtop/";
+    // every hit is a 200 so the session_repair detector stays out of the way
+    const load = (path) => {
+      sent.length = 0;
+      onCompleted({ url: VT + path, method: "POST", statusCode: 200, tabId: 4, type: "xmlhttprequest" });
+      return sent.map((s) => s.msg);
+    };
+    const opens = (msgs) =>
+      (msgs.find((m) => m.message === "semester_page_open") || {}).page || null;
+
+    if (typeof onCompleted !== "function") {
+      ok("worker registers a webRequest.onCompleted listener", false, "missing");
+    } else {
+      // The live data-urls, read off the portal 2026-08-19.
+      const cases = [
+        ["examinations/StudExamSchedule", "exam_schedule"],
+        ["examinations/StudentMarkView", "mark_view"],
+        ["academics/common/StudentTimeTable", "timetable_view"],
+        ["academics/common/StudentAttendance", "attendance"],
+      ];
+      for (const [path, page] of cases) {
+        const msgs = load(path);
+        ok(
+          "opening " + path.split("/").pop() + " announces the picker (page: " + page + ")",
+          opens(msgs) === page,
+          JSON.stringify(msgs)
+        );
+      }
+
+      /*
+       * And the endpoint each page POSTs AFTERWARDS must not announce itself
+       * as a page open. The two names differ only by a "do" prefix, so a
+       * careless substring match would make every rendered table look like a
+       * freshly opened picker — which is the load loop auto_semester.js is
+       * built to avoid, arriving through the front door.
+       */
+      const after = [
+        ["examinations/doSearchExamScheduleForStudent", "exam_schedule"],
+        ["examinations/doStudentMarkView", "mark_view_page"],
+        ["examinations/examGradeView/doStudentGradeView", "exam_grade"],
+      ];
+      for (const [path, still] of after) {
+        const msgs = load(path);
+        ok(
+          path.split("/").pop() + " is a data load, not a page open",
+          opens(msgs) === null && msgs.some((m) => m.message === still),
+          JSON.stringify(msgs)
+        );
+      }
+
+      /*
+       * Grades is deliberately absent from the registry (2026-08-21): one
+       * semester on screen means a semester chosen for you is a semester you
+       * did not ask for. It must still get its DATA message, or the table
+       * stops being decorated.
+       */
+      {
+        const pageMsgs = load("examinations/examGradeView/StudentGradeView");
+        const dataMsgs = load("examinations/examGradeView/doStudentGradeView");
+        ok(
+          "the Grades page is never announced, but its data load still is",
+          opens(pageMsgs) === null &&
+            opens(dataMsgs) === null &&
+            dataMsgs.some((m) => m.message === "exam_grade"),
+          JSON.stringify({ pageMsgs, dataMsgs })
+        );
+      }
+
+      /*
+       * The attendance exclusion. These carry "StudentAttendance" as a
+       * substring and the insights script fetches one PER ROW, so without the
+       * third field in the registry each one would announce a freshly opened
+       * picker — a dozen page-opens for one visit.
+       */
+      for (const path of [
+        "processViewStudentAttendanceDetail",
+        "academics/common/StudentAttendanceDetailDisplay",
+      ]) {
+        ok(
+          path.split("/").pop() + " is a per-row fetch, not a page open",
+          opens(load(path)) === null,
+          JSON.stringify(load(path))
+        );
+      }
+    }
+
+    /*
+     * The other half of the venue fix: the worker records the real search
+     * request, so the background check replays the student's own POST instead
+     * of a guessed one. Same mechanism that already learns the
+     * attendance-detail endpoint.
+     */
+    const fireBefore = (details) =>
+      onBefore.forEach((fn) => {
+        try { fn(details); } catch { /* the other recorders ignore this shape */ }
+      });
+    fireBefore({
+      method: "POST",
+      url: VT + "examinations/doSearchExamScheduleForStudent",
+      requestBody: {
+        formData: {
+          _csrf: ["stale-token"],
+          authorizedID: ["24MIC7198"],
+          x: ["Wed, 20 Aug 2026 00:00:00 GMT"],
+          semesterSubId: ["AP2026271"],
+        },
+      },
+    });
+    const learned = store.vrevamp_exam_search_request;
+    ok(
+      "the search request is learned from the student's own click",
+      !!learned &&
+        learned.path === "examinations/doSearchExamScheduleForStudent" &&
+        learned.params.semesterSubId === "AP2026271",
+      JSON.stringify(learned)
+    );
+    ok(
+      "...without its credentials — a stored _csrf is stale by definition",
+      !!learned &&
+        !("_csrf" in learned.params) &&
+        !("authorizedID" in learned.params) &&
+        !("x" in learned.params),
+      JSON.stringify(learned && learned.params)
+    );
+  }
+
+  /* ====== vrAutoSemester: the picker arrives AFTER the message ====== */
+  console.log("\n=== vrAutoSemester: late DOM, and a second visit ===");
+  {
+    const semShell = async () => {
+      const p = await newPage(browser);
+      // deliberately EMPTY: onCompleted fires on the response, and VTOP's
+      // jQuery writes the picker into the DOM after that, so the message
+      // legitimately beats the markup it is announcing
+      await p.setContent("<body><div id='main-section'></div></body>");
+      await shim(p, { fixedMs: new Date("2026-08-20T09:00:00+05:30").getTime() });
+      await inject(p, ["js/utils/chooseCurrentSem.js", "js/shared/auto_semester.js"]);
+      await p.evaluate(() => {
+        window.submits = [];
+        window.__render = () => {
+          document.getElementById("main-section").innerHTML =
+            "<select id='semesterSubId'>" +
+            "<option value=''>-- Choose Semester --</option>" +
+            "<option value='AP1'>Fall Semester 2026-27 Freshers</option>" +
+            "<option value='AP2'>Fall Semester 2026-27</option>" +
+            "</select><button class='btn'>Search</button><div id='out'></div>";
+          document.querySelector("#main-section button").addEventListener("click", () => {
+            window.submits.push(document.getElementById("semesterSubId").value);
+            document.getElementById("out").innerHTML =
+              "<table><tr><td>Exam Date</td><td>Venue</td></tr></table>";
+          });
+        };
+      });
+      return p;
+    };
+
+    {
+      const p = await semShell();
+      await p.evaluate(() => {
+        window.__dispatchMsg({ message: "semester_page_open", page: "exam_schedule" });
+        // VTOP renders three quarters of a second later
+        setTimeout(() => window.__render(), 750);
+      });
+      await delay(2000);
+      const r = await p.evaluate(() => ({
+        submits: window.submits,
+        rendered: /Venue/.test(document.getElementById("out").innerText),
+      }));
+      ok(
+        "a message that beats the DOM still opens the page once the picker lands",
+        r.submits.length === 1 && r.rendered,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      // Revisit, which the old per-document Set could never allow: VTOP is a
+      // single-page app, so opening Marks twice in one session is two page
+      // opens against one document. The guard keys on the picker ELEMENT, and
+      // VTOP builds a new one per render.
+      const p = await semShell();
+      await p.evaluate(() => {
+        window.__render();
+        window.__dispatchMsg({ message: "semester_page_open", page: "exam_schedule" });
+      });
+      await delay(1200);
+      const first = await p.evaluate(() => window.submits.length);
+      await p.evaluate(() => {
+        window.__render(); // student navigates away and comes back
+        window.__dispatchMsg({ message: "semester_page_open", page: "exam_schedule" });
+      });
+      await delay(1200);
+      const second = await p.evaluate(() => window.submits.length);
+      ok(
+        "coming back to the page a second time is helped too, not just the first",
+        first === 1 && second === 2,
+        JSON.stringify({ first, second })
+      );
+      await p.close();
+    }
+
+    {
+      // ...and the re-fired message on the SAME picker still must not re-submit.
+      const p = await semShell();
+      await p.evaluate(async () => {
+        window.__render();
+        for (let i = 0; i < 6; i++) {
+          window.__dispatchMsg({ message: "semester_page_open", page: "exam_schedule" });
+          await new Promise((r) => setTimeout(r, 80));
+        }
+      });
+      await delay(1500);
+      const n = await p.evaluate(() => window.submits.length);
+      ok("six re-fired messages on one picker are still one search", n === 1, String(n));
+      await p.close();
+    }
+  }
+
+  /* ====== the venue watcher, off the exam schedule page ====== */
+  console.log("\n=== venue watcher: mails without the exam schedule page open ===");
+  {
+    // Reported 2026-08-20: "it waited until i open the exam schedule to mail
+    // me when the venue got updated". This is any OTHER VTOP page — an
+    // attendance page, say — with no schedule table anywhere on it.
+    const fixed = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const SCHEDULE = (venue) =>
+      "<html><body><table class='customTable'>" +
+      "<tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td>" +
+      "<td>Class ID</td><td>Slot</td><td>Exam Date</td><td>Exam Session</td>" +
+      "<td>Reporting Time</td><td>Exam Time</td><td>Venue</td><td>Seat Location</td><td>Seat No.</td></tr>" +
+      "<tr><td class='panelHead-secondary'>FAT</td></tr>" +
+      "<tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>ETH</td><td>AP1</td><td>A1</td>" +
+      "<td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>" + venue +
+      "</td><td>R3C1</td><td>5</td></tr></table></body></html>";
+
+    const seed = (over = {}) => ({
+      vrevamp_exam_mail_state: {
+        optIn: true,
+        // last mailed with no venue — so a real one reads as a change
+        sent: { "FAT|ECE2015|2026-05-04": "" },
+      },
+      vrevamp_exam_schedule: {
+        fetchedAt: fixed - 86400000,
+        semester: "Winter Semester 2025-26",
+        semesterId: "AP2025264",
+        exams: [{ type: "FAT", code: "ECE2015", dateIso: "2026-05-04", venue: "-" }],
+      },
+      vrevamp_exam_search_request: {
+        path: "examinations/doSearchExamScheduleForStudent",
+        // a stale semester from an older search: the CACHE is the authority
+        params: { semesterSubId: "AP2024OLD" },
+      },
+      ...over,
+    });
+
+    const elsewhere = async (storage, opts = {}) => {
+      const p = await newPage(browser);
+      await p.setContent(
+        "<body><div class='navbar-text text-light small fw-bold'>24MIC7198 (STUDENT)</div>" +
+          (opts.signedOut ? "" : "<input name='_csrf' value='live-token'>") +
+          "<div id='main-section'><h4>Class Attendance</h4></div></body>"
+      );
+      await shim(p, { fixedMs: fixed, storage });
+      await inject(p, [
+        "js/shared/click.js",
+        "js/shared/ics.js",
+        "js/shared/google_auth.js",
+        "js/shared/vtop.js",
+        "js/exam_schedule.js",
+      ]);
+      await p.evaluate((html) => {
+        window.__mails = [];
+        window.__posts = [];
+        window.fetch = (url, init) => {
+          window.__posts.push({ url, body: String((init && init.body) || "") });
+          return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(html) });
+        };
+      }, SCHEDULE(opts.venue === undefined ? "CB-324" : opts.venue));
+      return p;
+    };
+
+    {
+      const p = await elsewhere(seed());
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1500);
+      const r = await p.evaluate(() => ({
+        posts: window.__posts,
+        mails: (window.__mails || []).map((m) => ({
+          subject: m.subject, html: m.html, interactive: m.interactive,
+        })),
+        cache: window.__storage.vrevamp_exam_schedule,
+      }));
+      ok(
+        "it asks VTOP itself, from a page with no schedule on it",
+        r.posts.length === 1 && /doSearchExamScheduleForStudent$/.test(r.posts[0].url),
+        JSON.stringify(r.posts.map((x) => x.url))
+      );
+      ok(
+        "with the semester from the cache, not the one the old search used",
+        r.posts.length === 1 &&
+          /semesterSubId=AP2025264/.test(r.posts[0].body) &&
+          !/AP2024OLD/.test(r.posts[0].body),
+        (r.posts[0] || {}).body
+      );
+      ok(
+        "and mails the newly published venue, same format as the manual send",
+        r.mails.length === 1 &&
+          /venue published for 1 exam/.test(r.mails[0].subject) &&
+          /CB-324/.test(r.mails[0].html),
+        JSON.stringify(r.mails.map((m) => m.subject))
+      );
+      ok(
+        "never interactive — a page load must not open a Google window",
+        r.mails.length === 1 && r.mails[0].interactive === false,
+        JSON.stringify(r.mails.map((m) => m.interactive))
+      );
+      ok(
+        "the cached schedule is refreshed too, so .ics and the digest agree",
+        !!r.cache && (r.cache.exams || []).some((e) => e.venue === "CB-324"),
+        JSON.stringify(r.cache && r.cache.exams)
+      );
+
+      // ...and it must not ask again on the next page. One POST per window.
+      await p.evaluate(() => { window.__mails = []; window.__dispatch("nav_bar_change"); });
+      await delay(1000);
+      const again = await p.evaluate(() => ({
+        posts: window.__posts.length, mails: window.__mails.length,
+      }));
+      ok(
+        "the next page load in the same window asks nothing",
+        again.posts === 1 && again.mails === 0,
+        JSON.stringify(again)
+      );
+      await p.close();
+    }
+
+    {
+      // The opt-in guarantee still holds off the exam page: no press, no traffic.
+      const p = await elsewhere(seed({ vrevamp_exam_mail_state: { optIn: false, sent: {} } }));
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1000);
+      const r = await p.evaluate(() => ({
+        posts: window.__posts.length, mails: (window.__mails || []).length,
+      }));
+      ok(
+        "the mail button never pressed: nothing is fetched and nothing is sent",
+        r.posts === 0 && r.mails === 0,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      // A page with no session must not POST at all — that is the request
+      // shape that returns 404s and damages the session.
+      const p = await elsewhere(seed(), { signedOut: true });
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1000);
+      const posts = await p.evaluate(() => window.__posts.length);
+      ok("signed out (no _csrf on the page): it does not ask", posts === 0, String(posts));
+      await p.close();
+    }
+
+    {
+      // Exam season over: nothing ahead in the cache, so no reason to look.
+      const p = await elsewhere(
+        seed({
+          vrevamp_exam_schedule: {
+            fetchedAt: fixed,
+            semester: "Winter Semester 2025-26",
+            semesterId: "AP2025264",
+            exams: [{ type: "FAT", code: "ECE2015", dateIso: "2026-01-04", venue: "CB-1" }],
+          },
+        })
+      );
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1000);
+      const posts = await p.evaluate(() => window.__posts.length);
+      ok("no exam still ahead: it does not ask", posts === 0, String(posts));
+      await p.close();
+    }
+
+    {
+      // Still "-" in the reply: checked, correctly silent. The 2026-08-19
+      // ROADMAP note about CAT-1 venues reading "-" is this case.
+      const p = await elsewhere(seed(), { venue: "-" });
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1500);
+      const r = await p.evaluate(() => ({
+        posts: window.__posts.length, mails: (window.__mails || []).length,
+      }));
+      ok(
+        "a venue still unpublished is checked and mails nothing",
+        r.posts === 1 && r.mails === 0,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+  }
+
+  /* ====== the role chooser: press Student, so a recovery lands on the form ===
+   *
+   * Reported 2026-08-20: "the previous reloaded the homepage not this page".
+   * True — /vtop/login is REACHED BY POSTing the chooser, so re-GETting it can
+   * land the student back on Student/Employee/Parent/Alumni, which is the
+   * original complaint rather than a recovery. The missing step was never a
+   * better reload; it was pressing Student afterwards.
+   *
+   * Markup read live off /vtop/open/page, 2026-08-20:
+   *   #stdForm     POST /vtop/prelogin/setup  _csrf + flag=VTOP    "Student"
+   *   #empForm     POST /vtop/prelogin/setup  _csrf + flag=VTOP    "Employee"
+   *   #parentForm  POST /vtop/prelogin/setup  _csrf + flag=parent  "Parent"
+   *
+   * Student and Employee send byte-identical bodies, so this cannot pick the
+   * wrong role: the role is not in the request at all.
+   *
+   * Served from a routed host rather than setContent: this code keeps its
+   * whole budget in sessionStorage, and an about:blank document has an opaque
+   * origin where reading it throws.
+   */
+  console.log("\n=== the role chooser: Student is pressed, once, and escapably ===");
+  {
+    // The labels are part of the fixture on purpose. The live chooser reads
+    // "Student"/"Employee"/"Parent"/"Alumni" beside each form, so its body has
+    // visible text — and the pre-existing reload rule keys off exactly that
+    // (`rendered`). A label-less fixture would have made the old code reload
+    // here, which the real page never does, and every assertion below would
+    // have been measured against a document VIT-AP does not serve.
+    const roleForm = (id, flag, label, cls) =>
+      "<div>" + label +
+      "<form id='" + id + "' action='/vtop/prelogin/setup' method='post'>" +
+      "<input type='hidden' name='_csrf' value='tok'>" +
+      "<input type='hidden' name='flag' value='" + flag + "'>" +
+      "<input type='submit' class='" + cls + "'></form></div>";
+
+    const PICKER =
+      "<body>" +
+      roleForm("stdForm", "VTOP", "Student", "btn btn-primary fw-bold") +
+      roleForm("empForm", "VTOP", "Employee", "btn btn-outline employeeBtnColor fw-bold") +
+      roleForm("parentForm", "parent", "Parent", "btn btn-success fw-bold") +
+      roleForm("alumniForm", "alumni", "Alumni", "btn btn-info fw-bold") +
+      "</body>";
+
+    const LOGIN_HIDDEN_PICKER =
+      "<body><form id='vtopLoginForm' action='/vtop/login'>" +
+      "<input name='_csrf' type='hidden' value='tok'>" +
+      "<input name='username'><input name='password' type='password'>" +
+      "<input type='hidden' name='gResponse'>" +
+      "<button id='submitBtn'>Submit</button></form>" +
+      "<form id='stdForm' style='display:none' action='/vtop/prelogin/setup'>" +
+      "<input type='hidden' name='_csrf' value='tok'>" +
+      "<input type='hidden' name='flag' value='VTOP'>" +
+      "<input type='submit'></form></body>";
+
+    const LOGIN_RECAPTCHA =
+      "<body><form id='vtopLoginForm' action='/vtop/login'>" +
+      "<input name='_csrf' type='hidden' value='tok'>" +
+      "<input name='username'><input name='password' type='password'>" +
+      "<input type='hidden' name='gResponse' value=''>" +
+      "<textarea name='g-recaptcha-response'></textarea>" +
+      "<button id='submitBtn'>Submit</button></form>" +
+      "<div class='grecaptcha-badge'></div></body>";
+
+    const OTP_STEP =
+      "<body><p>An OTP has been sent to your email</p>" +
+      "<form id='stdForm' action='/vtop/prelogin/setup'>" +
+      "<input type='hidden' name='_csrf' value='tok'>" +
+      "<input type='hidden' name='flag' value='VTOP'>" +
+      "<input type='submit'></form></body>";
+
+    /*
+     * The submit is intercepted rather than performed: a real navigation would
+     * take the fixture away, and what is asserted is WHICH form goes.
+     * `seed` writes sessionStorage before the script runs, standing in for
+     * what an earlier page in the same tab would have left behind.
+     */
+    /*
+     * `from` makes the arrival realistic. The escape hatch keys on HOW the
+     * chooser was reached, so a fixture that always arrives out of nowhere
+     * cannot exercise it: the page is reached by a real click from `from`,
+     * which is what sets document.referrer.
+     */
+    const chooser = async (html, seed, from) => {
+      const p = await newPage(browser);
+      await p.route("https://vtop-role.test/**", (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: route.request().url().includes("/vtop/login")
+            ? "<body><a id='home' href='/vtop/open/page'>Go to Home Page</a></body>"
+            : html,
+        })
+      );
+      if (from) {
+        await p.goto("https://vtop-role.test" + from);
+        await p.click("#home");
+        await p.waitForURL("**/vtop/open/page");
+      } else {
+        await p.goto("https://vtop-role.test/vtop/open/page");
+      }
+      await p.evaluate((s) => {
+        window.__submitted = [];
+        [...document.forms].forEach((f) =>
+          f.addEventListener("submit", (e) => {
+            e.preventDefault();
+            window.__submitted.push(f.id);
+          })
+        );
+        /*
+         * Reload is trapped, not allowed to happen (2026-08-22). Since the
+         * reCAPTCHA branch started reloading, a fixture carrying a hidden
+         * gResponse would navigate away mid-assertion and take window.
+         * __submitted with it — the crash that exposed this. Counting the
+         * calls keeps both questions answerable on one page: did it press
+         * Student, and did it reload.
+         */
+        window.__reloads = 0;
+        try {
+          Object.defineProperty(window.location, "reload", {
+            configurable: true,
+            value: () => {
+              window.__reloads++;
+            },
+          });
+        } catch {
+          /* some engines refuse; the submit trap still answers the main question */
+        }
+        Object.entries(s || {}).forEach(([k, v]) => sessionStorage.setItem(k, v));
+      }, seed || {});
+      await shim(p);
+      await inject(p, ["js/captcha/refreshTillCaptcha.js"]);
+      await delay(500);
+      return p;
+    };
+
+    const readState = (p) =>
+      p.evaluate(() => ({
+        submitted: window.__submitted || [],
+        reloadCalls: window.__reloads,
+        reloads: sessionStorage.getItem("vrevamp_login_reloads"),
+        picked: sessionStorage.getItem("vrevamp_role_autopick"),
+      }));
+
+    {
+      const p = await chooser(PICKER);
+      const r = await readState(p);
+      ok(
+        "the chooser is advanced by pressing Student, not Employee or Parent",
+        r.submitted.length === 1 && r.submitted[0] === "stdForm",
+        JSON.stringify(r)
+      );
+      ok(
+        "and it is counted against the same budget as the reload",
+        r.reloads === "1" && !!r.picked,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      /*
+       * THE ESCAPE HATCH. Somebody who walks BACK to the chooser from the
+       * login form — by the card's "Go to Home Page" link, or the Back button
+       * — is going for Employee, Parent or Alumni. If this fired again they
+       * could never reach those pages at all.
+       *
+       * Keyed on how the page was REACHED, never on a clock. The cooldown this
+       * replaced also suppressed every ordinary repeat visit, which is how the
+       * feature came to look broken to the person testing it (2026-08-20).
+       */
+      const p = await chooser(PICKER, null, "/vtop/login");
+      const r = await readState(p);
+      ok(
+        "walking back from the login form is left alone — Employee stays reachable",
+        r.submitted.length === 0,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      /*
+       * THE REGRESSION THAT PROMPTED THE REWRITE. Having been advanced once,
+       * the SECOND ordinary arrival must be helped exactly like the first —
+       * a student opening VTOP again, and equally the person checking whether
+       * the feature works. The old cooldown failed this for two minutes.
+       */
+      const p = await chooser(PICKER, {
+        vrevamp_role_autopick: String(Date.now() - 1000), // advanced a second ago
+      });
+      const r = await readState(p);
+      ok(
+        "a fresh arrival right after a previous one is still helped",
+        r.submitted.length === 1 && r.submitted[0] === "stdForm",
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      // A chooser that keeps coming back must stop, or it is the loop the
+      // 2026-08-07 freeze was made of.
+      // the budget is MAX_RELOADS, raised to 5 on 2026-08-22 when the captcha
+      // hunt started drawing on the same counter
+      const p = await chooser(PICKER, { vrevamp_login_reloads: "5" });
+      const r = await readState(p);
+      ok(
+        "with the reload budget spent it stops rather than ping-ponging",
+        r.submitted.length === 0,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      /*
+       * THE REGRESSION THAT MATTERS MOST. /vtop/login ships a HIDDEN #stdForm
+       * of its own. A first cut of the 2026-08-07 reload rule missed that and
+       * put the login page into a loop — so this must never fire where a
+       * #vtopLoginForm exists, hidden chooser or not.
+       */
+      const p = await chooser(LOGIN_HIDDEN_PICKER);
+      const r = await readState(p);
+      /*
+       * The property is that Student is never PRESSED here — a login page is
+       * not a chooser, hidden #stdForm or not. Since 2026-08-22 this fixture
+       * also carries a hidden gResponse, so the captcha hunt legitimately
+       * reloads it; that is a different branch and is asserted separately
+       * above. What must never happen is the submit.
+       */
+      ok(
+        "the login page's own hidden #stdForm is never mistaken for the chooser",
+        r.submitted.length === 0 && r.picked === null,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      /*
+       * The live login shape: invisible reCAPTCHA, no captcha input at all.
+       *
+       * REWRITTEN 2026-08-22. It used to require the counter CLEARED and
+       * nothing done, because the page renders exactly as VTOP intends. It
+       * does — and it still cannot be logged in from, so the page is now
+       * reloaded to hunt for the image variant. The half that never changes is
+       * that this is a login form and not a chooser: Student is not pressed
+       * and no role is recorded, whatever the captcha situation.
+       */
+      const p = await chooser(LOGIN_RECAPTCHA, { vrevamp_login_reloads: "2" });
+      const r = await readState(p);
+      ok(
+        "invisible reCAPTCHA: no role is pressed, and the hunt is counted",
+        r.submitted.length === 0 &&
+          r.picked === null &&
+          Number(r.reloads) > 2 &&
+          Number(r.reloads) <= 5,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      // The OTP step is served at /vtop/login/error, which this script also
+      // runs on. VTOP has already mailed a code; nothing may be touched.
+      const p = await chooser(OTP_STEP);
+      const r = await readState(p);
+      ok(
+        "an OTP page is never advanced — a navigation there bins the mailed code",
+        r.submitted.length === 0,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    // The manifest has to actually run this file where the chooser lives.
+    {
+      const mf = JSON.parse(read("manifest.json"));
+      const entry = (mf.content_scripts || []).find((c) =>
+        (c.js || []).some((j) => /refreshTillCaptcha/.test(j))
+      );
+      ok(
+        "the chooser page is in the manifest, or none of the above ever runs",
+        !!entry && entry.matches.some((m) => /\/vtop\/open\/page/.test(m)),
+        JSON.stringify(entry && entry.matches)
+      );
+    }
+  }
+
+  /* ====== venue check: the paths the first round of tests never entered ======
+   *
+   * Audit gap found 2026-08-20. The first block always seeded a learned search
+   * request, always answered 200, and always triggered by message — so the
+   * fallback endpoint, the circuit breaker, the in-flight guard, the load-time
+   * trigger and the semesterId write were all unexercised.
+   */
+  console.log("\n=== venue check: fallback endpoint, breaker, and the load-time trigger ===");
+  {
+    const fixed = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const SCHEDULE =
+      "<html><body><table class='customTable'>" +
+      "<tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td>" +
+      "<td>Class ID</td><td>Slot</td><td>Exam Date</td><td>Exam Session</td>" +
+      "<td>Reporting Time</td><td>Exam Time</td><td>Venue</td><td>Seat Location</td><td>Seat No.</td></tr>" +
+      "<tr><td class='panelHead-secondary'>FAT</td></tr>" +
+      "<tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>ETH</td><td>AP1</td><td>A1</td>" +
+      "<td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>CB-324</td>" +
+      "<td>R3C1</td><td>5</td></tr></table></body></html>";
+
+    const baseStore = (over = {}) => ({
+      vrevamp_exam_mail_state: { optIn: true, sent: { "FAT|ECE2015|2026-05-04": "" } },
+      vrevamp_exam_schedule: {
+        fetchedAt: fixed - 86400000,
+        semester: "Winter Semester 2025-26",
+        semesterId: "AP2025264",
+        exams: [{ type: "FAT", code: "ECE2015", dateIso: "2026-05-04", venue: "-" }],
+      },
+      ...over,
+    });
+
+    // a VTOP page that is not the exam schedule, with a live-looking session
+    const otherPage = async (storage, reply) => {
+      const p = await newPage(browser);
+      await p.setContent(
+        "<body><div class='navbar-text text-light small fw-bold'>24MIC7198 (STUDENT)</div>" +
+          "<input name='_csrf' value='live-token'>" +
+          "<div id='main-section'><h4>Class Attendance</h4></div></body>"
+      );
+      await shim(p, { fixedMs: fixed, storage });
+      await inject(p, [
+        "js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js",
+        "js/shared/vtop.js", "js/exam_schedule.js",
+      ]);
+      await p.evaluate((r) => {
+        window.__mails = [];
+        window.__posts = [];
+        window.fetch = (url, init) => {
+          window.__posts.push({ url, body: String((init && init.body) || "") });
+          if (r.hang) return new Promise(() => {}); // never settles
+          return Promise.resolve({
+            ok: r.status === 200,
+            status: r.status,
+            text: () => Promise.resolve(r.body || ""),
+          });
+        };
+      }, reply);
+      return p;
+    };
+
+    /*
+     * NOTHING LEARNED YET — the state every student is in until they open the
+     * exam schedule page once. The named endpoint is the fallback, and it must
+     * be sent as a `probe` so that a wrong guess on some other VTOP deployment
+     * cannot trip the breaker and silence every other vRevamp feature.
+     */
+    {
+      const p = await otherPage(baseStore(), { status: 200, body: SCHEDULE });
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1500);
+      const r = await p.evaluate(() => ({
+        posts: window.__posts.map((x) => x.url),
+        body: (window.__posts[0] || {}).body || "",
+        mails: (window.__mails || []).length,
+      }));
+      ok(
+        "with no request ever recorded it falls back to the named endpoint",
+        r.posts.length === 1 &&
+          /examinations\/doSearchExamScheduleForStudent$/.test(r.posts[0]) &&
+          /semesterSubId=AP2025264/.test(r.body) &&
+          r.mails === 1,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      // ...and when that guess is wrong, the 404 must not trip the breaker.
+      const p = await otherPage(baseStore(), { status: 404, body: "not found" });
+      await p.evaluate(() => window.__dispatch("nav_bar_change"));
+      await delay(1200);
+      const r = await p.evaluate(() => ({
+        posts: window.__posts.length,
+        tripped: window.vrVtop.tripped,
+        banner: !!document.getElementById("vrevamp-session-banner"),
+        mails: (window.__mails || []).length,
+      }));
+      ok(
+        "a 404 from the guessed endpoint is a probe: no breaker, no red banner",
+        r.posts === 1 && r.tripped === false && r.banner === false && r.mails === 0,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      /*
+       * A RECORDED request that 404s is different — that is real news, and the
+       * breaker must count it. Three of them and vRevamp stops talking to VTOP.
+       * The rate-limit key is cleared between tries to stand in for three page
+       * loads three hours apart.
+       */
+      const p = await otherPage(
+        baseStore({
+          vrevamp_exam_search_request: {
+            path: "examinations/doSearchExamScheduleForStudent",
+            params: {},
+          },
+        }),
+        { status: 404, body: "not found" }
+      );
+      for (let i = 0; i < 4; i++) {
+        await p.evaluate(() => {
+          delete window.__storage.vrevamp_exam_bg_check;
+          window.__dispatch("nav_bar_change");
+        });
+        await delay(500);
+      }
+      const r = await p.evaluate(() => ({
+        posts: window.__posts.length,
+        tripped: window.vrVtop.tripped,
+      }));
+      ok(
+        "a recorded request that keeps 404ing trips the breaker and stops",
+        r.tripped === true && r.posts === 3,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    {
+      // THE RATE LIMIT IS THE POINT, so it is asserted without the clear above:
+      // four arrivals in a row, one request.
+      const p = await otherPage(baseStore(), { status: 404, body: "no" });
+      for (let i = 0; i < 4; i++) {
+        await p.evaluate(() => window.__dispatch("nav_bar_change"));
+        await delay(300);
+      }
+      const posts = await p.evaluate(() => window.__posts.length);
+      ok("four page arrivals in one window are still one request", posts === 1, String(posts));
+      await p.close();
+    }
+
+    {
+      // In-flight guard: a slow VTOP must not collect a queue of duplicates.
+      const p = await otherPage(baseStore(), { hang: true });
+      await p.evaluate(() => {
+        window.__dispatch("nav_bar_change");
+        window.__dispatch("vtop2_nav_bar");
+        window.__dispatch("view_attendance_page");
+      });
+      await delay(800);
+      const posts = await p.evaluate(() => window.__posts.length);
+      ok(
+        "three triggers while one request is still in flight send one request",
+        posts === 1,
+        String(posts)
+      );
+      await p.close();
+    }
+
+    {
+      /*
+       * The load-time trigger. The messages are routed off specific URLs, so a
+       * student who lands somewhere unrouted would otherwise get nothing —
+       * this is the path that needs no message at all.
+       */
+      const p = await otherPage(baseStore(), { status: 200, body: SCHEDULE });
+      await delay(7000); // the timer is 6 s after the content script loads
+      const r = await p.evaluate(() => ({
+        posts: window.__posts.length,
+        mails: (window.__mails || []).length,
+      }));
+      ok(
+        "it also runs once per page with no message at all",
+        r.posts === 1 && r.mails === 1,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+  }
+
+  /* ====== semesterId: the field the whole background check bootstraps from ====== */
+  console.log("\n=== the exam page records the semester ID, not just its name ===");
+  {
+    const fixed = new Date("2026-04-01T09:00:00+05:30").getTime();
+    const p = await newPage(browser);
+    await p.setContent(
+      "<body><select id='semesterSubId'>" +
+        "<option value=''>-- Choose Semester --</option>" +
+        "<option value='AP2025264' selected>Winter Semester 2025-26</option></select>" +
+        "<table class='customTable'>" +
+        "<tr><td>S.No.</td><td>Course Code</td><td>Course Title</td><td>Course Type</td>" +
+        "<td>Class ID</td><td>Slot</td><td>Exam Date</td><td>Exam Session</td>" +
+        "<td>Reporting Time</td><td>Exam Time</td><td>Venue</td><td>Seat Location</td><td>Seat No.</td></tr>" +
+        "<tr><td class='panelHead-secondary'>FAT</td></tr>" +
+        "<tr><td>1</td><td>ECE2015</td><td>Computer Architecture</td><td>ETH</td><td>AP1</td><td>A1</td>" +
+        "<td>04-May-2026</td><td>FN1</td><td>09:30 AM</td><td>10:00 AM - 01:00 PM</td><td>CB-324</td>" +
+        "<td>R3C1</td><td>5</td></tr></table></body>"
+    );
+    await shim(p, { fixedMs: fixed });
+    await inject(p, [
+      "js/shared/click.js", "js/shared/ics.js", "js/shared/google_auth.js",
+      "js/shared/vtop.js", "js/exam_schedule.js",
+    ]);
+    await p.evaluate(() => window.__dispatch("exam_schedule"));
+    await delay(1200);
+    const cache = await p.evaluate(() => window.__storage.vrevamp_exam_schedule);
+    ok(
+      "opening the exam page records the semester ID the background check needs",
+      !!cache &&
+        cache.semesterId === "AP2025264" &&
+        cache.semester === "Winter Semester 2025-26",
+      JSON.stringify(cache && { semester: cache.semester, semesterId: cache.semesterId })
+    );
+    await p.close();
+  }
+
+  /* ====== the three page shapes that were MOVED, not written ======
+   *
+   * Audit gap found 2026-08-20: the registry test above only ever dispatches
+   * page "exam_schedule", so PAGES.mark_view / exam_grade / timetable_view —
+   * the three predicates lifted out of marks_page.js, grade_pages.js and
+   * timetable.js — were executed by nothing. Moving code is exactly where a
+   * silent typo lands: the timetable predicate turned out to have been
+   * carrying two literal 0x08 bytes where \b was meant, and nothing caught it
+   * because nothing ran it.
+   *
+   * Each page is checked BOTH ways: it fires on its own shape, and it does not
+   * consider the bare picker "already loaded" (which would make it a no-op
+   * forever).
+   */
+  console.log("\n=== the page registry: every shape, not just the exam one ===");
+  {
+    // what VTOP renders for that page once a semester is chosen
+    const RENDERS = {
+      mark_view:
+        "<table><tr><td>Course Code</td><td>Course Title</td></tr>" +
+        "<tr><td>CSE1005</td><td>Software Engineering</td></tr></table>",
+      attendance:
+        "<div class='table-responsive'><table>" +
+        "<thead><tr><th>Course</th><th>Attended Classes</th><th>Total Classes</th></tr></thead>" +
+        "<tbody><tr><td>ECE2015</td><td>40</td><td>50</td></tr></tbody></table></div>",
+      timetable_view:
+        "<table><tr><td>Slot</td><td>Course</td></tr><tr><td>A1</td><td>Theory</td></tr></table>",
+      exam_schedule: "<table><tr><td>Exam Date</td><td>Venue</td></tr></table>",
+    };
+
+    for (const page of ["mark_view", "attendance", "timetable_view", "exam_schedule"]) {
+      const p = await newPage(browser);
+      await p.setContent("<body><div id='main-section'></div></body>");
+      await shim(p, { fixedMs: new Date("2026-08-20T09:00:00+05:30").getTime() });
+      await inject(p, ["js/utils/chooseCurrentSem.js", "js/shared/auto_semester.js"]);
+      await p.evaluate((render) => {
+        window.submits = [];
+        document.getElementById("main-section").innerHTML =
+          "<select id='semesterSubId'>" +
+          "<option value=''>-- Choose Semester --</option>" +
+          "<option value='AP1'>Fall Semester 2026-27 Freshers</option>" +
+          "<option value='AP2'>Fall Semester 2026-27</option>" +
+          "</select><button class='btn'>Search</button><div id='out'></div>";
+        const fill = () => {
+          window.submits.push(document.getElementById("semesterSubId").value);
+          document.getElementById("out").innerHTML = render;
+        };
+        // both submit shapes are wired, so the registry entry picks which one
+        // is actually used — a change event for the three onchange pages, the
+        // Search button for the exam schedule
+        document.getElementById("semesterSubId").addEventListener("change", fill);
+        document.querySelector("#main-section button").addEventListener("click", fill);
+      }, RENDERS[page]);
+
+      // the bare picker must NOT read as "already showing its data"
+      const before = await p.evaluate(
+        (name) => window.vrAutoSemesterFor(name, { settleMs: 50, waitMs: 0 }).then(() => null),
+        page
+      );
+      void before;
+      await delay(900);
+      const r = await p.evaluate(() => ({
+        submits: window.submits,
+        out: document.getElementById("out").innerHTML.length,
+      }));
+      ok(
+        `the ${page} shape is recognised and submitted exactly once`,
+        r.submits.length === 1 && r.out > 0,
+        JSON.stringify(r)
+      );
+
+      // …and now that it IS loaded, a fresh call must leave it alone
+      const second = await p.evaluate((name) => window.vrAutoSemesterFor(name), page);
+      ok(
+        `a loaded ${page} page is left alone`,
+        second === false && (await p.evaluate(() => window.submits.length)) === 1,
+        JSON.stringify({ second, submits: await p.evaluate(() => window.submits) })
+      );
+      await p.close();
+    }
+
+    /* ---- the three faults the fixtures above could not see (live 2026-08-21) --
+     *
+     * All three were found by driving the real portal, and each one is here
+     * because the fixture was politer than VTOP is.
+     */
+    const livePage = async (extra) => {
+      const p = await newPage(browser);
+      await p.setContent("<body><div id='main-section'></div></body>");
+      await shim(p, { fixedMs: new Date("2026-08-21T09:00:00+05:30").getTime() });
+      await inject(p, ["js/utils/chooseCurrentSem.js", "js/shared/auto_semester.js"]);
+      await p.evaluate((markup) => {
+        window.submits = [];
+        // the real 69-option list, trimmed to the five that tie on start date
+        document.getElementById("main-section").innerHTML =
+          "<select id='semesterSubId'>" +
+          "<option value=''>-- Choose Semester --</option>" +
+          "<option value='AP1'>Fall Semester 2026-27 Freshers</option>" +
+          "<option value='AP2'>Fall Semester 2026-27</option>" +
+          "<option value='AP3'>Fall_Win Transport Semester 2026-27</option>" +
+          "<option value='AP4'>CDC PAT 2025-26</option>" +
+          "<option value='AP5'>Fast Track Fall Semester 2026-27</option>" +
+          "</select><div id='out'></div>" +
+          markup;
+        document
+          .getElementById("semesterSubId")
+          .addEventListener("change", function () {
+            window.submits.push(this.value);
+          });
+      }, extra || "");
+      return p;
+    };
+
+    /*
+     * (1) GRADES IS NOT AUTO-ANSWERED, and that is now the requirement rather
+     * than the bug. It was found broken here — `#studentGradeView` is present
+     * on the EMPTY form, so the old predicate answered "already loaded" on
+     * every real visit — and then asked for on purpose the same day: the page
+     * shows ONE semester, so picking one picks what you came to look at.
+     * Nothing must touch that picker, even with the page's own div present.
+     */
+    {
+      const p = await livePage("<div id='studentGradeView'></div>");
+      const started = await p.evaluate(() => window.vrAutoSemesterFor("exam_grade"));
+      await delay(400);
+      const r = await p.evaluate(() => ({
+        started: null,
+        submits: window.submits,
+        idx: document.getElementById("semesterSubId").selectedIndex,
+      }));
+      ok(
+        "the Grades picker is left for the student — no entry, no submit",
+        started === false && r.submits.length === 0 && r.idx === 0,
+        JSON.stringify({ started, ...r })
+      );
+      await p.close();
+    }
+
+    /*
+     * (2) IT WALKED ONTO JUNK. Four options parse to the same start as the
+     * real semester, and document order handed the tie to "Freshers"; the walk
+     * then stepped on to Transport and Fast Track. With no cache to go on the
+     * pick must still be the undecorated name, first try.
+     */
+    {
+      const p = await livePage();
+      await p.evaluate(() => window.vrAutoSemesterFor("mark_view"));
+      await delay(400);
+      const r = await p.evaluate(() => window.submits);
+      ok(
+        "Freshers, Transport, Fast Track and CDC PAT all lose to the plain name",
+        r.length === 1 && r[0] === "AP2",
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    /*
+     * (3) IT FOUGHT THE STUDENT. Watched live: a semester picked by hand while
+     * the walk was still in flight was overwritten by the next step. A picker
+     * that already names a semester is somebody's answer, and never ours.
+     */
+    {
+      const p = await livePage();
+      const r = await p.evaluate(async () => {
+        const select = document.getElementById("semesterSubId");
+        select.selectedIndex = 4; // the student chose CDC PAT on purpose
+        const started = await window.vrAutoSemesterFor("mark_view");
+        return { started, value: select.value, submits: window.submits };
+      });
+      ok(
+        "a semester the student chose is never re-picked underneath them",
+        r.started === false && r.value === "AP4" && r.submits.length === 0,
+        JSON.stringify(r)
+      );
+      await p.close();
+    }
+
+    // The one that used to carry the mangled \b: "Slots left" must not be read
+    // as a rendered timetable, or the picker is never answered on that page.
+    {
+      const p = await newPage(browser);
+      await p.setContent("<body><div id='main-section'></div></body>");
+      await shim(p, { fixedMs: new Date("2026-08-20T09:00:00+05:30").getTime() });
+      await inject(p, ["js/utils/chooseCurrentSem.js", "js/shared/auto_semester.js"]);
+      const r = await p.evaluate(() => {
+        document.getElementById("main-section").innerHTML =
+          "<select id='semesterSubId'><option value=''>x</option>" +
+          "<option value='AP2'>Fall Semester 2026-27</option></select>" +
+          // "Collaborate" would match the predicate's unbounded /lab/ — which
+          // is pre-existing and deliberate, so the fixture avoids it and tests
+          // the one boundary that IS asserted
+          "<table><tr><td>Slotting</td><td>Choose one</td></tr></table>";
+        window.changes = 0;
+        document.getElementById("semesterSubId").addEventListener("change", () => {
+          window.changes++;
+        });
+        return window.vrAutoSemesterFor("timetable_view", { settleMs: 50 });
+      });
+      await delay(400);
+      ok(
+        "'Slotting' is not a rendered timetable — the word boundary is real",
+        r === true && (await p.evaluate(() => window.changes)) >= 1,
+        JSON.stringify({ started: r, changes: await p.evaluate(() => window.changes) })
+      );
+      await p.close();
+    }
   }
 
   await browser.close();

@@ -321,7 +321,17 @@
    * z-index 999 is deliberate: BELOW jQuery BlockUI's 1000 overlay, so the bar
    * cannot draw on top of VTOP's own modals or its open sidebar. That was the
    * mistake an earlier z-index:1100 made on the exam buttons.
+   *
+   * …which is exactly why it then had to move UP. Reported 2026-08-21 ("i cant
+   * see the changed gpa"), and measured on the live page: VTOP's support chat
+   * bubble is a fixed 62x62 div at right:25px, bottom:25px with **z-index
+   * 1000**. The bar was at right:18px, bottom:18px — the same corner, one
+   * layer below — so the projected CGPA rendered correctly and was painted
+   * over every time. Raising the bar above 1000 would re-make the modal bug
+   * this comment already warns about, so the bar clears the bubble instead:
+   * 62px of bubble + 25px of its own inset + a gap.
    */
+  const BAR_BOTTOM_PX = 100;
   const BAR_ID = "vrevamp-gh-bar";
 
   const clearBar = () => {
@@ -335,7 +345,7 @@
       bar = document.createElement("div");
       bar.id = BAR_ID;
       bar.style.cssText =
-        "position:fixed;right:18px;bottom:18px;z-index:999;" +
+        `position:fixed;right:18px;bottom:${BAR_BOTTOM_PX}px;z-index:999;` +
         "display:flex;align-items:center;gap:14px;" +
         "padding:10px 14px;border-radius:10px;" +
         "background:#1f2d3d;color:#fff;font-size:13px;line-height:1.35;" +

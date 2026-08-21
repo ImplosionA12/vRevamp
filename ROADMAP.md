@@ -1,6 +1,6 @@
 # vRevamp — what's left
 
-Open work as of **2026-08-18**. Ordered by what unblocks the most.
+Open work as of **2026-08-20**. Ordered by what unblocks the most.
 Historical record of what was *done* lives in [changes.md](changes.md).
 
 The Cloud project is **`verammp`** (number `256000685922`, display name
@@ -257,7 +257,84 @@ Two conclusions, both now dated and first-hand:
 2. **The solver works, live, unaided** — six characters, correct, filled before
    the page settled, with no reload and the counter never set.
 
-#### 2026-08-19: a login form with NO captcha of either kind — STILL OPEN
+#### 2026-08-19: a login form with NO captcha of either kind — ANSWERED 2026-08-20
+
+**It is invisible reCAPTCHA. Nothing is broken and nothing needs building.**
+Read off the live page in the student's own browser, the exact check this
+section asked for:
+
+| checked | found |
+|---|---|
+| `#captchaBlock` | absent |
+| `input[name=gResponse]` | **present** (hidden, empty until submit) |
+| `.grecaptcha-badge`, `g-recaptcha-response` | present |
+| `window.grecaptcha` | loaded (`object`), one `[data-sitekey]` |
+| `document.images.length` | 1 (the VIT-AP logo) |
+| `#captchaStr` | absent |
+| `sessionStorage.vrevamp_login_reloads` | **null** — never set |
+| navigation type | `"navigate"`, not `"reload"` |
+
+`#vtopLoginForm` fields in full: `_csrf, username, password, basic-addon2,
+g-recaptcha-response, gResponse, submitBtn`. There is no captcha text input on
+the page, so the blank space where one used to be is the intended appearance.
+
+Both scripts stand down correctly on it — `refreshTillCaptcha.js` returns at
+the `gResponse` check before anything else, and its reload branch additionally
+requires no `#vtopLoginForm` and no rendered text, so it cannot fire on this
+shape at all. The null reload counter is that path proving itself on the real
+portal.
+
+**Any future "the captcha/reload doesn't work on the login page" report should
+start here**: if `gResponse` is present, there is nothing to do and the report
+is about something else.
+
+##### The part that WAS missing: what happens after a recovery — BUILT 2026-08-20
+
+Reported the same day: *"the previous reloaded the homepage not this page"*.
+True, and it is why the capped reload was reverted rather than fixed. The fix
+is not a better reload; it is the step after it — **press Student**.
+
+Read live off `/vtop/open/page`: `#stdForm`, `#empForm` → `POST
+/vtop/prelogin/setup` with `_csrf` + `flag=VTOP`; `#parentForm` → `flag=parent`.
+The page's own `#stdForm` is now submitted through its own button, carrying its
+own token. **Not rule 4** — that is about replaying *authenticated* endpoints
+with a scraped `_csrf`; this runs signed out, and there is no session to lose.
+And because Student and Employee post byte-identical bodies, it cannot pick the
+wrong role: the role is not in the request.
+
+Three guards: the shared `vrevamp_login_reloads` budget (no ping-pong), never
+where a `#vtopLoginForm` exists (the login page ships a hidden `#stdForm`, and
+missing that caused the 2026-08-07 loop), and an escape hatch keyed on **how
+the chooser was reached** — `back_forward` navigation, or a `document.referrer`
+of `/vtop/login`, i.e. the Back button or the login card's "Go to Home Page"
+link. Every other arrival is helped, every time.
+
+**That escape hatch was first written as a two-minute cooldown, and that was
+wrong** — it swallowed the second visit, so the feature looked dead to anyone
+who went back to check it. Reproduced live and replaced the same day; see
+changes.md, "The escape hatch was a clock".
+
+`manifest.json` gained `/vtop/open/page*` for `refreshTillCaptcha.js`; without
+it none of this runs, so the manifest itself carries an assertion.
+
+**LIVE-VERIFIED 2026-08-20** against `vtop.vitap.ac.in`, signed out, after an
+extension reload: `/vtop/open/page` lands on the login form; a second
+immediate visit does too, with a fresh `vrevamp_role_autopick` stamp (the case
+the cooldown broke); "Go to Home Page" from the login card stays on the chooser
+with `#empForm`/`#parentForm` present; and typing the bare domain lands on the
+login form. `vrevamp_login_reloads` was null at every login landing.
+
+##### One thing that did NOT match the 2026-08-19 note
+
+`GET /vtop/login` returned the **username/password form directly** (32 KB,
+`#vtopLoginForm`, no `#stdForm`), not the four-role picker that reading
+recorded. The tab shared the profile's cookies, so this may be cookie state
+rather than a portal change — **not** treated as a correction to that entry,
+just a dated second data point. It does not affect the conclusion above:
+with invisible reCAPTCHA there is nothing to reload *for*, whichever document
+`/vtop/login` serves.
+
+#### The original 2026-08-19 reading, kept for the record
 
 A capped reload was added for this shape and **reverted the same day**. Measured:
 unauthenticated `GET /vtop/login` returns the **role picker** (`#stdForm`, no
@@ -346,6 +423,13 @@ does this for the detail endpoint, but its filter needs `detail`/`display` in
 the URL and the summary POST has neither), replay once, and stop permanently on
 the first non-200.
 
+**2026-08-20: that is now the shape the venue check uses**, so the route is no
+longer hypothetical — see the venue-watcher note below for the four guards it
+carries and the table comparing the two bets. This paragraph still stands as
+written: what made the venue check acceptable is the recorded request, the
+opt-in, and the fact that there is a specific thing to look for (a venue that
+was `-`). Attendance has none of those, so it stays declined until it does.
+
 ### Live-read page shapes, 2026-08-19 (signed in — not from fixtures)
 
 | page | data-url | loads via |
@@ -357,6 +441,26 @@ the first non-200.
 | Class Attendance | (menu `a[data-url]`) | handled by `js/attendance.js`, do not touch |
 
 `js/shared/auto_semester.js` now opens the first four on the ongoing semester.
+
+#### 2026-08-20: it had never run on three of those four — fixed
+
+Reported as "the auto selecter of semester didnt work", and the picking was
+never the problem. Each caller listened for the message the worker sends for
+its page, and every one of those is routed off the page's **data** endpoint —
+which VTOP POSTs only once a semester has been chosen by hand. Of the four
+data-urls in the table above, exactly one (`StudentTimeTable`) collided with an
+existing routing branch, so one page in four appeared to work.
+
+The worker now sends **`semester_page_open`** for the page's own URL, carrying
+which page it is; `auto_semester.js` answers it and holds the four page shapes
+in one registry. Two smaller faults went with it: the message beat the DOM
+(`onCompleted` fires on the response, jQuery writes the markup after), so the
+picker is now waited for with a capped poll; and the guard was per-document
+rather than per-visit, so a second visit to Marks in one session was never
+helped. See changes.md, 2026-08-20.
+
+**Not yet seen live.** Watch that Marks, Grades and Exam Schedule each arrive
+showing the ongoing semester rather than an empty picker.
 
 **The dropdowns differ, and that is the whole story.** Attendance lists only the
 student's own registered semesters (8, tagged `- AMR`), so its index 1 is right
@@ -372,6 +476,40 @@ only when nothing is cached.
 Exams 1–3 (17/18/19 Aug) have venues; **20, 21 and 24 Aug still show `-`**.
 The venue watcher is correctly silent — there is nothing published to mail. Any
 future "the venue mail is broken" report should start by checking this column.
+
+### 2026-08-20: the venue watcher no longer needs the exam schedule page
+
+Reported: "it waited until i open the exam schedule to mail me when the venue
+got updated". The old design said so in its own header — *"the check runs where
+the data legitimately arrives: every time the exam schedule page renders"* —
+and that is one page too narrow, because venues land overnight in a batch and
+nothing brings a student to that page in the morning.
+
+It now asks VTOP the question the Search button asks, from whatever VTOP page
+they did open. **This is not a background fetch and does not contradict rule 4.**
+Still nothing without the student present and signed in: no alarm, no stored
+cookie, one POST on a page they opened themselves.
+
+What makes it a narrower bet than the attendance auto-refresh that was declined
+the day before:
+
+| | attendance refresh (declined) | venue check (built) |
+|---|---|---|
+| the request | reconstructed by vRevamp | **recorded from the student's own Search**, by the worker, credentials stripped |
+| rate | once a day, unconditional | once per 3 h, and only with an opt-in, a cached semester id and an exam still ahead |
+| failure handling | would need a new stop rule | `window.vrVtop.post` — existing circuit breaker, existing session-expired check |
+| clock | after the attempt | **written before the request**, so a failure costs one POST per window |
+
+The named endpoint is used only until the worker has recorded a real one, and
+that guess is marked `probe`, so a wrong guess cannot trip the breaker.
+
+It also refreshes `vrevamp_exam_schedule` (now carrying `semesterId`, not just
+the name) from what it fetched, so the `.ics` export, the Calendar import and
+the daily digest stop showing `-` for a venue published days ago.
+
+**Not yet seen live.** The failure mode to watch for is the opposite one:
+`[vRevamp exam] venue watcher (background): …` appearing on pages where it
+should have stayed quiet, or a mail for a venue that has not changed.
 
 ---
 

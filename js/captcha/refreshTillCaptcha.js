@@ -57,20 +57,113 @@
  * this file was written to fix ("you keep doing the complete homepage where i
  * have to choose student, parent or smth").
  *
- * What is still unknown is the one thing that decides the fix: whether that
- * document carries a hidden `gResponse` (invisible reCAPTCHA, in which case
- * nothing is wrong and there is nothing to heal) or is a broken render of the
- * image variant (in which case the block has to be rebuilt, not reloaded).
- * It could not be fetched to find out: the POST needs a `_csrf` bound to a
- * session cookie, and re-issuing it against a live session is the thing rule 4
- * forbids. It needs one reading of the real DOM while that page is on screen.
+ * ---------------------------------------------------------------------------
+ * ANSWERED 2026-08-20, by reading the real DOM while it was on screen
+ * ---------------------------------------------------------------------------
+ * That question — hidden `gResponse`, or a broken render of the image variant?
+ * — is settled. It is **invisible reCAPTCHA**: `gResponse` present,
+ * `.grecaptcha-badge` present, `window.grecaptcha` loaded, one `[data-sitekey]`,
+ * `#captchaBlock` absent, `#captchaStr` absent, and `document.images.length`
+ * of 1 (the VIT-AP logo). The login form's fields, in full, are `_csrf,
+ * username, password, basic-addon2, g-recaptcha-response, gResponse,
+ * submitBtn` — there is no captcha input on the page at all.
  *
- * Do not "fix" this from a screenshot. That is ROADMAP rule 1, and this note
- * exists because it was nearly broken twice in one day.
+ * So a login page with a blank space where the captcha used to be is what VTOP
+ * MEANT to render. That much still holds, and the DOM readings above are all
+ * still true today (re-read 2026-08-22: gResponse present, badge present,
+ * images 1, no captchaStr).
+ *
+ * ---------------------------------------------------------------------------
+ * OVERTURNED 2026-08-22 — rendering correctly is not the same as working
+ * ---------------------------------------------------------------------------
+ * *"the captch should be visible and we need to reload once or twice to get
+ * it, there is no invisible captcha or google capthca working here okay?
+ * without the captcha we cant login no matter how many times i click submit"*.
+ *
+ * The DOM reading was right and the conclusion drawn from it was wrong. What
+ * the page renders and what the SERVER will accept are different questions,
+ * and only one of them is visible in the DOM. On VIT-AP the invisible
+ * reCAPTCHA variant does not authenticate: submit does nothing, however many
+ * times it is pressed. The only way through is to reload until VTOP serves the
+ * IMAGE captcha instead — which it does, usually within a reload or two, and
+ * commit bd32fb8 already recorded it flipping type twice inside one hour.
+ *
+ * So the `gResponse` branch below no longer stands down. It reloads, on the
+ * same capped budget as everything else here, and hands over to the image
+ * branch the moment #captchaBlock appears. A stand-down that leaves the
+ * student on a page they cannot log in from is not a safe default; it is the
+ * bug, wearing the costume of one.
+ *
+ * The cap is what keeps this honest: if VIT-AP ever serves reCAPTCHA that DOES
+ * work, this spends MAX_RELOADS and then leaves the page alone forever.
+ *
+ * ---------------------------------------------------------------------------
+ * THE PART THAT WAS ACTUALLY MISSING: what happens AFTER a recovery
+ * ---------------------------------------------------------------------------
+ * Reported 2026-08-20: *"the previous reloaded the homepage not this page"*.
+ * True, and it is the reason the capped reload was reverted on 2026-08-19
+ * rather than fixed. `/vtop/login` is **reached by POSTing the role picker**,
+ * so re-GETting it can land the student back on the Student/Employee/Parent
+ * chooser — which is the original complaint, not a recovery.
+ *
+ * The answer is not a better reload. It is the step that was missing after it:
+ * **press Student**. Read live off `/vtop/open/page` on 2026-08-20:
+ *
+ *   #stdForm     POST /vtop/prelogin/setup   _csrf + flag=VTOP   "Student"
+ *   #empForm     POST /vtop/prelogin/setup   _csrf + flag=VTOP   "Employee"
+ *   #parentForm  POST /vtop/prelogin/setup   _csrf + flag=parent "Parent"
+ *
+ * Two things follow from that table, and both matter:
+ *
+ *  1. **Nothing is reconstructed.** The page's own `#stdForm` is submitted,
+ *     carrying its own `_csrf`. This is the sanctioned pattern — the same one
+ *     js/attendance.js uses when it clicks VTOP's own menu entry — and not
+ *     rule 4, which is about replaying *authenticated* endpoints with a
+ *     scraped token. There is no session here to damage: this runs signed out,
+ *     and `/vtop/prelogin/setup` is what the button in front of the student
+ *     posts to anyway.
+ *  2. **Student and Employee send byte-identical bodies.** Same action, same
+ *     `flag=VTOP`, submit inputs with no name and no value, no `onsubmit` on
+ *     either. So this cannot pick the wrong role by accident — the role is not
+ *     in the request at all, and is settled later by the credentials.
+ *
+ * Guarded twice over. `vrevamp_login_reloads` is shared with the reload cap, so
+ * a picker that keeps coming back can never ping-pong; and a SECOND arrival at
+ * the picker in the same tab is left alone (`vrevamp_role_autopick`), because
+ * somebody who navigates back to the chooser after being advanced past it is
+ * asking for Employee or Parent, and must be able to get there.
+ *
+ * Do not "fix" any of this from a screenshot. That is ROADMAP rule 1, and this
+ * note exists because it was nearly broken twice in one day.
  */
 (() => {
   const RELOAD_KEY = "vrevamp_login_reloads";
-  const MAX_RELOADS = 3;
+  /*
+   * A breadcrumb, not a gate: the timestamp of the last auto-advance in this
+   * tab, so "did it run?" can be answered from the console without guessing.
+   *
+   * It USED to be the escape hatch, on a two-minute cooldown, and that was
+   * wrong — see cameFromLogin() below. Reported 2026-08-20: "it didnt reload
+   * even". The feature was working; the cooldown meant that anyone who went
+   * back to check it hit the one path where it deliberately does nothing, and
+   * then hit it again on every retry. A guard whose failure mode is "looks
+   * broken precisely when you test it" is the wrong guard.
+   */
+  const ROLE_KEY = "vrevamp_role_autopick";
+  /*
+   * One budget for every action in this file — the captcha-hunt reload, the
+   * dead-load reload, and the chooser's Student press — so no two of them can
+   * ever ping-pong: whatever the sequence, a tab gets MAX_RELOADS actions and
+   * then stops for good.
+   *
+   * Raised 3 -> 5 on 2026-08-22, when the reCAPTCHA branch started drawing on
+   * it too. A captcha hunt costs one per attempt and lands on the chooser
+   * often enough that a Student press costs another, so 3 could be spent
+   * before the image captcha ever appeared — and "we need to reload once or
+   * twice to get it" has to fit inside the budget with room to spare, or the
+   * feature stops just short of working.
+   */
+  const MAX_RELOADS = 5;
   const MAX_CAPTCHA_FETCHES = 6;
   const RETRY_MS = 1200;
 
@@ -146,19 +239,123 @@
     );
   };
 
+  /*
+   * The role chooser: Student / Employee / Parent / Alumni, each a form of its
+   * own POSTing to /vtop/prelogin/setup. Identified by markup rather than by
+   * URL, because it is served at BOTH /vtop/open/page and /vtop/login
+   * depending on cookie state — which is exactly why a reload from the login
+   * form could land on it.
+   *
+   * `#vtopLoginForm` absent is the half that keeps this off the login page
+   * itself: /vtop/login ships a hidden #stdForm too, and a first cut of the
+   * 2026-08-07 reload rule put the home page into a loop by not checking.
+   * Visibility is checked for the same reason.
+   */
+  /*
+   * THE ESCAPE HATCH, and the whole of it.
+   *
+   * Someone on the chooser needs to be left alone in exactly one situation:
+   * they were on the login form and came back here on purpose — by pressing
+   * Back, or by the "Go to Home Page" link the login card carries — because
+   * they want Employee, Parent or Alumni. Advancing them again would take
+   * those pages away from them entirely.
+   *
+   * Both of those routes are visible, and neither is a clock:
+   *
+   *   Back / Forward   navigation type "back_forward"
+   *   the Home link    document.referrer is the login page
+   *
+   * Everything else — opening VTOP fresh, a bookmark, a link from outside,
+   * signing out — is a normal arrival and gets the help, every single time.
+   * That is the difference from the cooldown this replaced, which also
+   * suppressed the fifth ordinary visit of the day and every deliberate retest.
+   */
+  const cameFromLogin = () => {
+    try {
+      const nav = performance.getEntriesByType("navigation")[0];
+      if (nav && nav.type === "back_forward") return true;
+    } catch {
+      // no navigation timing — fall through to the referrer
+    }
+    return /\/vtop\/login(\b|\/|$)/.test(document.referrer || "");
+  };
+
+  const rolePicker = () => {
+    if (document.getElementById("vtopLoginForm")) return null;
+    const form = document.getElementById("stdForm");
+    if (!form || !form.offsetParent) return null;
+    // it must be the real thing: VTOP's own action, with its own token
+    if (!/prelogin\/setup/.test(form.getAttribute("action") || "")) return null;
+    if (!form.elements._csrf || !(form.elements._csrf.value || "").trim()) return null;
+    return form;
+  };
+
+  /*
+   * Press Student. The form element is submitted through its own submit
+   * button where there is one, so any handler VTOP adds later is honoured;
+   * requestSubmit falls back to submit() on the older shape, which is what the
+   * live page is today (no onsubmit, an unnamed submit input).
+   */
+  const pressStudent = (form) => {
+    const button = form.querySelector("[type=submit], button");
+    try {
+      if (button && typeof button.click === "function") {
+        button.click();
+        return true;
+      }
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else form.submit();
+      return true;
+    } catch {
+      return false; // navigation blocked — leave the chooser on screen
+    }
+  };
+
   const run = () => {
     if (otpStep()) return;
 
-    // reCAPTCHA variant of the login page: complete as rendered, nothing to
-    // fetch. (VIT-AP flips between this and the image captcha — see ROADMAP.)
+    /*
+     * The reCAPTCHA variant — the one you cannot log in from (2026-08-22, see
+     * the header). Reload and ask VTOP again, until it serves the image
+     * captcha instead. This is the branch the file is named for.
+     *
+     * Nothing is lost by reloading here: run() executes once, at load, before
+     * anybody has typed. It is deliberately NOT guarded on the fields being
+     * empty — Chrome's password manager fills this form on arrival, so a
+     * "don't clobber what's typed" check would read as filled every time and
+     * the reload would never happen for exactly the people who need it.
+     */
     if (document.querySelector("input[name='gResponse'], input#gResponse")) {
-      if (store) store.removeItem(RELOAD_KEY);
+      if (store === null) return; // can't count attempts — never act
+      const spent = Number(store.getItem(RELOAD_KEY)) || 0;
+      if (spent >= MAX_RELOADS) return; // asked enough; leave the page alone
+      store.setItem(RELOAD_KEY, String(spent + 1));
+      setTimeout(() => window.location.reload(), 400);
       return;
     }
 
     if (captchaBlock()) {
       if (store) store.removeItem(RELOAD_KEY);
       if (!haveCaptcha()) ensureCaptcha();
+      return;
+    }
+
+    /*
+     * The chooser. This is where a reload lands, and skipping past it is the
+     * whole of "it should come back to THIS page". Counted against the same
+     * budget as the reload so the two can never ping-pong, and done at most
+     * once per tab so the chooser stays reachable on purpose.
+     */
+    const picker = rolePicker();
+    if (picker) {
+      if (store === null) return; // can't count attempts — never act
+      // they walked back here from the login form: they want another role
+      if (cameFromLogin()) return;
+      const attempts = Number(store.getItem(RELOAD_KEY)) || 0;
+      if (attempts >= MAX_RELOADS) return;
+      store.setItem(RELOAD_KEY, String(attempts + 1));
+      store.setItem(ROLE_KEY, String(Date.now()));
+      pressStudent(picker);
       return;
     }
 

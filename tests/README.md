@@ -20,6 +20,15 @@ It does **not** touch the live VTOP portal — no login or credentials are neede
   recurrence ending at the calendar's last instructional day
 - **Attendance forecaster banner + bunk table** — below-75% flagging, recovery
   counts, and academic-calendar parsing/caching
+- **Exam schedule** — the `.ics` export, the venue watcher (mail on a venue
+  going from `-` to real, batched and de-duplicated), and the background check
+  that runs it from any VTOP page
+- **Service worker** — the message routing (including `semester_page_open`, the
+  page-open event the semester picker hangs off), session-repair detection, the
+  Google auth flow, the daily digest, and the request learners
+
+Some checks boot `service_worker/background.js` in a `node:vm` with only the
+chrome namespaces `manifest.json` grants, rather than in the browser.
 
 ## Running
 
@@ -29,4 +38,4 @@ npx playwright install chromium   # one-time browser download
 npm test
 ```
 
-Expected output ends with `34 passed, 0 failed`.
+Expected output ends with `497 passed, 0 failed`.

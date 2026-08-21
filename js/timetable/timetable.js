@@ -129,16 +129,12 @@ const vr_tt_schedule = () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "timetable_view_page") {
     try {
-      // same, via processViewTimeTable
-      if (typeof window.vrAutoSemester === "function")
-        window.vrAutoSemester({
-          name: "timetable_view",
-          loaded: () =>
-            Array.from(document.querySelectorAll("table")).some((t) =>
-              /theory|lab|slot/i.test(t.innerText || "")
-            ),
-          submit: window.vrSemesterChange,
-        });
+      // same — the page-open message does the real work; see marks_page.js
+      // (its predicate also carried two literal 0x08 bytes where a regex word
+      // boundary was meant; that is gone with it — the shape now lives in
+      // js/shared/auto_semester.js)
+      if (typeof window.vrAutoSemesterFor === "function")
+        window.vrAutoSemesterFor("timetable_view");
       // try to display the timetable data if it exists
       getTimeTable((d) => {
         if (d && d.header && d.data) displayTableData(d.header, d.data);

@@ -101,17 +101,13 @@ const flagAttendanceRisk = async () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "mark_view_page") {
     try {
-      // open on the ongoing semester rather than an empty picker — this page
-      // loads from #semesterSubId's own onchange (doViewExamMark)
-      if (typeof window.vrAutoSemester === "function")
-        window.vrAutoSemester({
-          name: "mark_view",
-          loaded: () =>
-            Array.from(document.querySelectorAll("table")).some((t) =>
-              /course\s*code|course\s*title/i.test(t.innerText || "")
-            ),
-          submit: window.vrSemesterChange,
-        });
+      // Open on the ongoing semester rather than an empty picker. The page
+      // shape lives in js/shared/auto_semester.js now, not here — this message
+      // arrives only once VTOP has already rendered a semester's marks, so the
+      // call that does the work is the one on "semester_page_open". This is
+      // the second chance, and on a loaded page it is a no-op.
+      if (typeof window.vrAutoSemesterFor === "function")
+        window.vrAutoSemesterFor("mark_view");
       modify_marks_page();
       flagAttendanceRisk().catch((error) =>
         console.warn("vRevamp attendance flag:", error)

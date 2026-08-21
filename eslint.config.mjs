@@ -18,6 +18,8 @@ const sharedNames = [
   "getTimeTable",
   // js/utils
   "chooseCurrentSemester",
+  "parseSemesterStart",
+  "attendanceHasData",
   "semesterFallbackOrder",
   "currentTermStartEstimate",
   "semesterLooksStale",
