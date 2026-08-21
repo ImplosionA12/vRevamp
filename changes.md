@@ -1,5 +1,47 @@
 These are the changes made to the project: 
 
+## The reminder mail becomes a table you can scan (2026-08-22)
+
+*"email looks the worst man, like cant u said as table subejct wise"*.
+
+It already WAS a `<table>`, which is why the complaint looked odd for a moment —
+but with no borders, no header and no grouping, so twenty-one rows of
+`date · CODE — Assignment` arrived as one undifferentiated list. Six of those
+rows were CSE3009 experiments all due 20-Oct, printed one under another with
+the course code repeated on every single line.
+
+Grouped by subject, the same twenty-one rows become six short blocks:
+
+```
+SWE3004 — 3 pending
+  31-Jul-2026   22 day(s) overdue   Experiment-1
+  27-Aug-2026    5 day(s) left      Digital Assessment-1
+  05-Sep-2026   14 day(s) left      Experiment-3
+
+CSE3009 — 6 pending
+  20-Oct-2026   59 day(s) left      Experiment-1
+  …
+```
+
+The course code moves into the heading and comes out of every row, which is
+where most of the noise was. Days-left is now a column of its own, and anything
+already past its date says **overdue** in red rather than reading like the rest.
+
+Two constraints shaped it, both worth keeping written down:
+
+- **All styling is inline and the layout is a real table.** Gmail strips
+  `<style>` blocks and ignores most modern CSS, so anything clever would have
+  arrived as exactly the flat list it replaces. There is a test that fails if a
+  `<style>` block ever creeps in.
+- **The plain-text alternative is grouped too**, rather than falling back to
+  the old flat sort — a mail client showing the text part must not show the
+  version that was complained about.
+
+Also fixed in passing: the dues cell's date carried a `.replace(/-d{4}$/, "")`
+that was silently a no-op — the backslash had been lost, so it looked for four
+literal `d` characters. The year reads better anyway now the row fits on one
+line, so the dead call is simply gone rather than repaired.
+
 ## The dues cell stops being three wrapped lines (2026-08-22)
 
 *"those boxes look the ugliest dude dont enlarge them like that at all"*.

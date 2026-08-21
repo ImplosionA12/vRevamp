@@ -3491,6 +3491,77 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ====== the mail body: a table, grouped by subject ======
+   *
+   * "email looks the worst man, like cant u said as table subejct wise"
+   * (2026-08-22). It WAS a <table> — with no borders, no header and no
+   * grouping, so twenty-one rows read as one undifferentiated list, six of
+   * them CSE3009 experiments sharing a due date with the code repeated on
+   * every line. Grouping is the whole fix.
+   */
+  console.log("\n=== DA mail body: grouped by subject, not one flat list ===");
+  {
+    const page = await newPage(browser);
+    await page.setContent("<body></body>");
+    await shim(page, { fixedMs: new Date("2026-08-22T09:00:00+05:30").getTime() });
+    await inject(page, [
+      "js/shared/click.js",
+      "js/shared/google_auth.js",
+      "js/shared/vtop.js",
+      "js/da_upload.js",
+    ]);
+    const mail = await page.evaluate(() =>
+      vr_da_mail_body({
+        code: "all courses",
+        dues: [
+          { due: "20-Oct-2026", title: "CSE3009 — Experiment-1" },
+          { due: "20-Oct-2026", title: "CSE3009 — Experiment-2" },
+          { due: "20-Oct-2026", title: "CSE3009 — Experiment-3" },
+          { due: "05-Sep-2026", title: "SWE3004 — Experiment-3" },
+          { due: "27-Aug-2026", title: "SWE3004 — Digital Assessment-1" },
+          { due: "31-Jul-2026", title: "SWE3004 — Experiment-1" },
+        ],
+      })
+    );
+
+    ok(
+      "one heading per subject, not one line per assignment",
+      (mail.html.match(/>CSE3009</g) || []).length === 1 &&
+        (mail.html.match(/>SWE3004</g) || []).length === 1,
+      mail.html.slice(0, 200)
+    );
+    ok(
+      "each heading carries that subject's count",
+      /CSE3009<span[^>]*> — 3 pending/.test(mail.html) &&
+        /SWE3004<span[^>]*> — 3 pending/.test(mail.html),
+      (mail.html.match(/— \d+ pending/g) || []).join(" | ")
+    );
+    ok(
+      "the code is stripped from the row once it is in the heading",
+      /<td[^>]*>Experiment-1<\/td>/.test(mail.html) &&
+        !/CSE3009 — Experiment-1/.test(mail.html),
+      mail.html.slice(0, 300)
+    );
+    ok(
+      "an already-passed due is called overdue, in red",
+      /31-Jul-2026/.test(mail.html) &&
+        /day\(s\) overdue/.test(mail.html) &&
+        /#c0392b/.test(mail.html),
+      (mail.html.match(/\d+ day\(s\) (overdue|left)/g) || []).join(" | ")
+    );
+    ok(
+      "styling is inline — Gmail strips <style> blocks",
+      !/<style/i.test(mail.html) && /style="/.test(mail.html),
+      String(/<style/i.test(mail.html))
+    );
+    ok(
+      "the plain-text part is grouped too, not the old flat sort",
+      /^SWE3004\n/m.test(mail.text) && /^CSE3009\n/m.test(mail.text),
+      mail.text.slice(0, 120)
+    );
+    await page.close();
+  }
+
   /* ============ DA page 2026: dues column + email reminder ============ */
   console.log("\n=== DA page (2026): upcoming dues + 🔔 email reminder ===");
   {

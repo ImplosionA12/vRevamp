@@ -129,6 +129,91 @@ const parse_da_detail = (doc) => {
 };
 
 /*
+ * The mail body: a real table, grouped by subject.
+ *
+ * Asked for 2026-08-22 — "email looks the worst man, like cant u said as table
+ * subejct wise". It was already a <table>, which is why the complaint looked
+ * odd at first, but it had no borders, no header row and no grouping, so
+ * twenty-one rows of "date · CODE — Assignment" read as an undifferentiated
+ * list. Six of those rows were CSE3009 experiments all due 20-Oct, printed one
+ * under another with the code repeated every time.
+ *
+ * Grouped, the same twenty-one rows become six short blocks a student can scan
+ * by subject, and the repetition disappears into the group heading.
+ *
+ * All styling is INLINE and the layout is a table: Gmail strips <style> blocks
+ * and ignores most modern CSS, so anything clever here would arrive as the
+ * flat list it is meant to replace.
+ */
+const vr_da_group_key = (item, info) => {
+  // the all-courses payload writes "SWE3004 — Experiment-3"; the per-course
+  // one writes just "Experiment-3" and carries the code on the envelope
+  const m = /^([A-Z]{2,4}\d{3,4}[A-Z]?)\s*[—-]\s*(.*)$/.exec(String(item.title || ""));
+  return {
+    code: m ? m[1] : info.code || "Course",
+    title: m ? m[2] : String(item.title || ""),
+  };
+};
+
+const vr_da_mail_body = (info) => {
+  const dueMs = (d) => new Date(String(d).replace(/-/g, " ")).getTime();
+  const today = new Date().setHours(0, 0, 0, 0);
+
+  const groups = new Map();
+  info.dues
+    .slice()
+    .sort((a, b) => dueMs(a.due) - dueMs(b.due))
+    .forEach((item) => {
+      const { code, title } = vr_da_group_key(item, info);
+      if (!groups.has(code)) groups.set(code, []);
+      groups.get(code).push({ ...item, title });
+    });
+
+  const cell = "padding:6px 12px 6px 0;border-bottom:1px solid #eee;font-size:14px";
+  const blocks = [];
+  for (const [code, items] of groups) {
+    const rows = items
+      .map((a) => {
+        const days = Math.ceil((dueMs(a.due) - today) / 86400000);
+        const late = days < 0;
+        const when = late
+          ? `<span style="color:#c0392b;font-weight:bold">${-days} day(s) overdue</span>`
+          : `${days} day(s) left`;
+        return (
+          `<tr><td style="${cell}white-space:nowrap">${a.due}</td>` +
+          `<td style="${cell}white-space:nowrap">${when}</td>` +
+          `<td style="${cell}width:100%">${a.title}</td></tr>`
+        );
+      })
+      .join("");
+    blocks.push(
+      `<p style="margin:18px 0 4px;font-size:15px;font-weight:bold">${code}` +
+        `<span style="font-weight:normal;color:#777"> — ${items.length} pending</span></p>` +
+        `<table role="presentation" cellpadding="0" cellspacing="0" ` +
+        `style="border-collapse:collapse;width:100%">${rows}</table>`
+    );
+  }
+
+  // plain-text fallback, rebuilt in group order rather than the flat sort
+  const text = [];
+  for (const [code, items] of groups) {
+    text.push(code);
+    items.forEach((a) => text.push(`  ${a.due}  ${a.title}`));
+    text.push("");
+  }
+
+  return {
+    html:
+      `<p style="font-size:14px">Still to upload — ${info.dues.length} across ` +
+      `${groups.size} subject(s), soonest first within each.</p>` +
+      blocks.join("") +
+      '<p style="color:#777;font-size:12px;margin-top:20px">' +
+      "Sent by vRevamp from your VTOP digital assignments page.</p>",
+    text: text.join("\n"),
+  };
+};
+
+/*
  * The two 2026-layout due buttons, registered once for the life of the page
  * (js/shared/click.js). They are top-level and stateless on purpose: everything
  * they need arrives on the clicked button as a data-* attribute.
@@ -238,21 +323,14 @@ window.vrDelegate("da-mailnow", async (btn) => {
   btn.disabled = true;
   btn.textContent = "sending…";
 
-  const rows = info.dues
-    .slice()
-    .sort((a, b) => new Date(a.due.replace(/-/g, " ")) - new Date(b.due.replace(/-/g, " ")))
-    .map((a) => `<tr><td style="padding:4px 10px 4px 0">${a.due}</td><td>${a.title}</td></tr>`)
-    .join("");
+  const mail = vr_da_mail_body(info);
 
   const result = await window.vrMailOrAsk(
     btn,
     {
       subject: `vRevamp — ${info.dues.length} assignment(s) still to upload`,
-      html:
-        "<p>Still to upload, soonest first:</p>" +
-        `<table style="border-collapse:collapse">${rows}</table>` +
-        "<p style=\"color:#777;font-size:12px\">Sent by vRevamp from your VTOP digital assignments page.</p>",
-      text: info.dues.map((a) => `${a.due}  ${a.title}`).join("\n"),
+      html: mail.html,
+      text: mail.text,
     },
     (text, ok) => {
       btn.textContent = ok ? text : `✗ ${text}`;
@@ -391,7 +469,7 @@ let da_page_2026 = async () => {
     // one line, not three: "05-Sep · 14d" instead of "05-Sep-2026 (14 day(s)
     // left)" wrapped across a 90px column
     span.style.cssText = "font-size:11px;white-space:nowrap;";
-    span.textContent = `${upcoming[0].due.replace(/-d{4}$/, "")} · ${days}d left`;
+    span.textContent = `${upcoming[0].due} · ${days}d left`;
     span.title = `${upcoming[0].title} — due ${upcoming[0].due}`;
     cell.appendChild(span);
     // Everything both buttons need, written onto the buttons themselves. See
