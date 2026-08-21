@@ -2360,6 +2360,47 @@ chrome.webRequest.onBeforeRequest.addListener(
 );
 
 /*
+ * Learns the attendance SEARCH request — the POST VTOP makes when a semester is
+ * chosen on the Class Attendance page — for the home card's "Refresh now"
+ * button (2026-08-22).
+ *
+ * That button used to navigate to the attendance page, because replaying VTOP
+ * endpoints is what ROADMAP rule 4 warns about. The warning is about GUESSING
+ * an endpoint and firing a burst at it with a scraped token. Recording the
+ * student's own request removes the guess, exactly as the two blocks above
+ * already do for the exam search and the attendance detail; window.vrVtop.post
+ * removes the scraped token and adds the circuit breaker.
+ *
+ * The Detail/Display exclusion matters as much here as it does in the page
+ * registry: those are the per-subject endpoints the insights script fetches
+ * once per row, and recording one of THOSE as "the attendance request" would
+ * have the refresh button replay a single subject's history and parse no
+ * table at all.
+ */
+const ATTENDANCE_AUTH_PARAMS = ["_csrf", "authorizedID", "x"];
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+    if (details.url.indexOf("processViewStudentAttendance") === -1) return;
+    if (/Detail|Display/.test(details.url)) return;
+    const path = details.url
+      .replace(/^https?:\/\/[^/]+\//, "")
+      .replace(/^vtop\//, "")
+      .split("?")[0];
+    const params = {};
+    const formData = (details.requestBody && details.requestBody.formData) || {};
+    Object.entries(formData).forEach(([key, value]) => {
+      if (ATTENDANCE_AUTH_PARAMS.includes(key)) return;
+      params[key] = Array.isArray(value) ? value[0] : value;
+    });
+    chrome.storage.local.set({ vrevamp_attendance_request: { path, params } });
+  },
+  { urls: VTOP_URLS },
+  ["requestBody"]
+);
+
+/*
  * Checks if the user is online or offline
  * and renders an offline view for the page
  *

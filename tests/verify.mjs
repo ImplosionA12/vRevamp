@@ -4411,12 +4411,145 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         await delay(200);
         const clicks = await page.evaluate(() => window.__menuClicks);
         ok(
-          "clicking it drives VTOP's own Class Attendance menu entry",
+          "with nothing recorded to replay, it falls back to opening the page",
           clicks === 1,
           String(clicks)
         );
       }
       await page.close();
+
+      /* ---- refresh in place, when the student's own request is known ----
+       *
+       * 2026-08-22: the button used to navigate, always. It replays now —
+       * their OWN recorded POST, through window.vrVtop (live token, circuit
+       * breaker), which is what makes this different from the guessed burst
+       * ROADMAP rule 4 warns about. The page must NOT be opened.
+       */
+      {
+        const p = await newPage(browser);
+        await p.setContent(
+          "<body><a id='attmenu' data-url='academics/common/StudentAttendance'>Class Attendance</a>" +
+            "<input name='_csrf' value='live-token'>" +
+            "<input id='authorizedIDX' value='24MIC7198'>" +
+            "<div id='main-section'></div></body>"
+        );
+        await shim(p, {
+          fixedMs: during,
+          storage: {
+            ...staleStore,
+            // the previous real visit: exam-dated fields this response cannot
+            // reproduce, on a subject the response DOES carry, so "carried
+            // forward" is a claim with something behind it
+            vrevamp_attendance_summary: {
+              fetchedAt: during - 2 * 24 * 60 * 60 * 1000,
+              semester: "Fall Semester 2026-27",
+              subjects: [
+                {
+                  name: "SWE2009 - Theory",
+                  code: "SWE2009",
+                  pct: 71,
+                  below75: true,
+                  safeNow: 0,
+                  nextBunkable: 4,
+                  nextExamIso: "2026-09-15",
+                  nextExamLabel: "CAT-1",
+                  unit: "class(es)",
+                },
+              ],
+            },
+            vrevamp_attendance_request: {
+              path: "processViewStudentAttendance",
+              params: { semesterSubId: "AP2026272" },
+            },
+          },
+        });
+        // VTOP's answer: one theory subject comfortably above the line, one
+        // LAB whose headroom must come back in sessions rather than hours
+        await p.evaluate(() => {
+          window.__posts = [];
+          window.fetch = async (url, init) => {
+            window.__posts.push({ url: String(url), body: String((init || {}).body || "") });
+            return {
+              ok: true,
+              status: 200,
+              text: async () =>
+                "<table><thead><tr><th>Sl.No.</th><th>Course Detail</th>" +
+                "<th>Attended Classes</th><th>Total Classes</th></tr></thead><tbody>" +
+                "<tr><td>1</td><td>SWE2009 - Theory</td><td>45</td><td>50</td></tr>" +
+                "<tr><td>2</td><td>ECE1006 - Lab</td><td>20</td><td>24</td></tr>" +
+                "</tbody></table>",
+            };
+          };
+        });
+        await inject(p, [
+          "js/shared/click.js",
+          "js/shared/vtop.js",
+          "js/utils/chooseCurrentSem.js",
+          "js/home_notices.js",
+        ]);
+        await delay(1200);
+        await p.evaluate(() => {
+          window.__menuClicks = 0;
+          document
+            .getElementById("attmenu")
+            .addEventListener("click", () => (window.__menuClicks += 1));
+        });
+        await p.click('[data-vr-action="home-attendance-refresh"]');
+        await delay(900);
+
+        const after = await p.evaluate(() => ({
+          menuClicks: window.__menuClicks,
+          posts: window.__posts.map((x) => x.url),
+          body: (window.__posts[0] || {}).body || "",
+          cached: window.__storage.vrevamp_attendance_summary,
+        }));
+        ok(
+          "it replays the student's own attendance POST instead of navigating",
+          after.menuClicks === 0 &&
+            after.posts.length === 1 &&
+            /processViewStudentAttendance$/.test(after.posts[0]) &&
+            /semesterSubId=AP2026272/.test(after.body),
+          JSON.stringify(after.posts) + " " + after.body.slice(0, 120)
+        );
+        ok(
+          "…with a LIVE token, not the stale one that was recorded",
+          /_csrf=live-token/.test(after.body) && /authorizedID=24MIC7198/.test(after.body),
+          after.body.slice(0, 140)
+        );
+        const subjects = (after.cached || {}).subjects || [];
+        const lab = subjects.find((s) => /lab/i.test(s.unit || ""));
+        const theory = subjects.find((s) => /SWE2009/.test(s.name || ""));
+        ok(
+          "the snapshot is rewritten from the response — 45/50 is 90%",
+          !!theory && theory.pct === 90 && theory.safeNow === 7,
+          JSON.stringify(theory)
+        );
+        // 20/24 -> floor(20 - 0.75*24) = 2 class-hours = ONE lab session
+        ok(
+          "a lab's headroom comes back in sessions, not class-hours",
+          !!lab && lab.pct === 83 && lab.safeNow === 1 && lab.unit === "lab(s)",
+          JSON.stringify(lab)
+        );
+        /*
+         * The honest limit of a refresh that never opens the page: the
+         * exam-dated columns come from the calendar and the per-subject
+         * history, neither of which is in this response, so they are carried
+         * forward rather than recomputed badly or silently dropped.
+         */
+        ok(
+          "calendar-derived fields survive the refresh that cannot recompute them",
+          !!theory && theory.nextExamLabel === "CAT-1" && theory.nextBunkable === 4,
+          JSON.stringify(theory)
+        );
+        // …and the numbers this response CAN prove are the ones that changed:
+        // the cached snapshot had SWE2009 below the line at 71%
+        ok(
+          "a subject that has climbed back above 75% is no longer flagged",
+          !!theory && theory.below75 === false && theory.pct === 90,
+          JSON.stringify(theory)
+        );
+        await p.close();
+      }
 
       // A role whose menu has no Class Attendance entry must not be given a
       // button that cannot work — it gets the instruction that is still true.
@@ -7471,6 +7604,51 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         !("authorizedID" in learned.params) &&
         !("x" in learned.params),
       JSON.stringify(learned && learned.params)
+    );
+
+    /*
+     * And the same for attendance, added 2026-08-22 so the home card's
+     * "Refresh now" can replay the student's own request instead of navigating
+     * to the page. The Detail/Display exclusion is the half that matters:
+     * those fire once per subject, and recording one as "the attendance
+     * request" would have the button replay a single row's history and find
+     * no table at all.
+     */
+    fireBefore({
+      method: "POST",
+      url: VT + "processViewStudentAttendance",
+      requestBody: {
+        formData: {
+          _csrf: ["stale-token"],
+          authorizedID: ["24MIC7198"],
+          x: ["Wed, 20 Aug 2026 00:00:00 GMT"],
+          semesterSubId: ["AP2026272"],
+        },
+      },
+    });
+    const att = store.vrevamp_attendance_request;
+    ok(
+      "the attendance request is learned, credentials stripped",
+      !!att &&
+        att.path === "processViewStudentAttendance" &&
+        att.params.semesterSubId === "AP2026272" &&
+        !("_csrf" in att.params) &&
+        !("authorizedID" in att.params),
+      JSON.stringify(att)
+    );
+
+    fireBefore({
+      method: "POST",
+      url: VT + "processViewStudentAttendanceDetail",
+      requestBody: {
+        formData: { semesterSubId: ["AP2026272"], classId: ["ECE2015"] },
+      },
+    });
+    ok(
+      "a per-subject detail POST never overwrites it",
+      store.vrevamp_attendance_request.path === "processViewStudentAttendance" &&
+        !("classId" in store.vrevamp_attendance_request.params),
+      JSON.stringify(store.vrevamp_attendance_request)
     );
   }
 

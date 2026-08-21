@@ -1,5 +1,50 @@
 These are the changes made to the project: 
 
+## "Refresh now" stops navigating and actually refreshes (2026-08-22)
+
+*"remove that comment, see the old extention from git and see how it works and
+all and implement it all"*.
+
+The comment removed said the card could not refresh without opening the
+attendance page, because replaying VTOP's internal endpoints is what returns
+404s and ends the session — ROADMAP rule 4. The rule is real. It was being
+applied to the wrong thing.
+
+What rule 4 warns about is **guessing** an endpoint and firing a burst at it,
+each caller carrying its own scraped `_csrf`. This does neither, and it does
+not have to invent the way out: the repo already solved both halves, and two
+shipped features use the solution.
+
+| the risk | what already existed |
+|---|---|
+| guessing the endpoint | the worker records the student's OWN POST from `webRequest` — it already does this for the exam-schedule search and the attendance-detail request |
+| a scraped, stale token | `window.vrVtop.post` supplies a live `_csrf`/`authorizedID` per call |
+| a burst that kills the session | that module's circuit breaker: three consecutive 401/403/404s and it sends nothing more, with a visible reason instead of a silent dead session |
+
+So the worker learns `processViewStudentAttendance` the same way (auth params
+stripped — a stored token is stale by definition), and the button replays it
+once, through the guarded path. The Detail/Display exclusion matters as much
+here as in the page registry: those fire once per subject, and recording one as
+"the attendance request" would replay a single row's history and parse no table
+at all.
+
+**It still falls back to navigating.** Nothing recorded yet, breaker tripped, or
+a response that will not parse — the old behaviour is the recovery, because a
+page open beats a dead button.
+
+### What a refresh without the page can and cannot know
+
+Rewritten from the response: percentage, debar headroom, below-75, and the
+attend-N-to-recover count — with labs converted back to SESSIONS, since VTOP
+counts a two-hour lab as two classes.
+
+Carried forward, not recomputed badly and not silently dropped: the exam-dated
+columns and `maxPct`/`canRecover`. Those come from the academic calendar and
+the per-subject history, neither of which is in this response. That is the
+honest limit of refreshing without opening the page, and there is now a test
+that holds it: a cached CAT-1 figure survives while the percentage next to it
+changes from 71% to 90%.
+
 ## The auto-selector answered two pages, ignored one, and wrecked one (2026-08-21)
 
 *"make it so that the inside applications as auto selctor and stuff work
