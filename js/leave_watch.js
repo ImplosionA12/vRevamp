@@ -177,12 +177,51 @@
     return fresh;
   };
 
+  /* ---- is the DOM the whole story? ---------------------------------------
+   *
+   * It is not, and this was shipped wrong for an hour before being caught:
+   * *"there are muktiole entries not just 8 check the site properly"*.
+   *
+   * VTOP renders this table through DataTables with client-side paging. The
+   * SERVER sends every row — 28 rows in an 80 KB response, verified — and
+   * DataTables then removes all but the current page from the DOM. So reading
+   * the live page finds ten rows and believes that is everything, while the
+   * student's list is twenty-seven long.
+   *
+   * The failure would have been silent and specific: an approval landing on
+   * page 2 or 3 would never be noticed, and only ever for the students with
+   * enough history to paginate — i.e. the ones who travel most.
+   *
+   * DataTables leaves its own count in the DOM ("Showing 1 to 10 of 27
+   * entries"), which is readable from an isolated world without touching the
+   * page's jQuery. When it says there is more than we can see, the page read
+   * is abandoned for the network one, which returns the complete table.
+   */
+  const domIsComplete = (table) => {
+    const info = document.querySelector(".dataTables_info");
+    if (!info) return true; // not a DataTable — the DOM is all there is
+    const match = /of\s+([\d,]+)\s+entries/i.exec(clean(info.textContent));
+    if (!match) return true;
+    const total = parseInt(match[1].replace(/,/g, ""), 10);
+    if (!Number.isFinite(total) || total <= 0) return true;
+    return table.rows.length - 1 >= total;
+  };
+
   /* ---- on the page itself -------------------------------------------------
-   * The cheapest and most trustworthy read: the student opened the page, so
-   * the table is right there and no request has to be made at all.
+   * The cheapest read when the DOM really does hold everything: the student
+   * opened the page, so no request has to be made at all. When it does not —
+   * see domIsComplete — this escalates rather than reporting a partial table.
    */
   const readFromPage = async () => {
-    const rows = parseLeaveTable(findLeaveTable(document));
+    const table = findLeaveTable(document);
+    if (!table) return false;
+    if (!domIsComplete(table)) {
+      // a deliberate visit, so the rate limit is bypassed: the student is
+      // looking at this page precisely because they want to know
+      await backgroundCheck({ force: true });
+      return true;
+    }
+    const rows = parseLeaveTable(table);
     if (!rows) return false;
     await remember(rows);
     await chrome.storage.local.set({ [CHECKED_KEY]: Date.now() });
@@ -197,7 +236,7 @@
    * endpoint — the same rule the attendance refresh and the venue watcher follow.
    */
   let running = false;
-  const backgroundCheck = async () => {
+  const backgroundCheck = async (opts) => {
     if (running) return;
     if (!window.vrVtop || typeof window.vrVtop.post !== "function") return;
     running = true;
@@ -206,7 +245,7 @@
       const request = store[REQUEST_KEY];
       if (!request || !request.path) return;
       const last = Number(store[CHECKED_KEY]) || 0;
-      if (Date.now() - last < CHECK_EVERY_MS) return;
+      if (!(opts && opts.force) && Date.now() - last < CHECK_EVERY_MS) return;
       // stamp BEFORE the request: a failure must not free the budget, or a
       // broken session turns every page arrival into another attempt
       await chrome.storage.local.set({ [CHECKED_KEY]: Date.now() });
@@ -225,6 +264,10 @@
   // Exposed for the tests, which drive the comparison directly rather than
   // through a page load.
   window.vrLeaveParse = (root) => parseLeaveTable(findLeaveTable(root || document));
+  window.vrLeaveDomComplete = () => {
+    const t = findLeaveTable(document);
+    return t ? domIsComplete(t) : null;
+  };
   window.vrLeaveRemember = remember;
   window.vrLeaveCheck = backgroundCheck;
 

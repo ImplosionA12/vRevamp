@@ -3799,6 +3799,55 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await p.close();
     }
 
+    /* ---- the DOM is not the whole table ----
+     *
+     * Caught after shipping: "there are muktiole entries not just 8 check the
+     * site properly". VTOP renders this through DataTables with CLIENT-side
+     * paging — the server sends every row (28 rows in an 80 KB response,
+     * verified live) and DataTables then strips all but the current page from
+     * the DOM. Reading the live page finds ten and believes that is all, while
+     * the student's list is twenty-seven long.
+     *
+     * The failure would have been silent and aimed at exactly the wrong
+     * people: an approval landing on page 2 or 3 is invisible, and only
+     * students with enough history to paginate have a page 2 — the ones who
+     * travel most.
+     */
+    {
+      const ten = Array.from({ length: 10 }, (_, i) =>
+        row(i + 1, "Hyderabad", "2026-04-11", OK, true)
+      ).join("");
+      const p = await boot(
+        table(ten).replace(
+          "</table>",
+          '</table><div class="dataTables_info">Showing 1 to 10 of 27 entries</div>'
+        )
+      );
+      const out = await p.evaluate(() => ({
+        parsed: (window.vrLeaveParse() || []).length,
+        complete: window.vrLeaveDomComplete(),
+      }));
+      ok(
+        "a paginated table is not mistaken for the whole list",
+        out.parsed === 10 && out.complete === false,
+        JSON.stringify(out)
+      );
+      await p.close();
+    }
+
+    // …and when the counts agree, the DOM really is everything
+    {
+      const p = await boot(
+        table(row(1, "Hyderabad", "2026-04-11", OK, true)).replace(
+          "</table>",
+          '</table><div class="dataTables_info">Showing 1 to 1 of 1 entries</div>'
+        )
+      );
+      const complete = await p.evaluate(() => window.vrLeaveDomComplete());
+      ok("an unpaginated table is read straight from the page", complete === true, String(complete));
+      await p.close();
+    }
+
     // a second pass over unchanged rows says nothing
     {
       const seeded = {

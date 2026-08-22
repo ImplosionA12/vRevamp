@@ -45,6 +45,29 @@ When two approvals land together the **latest** trip is named and the rest are
 a count — asked for directly: *"only the file of the recent or latest leave
 approval"*. The one you travel on next is the headline.
 
+### Caught after shipping: the DOM is not the whole table
+
+*"there are muktiole entries not just 8 check the site properly"* — and it was
+right. I had read ten rows off the live page and reported them as the list.
+
+VTOP renders this table through **DataTables with client-side paging**. The
+server sends every row — verified by replaying the POST: **28 rows in an 80 KB
+response** — and DataTables then strips all but the current page out of the
+DOM. `.dataTables_info` said it plainly the whole time: *"Showing 1 to 10 of 27
+entries"*. The real state was **25 accepted and 2 pending**, not 8 and 2.
+
+The bug this created was specific and silent, and aimed at the wrong people: the
+background replay was already correct (it parses the raw response), but the
+on-page read believed the ten rows in front of it. So an approval landing on
+page 2 or 3 would never be noticed — and only students with enough history to
+paginate have a page 2. The ones who travel most.
+
+Fixed by asking DataTables for its own count, which is plain text in the DOM and
+needs no access to the page's jQuery. When it says there is more than is
+visible, the page read is abandoned for the network one, which returns the
+complete table. That escalation deliberately bypasses the three-hour rate limit:
+a student sitting on that page is there precisely because they want to know.
+
 ### How it checks without you opening the page
 
 The same rule as everything else here: the worker records the student's **own**
