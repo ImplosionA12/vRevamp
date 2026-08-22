@@ -3671,6 +3671,156 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ====== leave approval: the transition, not the count ======
+   *
+   * Asked 2026-08-23: "when the leave is approved and we open the vtop then
+   * send us it got approved and the approval file". Table shape read live the
+   * same day off hostel/StudentGeneralOuting, including the three real status
+   * strings — the apostrophes in "Mentor's" are VTOP's own.
+   *
+   * The property that matters is that this compares rather than counts. A
+   * request can move Mentor -> Warden -> Accepted while an older one is
+   * rejected and a newer one filed; counting accepted rows would announce the
+   * wrong trip, or stay silent when two things change at once.
+   */
+  console.log("\n=== leave approval watcher ===");
+  {
+    const table = (rows) => `<body><table>
+      <tr><th>S.No</th><th>Registration Number</th><th>Place Of Visit</th>
+          <th>Purpose Of Visit</th><th>From Date</th><th>From Time</th>
+          <th>To Date</th><th>To Time</th><th>Action</th><th>Status</th>
+          <th>Download OutPass</th></tr>
+      ${rows}</tr></table></body>`;
+    const row = (no, place, from, status, pass) =>
+      `<tr><td>${no}</td><td>24MIC7198</td><td>${place}</td><td>Visit</td>
+       <td>${from} 00:00:00.0</td><td>01:00 PM</td><td>${from} 00:00:00.0</td>
+       <td>08:00 PM</td><td> </td><td>${status}</td>
+       <td>${pass ? '<a href="#">Download</a>' : " "}</td></tr>`;
+
+    const PENDING = "Waiting for Mentor&#39;s Approval";
+    const WARDEN = "Waiting for Warden&#39;s Approval";
+    const OK = "Leave Request Accepted";
+
+    const boot = async (html, store) => {
+      const p = await newPage(browser);
+      await p.setContent(html);
+      await shim(p, { storage: store || {} });
+      await inject(p, ["js/shared/click.js", "js/shared/vtop.js", "js/leave_watch.js"]);
+      await p.evaluate(() => {
+        window.__notes = [];
+        const send = chrome.runtime.sendMessage;
+        chrome.runtime.sendMessage = (msg, cb) => {
+          if (msg && msg.message === "notify_now") {
+            window.__notes.push({ title: msg.title, body: msg.body });
+            if (cb) cb({ ok: true });
+            return;
+          }
+          return send(msg, cb);
+        };
+      });
+      return p;
+    };
+
+    // parsing, against the live column order
+    {
+      const p = await boot(table(row(12, "Hyderabad", "2026-04-11", PENDING, false)));
+      const rows = await p.evaluate(() => window.vrLeaveParse());
+      ok(
+        "the table is read by header, with status and OutPass located",
+        rows && rows.length === 1 && rows[0].place === "Hyderabad" &&
+          rows[0].accepted === false && rows[0].hasPass === false,
+        JSON.stringify(rows)
+      );
+      await p.close();
+    }
+
+    // "Waiting for Warden" is still pending — "Approval" appears in BOTH
+    // pending strings, so a naive /approv/ test would call it accepted
+    {
+      const p = await boot(table(row(12, "Hyderabad", "2026-04-11", WARDEN, false)));
+      const rows = await p.evaluate(() => window.vrLeaveParse());
+      ok(
+        "waiting-for-approval is not approved",
+        rows && rows[0].accepted === false,
+        JSON.stringify(rows && rows[0])
+      );
+      await p.close();
+    }
+
+    // the transition: pending before, accepted now -> one notification
+    {
+      const seeded = {
+        vrevamp_leave_status: {
+          fetchedAt: Date.now() - 1000,
+          rows: [{ key: "12|2026-04-11", place: "Hyderabad", from: "2026-04-11", status: PENDING, accepted: false, hasPass: false }],
+        },
+      };
+      const p = await boot(table(row(12, "Hyderabad", "2026-04-11", OK, true)), seeded);
+      const out = await p.evaluate(async () => {
+        const rows = window.vrLeaveParse();
+        const fresh = await window.vrLeaveRemember(rows);
+        return { fresh: fresh.length, notes: window.__notes, stored: window.__storage.vrevamp_leave_status.rows[0] };
+      });
+      ok(
+        "a row that moved from pending to accepted is announced once",
+        out.fresh === 1 && out.notes.length === 1 &&
+          /Leave approved/.test(out.notes[0].title) && /Hyderabad/.test(out.notes[0].title),
+        JSON.stringify(out.notes)
+      );
+      ok(
+        "…and the OutPass is what the message tells them to collect",
+        /OutPass/.test(out.notes[0].body),
+        JSON.stringify(out.notes[0])
+      );
+      ok(
+        "the new state is remembered, so it is not announced twice",
+        out.stored && out.stored.accepted === true,
+        JSON.stringify(out.stored)
+      );
+      await p.close();
+    }
+
+    /*
+     * FIRST SIGHTING IS HISTORY, NOT NEWS. On a fresh install the table is
+     * full of trips already taken; announcing those would cry wolf about a
+     * holiday from last October.
+     */
+    {
+      const p = await boot(table(row(3, "HYDERABAD", "2025-10-11", OK, true)));
+      const out = await p.evaluate(async () => {
+        const fresh = await window.vrLeaveRemember(window.vrLeaveParse());
+        return { fresh: fresh.length, notes: window.__notes.length };
+      });
+      ok(
+        "an already-accepted row seen for the first time is recorded silently",
+        out.fresh === 0 && out.notes === 0,
+        JSON.stringify(out)
+      );
+      await p.close();
+    }
+
+    // a second pass over unchanged rows says nothing
+    {
+      const seeded = {
+        vrevamp_leave_status: {
+          fetchedAt: Date.now() - 1000,
+          rows: [{ key: "12|2026-04-11", place: "Hyderabad", from: "2026-04-11", status: OK, accepted: true, hasPass: true }],
+        },
+      };
+      const p = await boot(table(row(12, "Hyderabad", "2026-04-11", OK, true)), seeded);
+      const out = await p.evaluate(async () => {
+        const fresh = await window.vrLeaveRemember(window.vrLeaveParse());
+        return { fresh: fresh.length, notes: window.__notes.length };
+      });
+      ok(
+        "nothing changed means nothing is sent",
+        out.fresh === 0 && out.notes === 0,
+        JSON.stringify(out)
+      );
+      await p.close();
+    }
+  }
+
   /* ====== the mail body: a table, grouped by subject ======
    *
    * "email looks the worst man, like cant u said as table subejct wise"

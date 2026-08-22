@@ -1,3 +1,64 @@
+## Leave approval tells you, instead of you refreshing (2026-08-23)
+
+*"the idea is geeral leave approval check … when the leave is approved and we
+open the vtop then send us it got approved and the approval file"*.
+
+A leave request is not decided when you file it. It sits with a mentor, then a
+warden, and the only way to find out it moved is to open Hostel → General
+Outing and read a table. So you refresh for days, or miss it entirely and
+travel without the OutPass you are meant to carry at the gate.
+
+### The shape, read live rather than assumed
+
+`hostel/StudentGeneralOuting`, signed in:
+
+| S.No | Place Of Visit | From Date | … | **Status** | **Download OutPass** |
+|---|---|---|---|---|---|
+
+Three statuses, and they are a pipeline rather than a flag:
+
+- `Waiting for Mentor's Approval` — pending
+- `Waiting for Warden's Approval` — pending, one step further
+- `Leave Request Accepted` — approved
+
+Two of those contain the word **Approval** while meaning *not approved*, which
+is the trap a naive `/approv/i` test walks straight into. There is a test named
+for it.
+
+The OutPass link exists **only on accepted rows** — so "it is approved" and
+"your file is ready" are the same event, and are reported together.
+
+### It compares, it does not count
+
+"Approved" is not a number going up. A request can move Mentor → Warden →
+Accepted while an older one is rejected and a newer one is filed; counting
+accepted rows would announce the wrong trip, or say nothing when two things
+change at once. Each row is remembered by identity (S.No + From date, which
+survive re-ordering) and the only thing that fires a notification is a per-row
+transition: **not accepted before, accepted now**.
+
+A row seen for the first time already accepted is recorded **silently**. On a
+fresh install that table is full of trips already taken, and announcing them
+would cry wolf about a holiday from last October.
+
+When two approvals land together the **latest** trip is named and the rest are
+a count — asked for directly: *"only the file of the recent or latest leave
+approval"*. The one you travel on next is the headline.
+
+### How it checks without you opening the page
+
+The same rule as everything else here: the worker records the student's **own**
+POST to that page, and the watcher replays it through `window.vrVtop` — live
+token, circuit breaker — at most once every three hours. If the page has never
+been opened since install, nothing is recorded and the watcher does nothing at
+all rather than inventing an endpoint. When you *are* on the page it just reads
+the table in front of it and makes no request whatsoever.
+
+`notify_now` is new in the worker: everything that existed scheduled a
+notification for a future time, and an approval is news the moment it is seen.
+Telling a student about a gate pass an hour later is telling them after they
+were supposed to be at the gate.
+
 ## Mail sends from the club address now (2026-08-22)
 
 `MAIL_RELAY_URL` is no longer blank. The Apps Script relay is deployed under

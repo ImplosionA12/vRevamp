@@ -1301,6 +1301,10 @@ chrome.webRequest.onCompleted.addListener(
     );
     if (opened) returnMessage("semester_page_open", details.tabId, { page: opened[1] });
 
+    // the leave page announces itself, so the watcher can read the table that
+    // is already on screen instead of asking VTOP for it again
+    if (link.indexOf("hostel/StudentGeneralOuting") !== -1) notify("leave_page");
+
     if (link.indexOf("doStudentMarkView") !== -1) {
       notify("mark_view_page");
     } else if (link.indexOf("StudentTimeTable") !== -1) {
@@ -2133,6 +2137,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // current caller either — the sign-in-free path is the one-tap TEMPLATE
     // links in timetable_ics.js, because Google's 2026 revamp broke
     // /r/settings/import outright (it never renders).
+    /*
+     * A notification NOW, as opposed to schedule_local_reminders' "at a time".
+     * The approval watcher needs it: a leave being accepted is news the moment
+     * it is noticed, and scheduling it for later would be telling the student
+     * about a gate pass after they were meant to be at the gate.
+     */
+    case "notify_now":
+      try {
+        chrome.notifications.create(`vrnow|${Date.now()}`, {
+          type: "basic",
+          iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
+          title: String(request.title || "vRevamp").slice(0, 150),
+          message: String(request.body || "").slice(0, 500),
+          priority: 2,
+          requireInteraction: true,
+        });
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error) });
+      }
+      return true;
     case "schedule_local_reminders":
       scheduleLocalReminders(
         request.tag,
@@ -2409,6 +2434,32 @@ chrome.webRequest.onBeforeRequest.addListener(
  * table at all.
  */
 const ATTENDANCE_AUTH_PARAMS = ["_csrf", "authorizedID", "x"];
+
+/*
+ * Learns the General Outing / leave request, for the approval watcher
+ * (js/leave_watch.js, 2026-08-23). Same rule as the two recorders above and
+ * for the same reason: the endpoint is the student's own POST, replayed later
+ * with a live token, never an endpoint this code invented.
+ */
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+    if (details.url.indexOf("hostel/StudentGeneralOuting") === -1) return;
+    const path = details.url
+      .replace(/^https?:\/\/[^/]+\//, "")
+      .replace(/^vtop\//, "")
+      .split("?")[0];
+    const params = {};
+    const formData = (details.requestBody && details.requestBody.formData) || {};
+    Object.entries(formData).forEach(([key, value]) => {
+      if (ATTENDANCE_AUTH_PARAMS.includes(key)) return;
+      params[key] = Array.isArray(value) ? value[0] : value;
+    });
+    chrome.storage.local.set({ vrevamp_leave_request: { path, params } });
+  },
+  { urls: VTOP_URLS },
+  ["requestBody"]
+);
 
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {

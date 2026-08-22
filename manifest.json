@@ -44,7 +44,8 @@
         "js/cgpa_simulator.js",
         "js/grade_history_calc.js",
         "js/faculty.js",
-        "js/weekend_outing.js"
+        "js/weekend_outing.js",
+        "js/leave_watch.js"
       ],
       "matches": [
         "*://web.vitap.ac.in/*",
