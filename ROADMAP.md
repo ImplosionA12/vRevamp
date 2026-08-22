@@ -181,7 +181,45 @@ Nothing in the extension will do this — the TEMPLATE route has no token and no
 extended property to find them by. Once §1 is done, `deleteOldImports` handles
 future runs.
 
-## 3. Audience — DECIDED 2026-08-22: GitHub / unpacked, no publishing yet
+## 3. Audience — DECIDED 2026-08-23: PUBLISH the consent screen (unverified)
+
+Correction to what this section said for a day: **publishing and verification
+are different things**, and I had them conflated. Three states, not two:
+
+| consent screen | who can consent | limits |
+|---|---|---|
+| Testing | hand-added test users only | consent expires ~7 days |
+| **In production, unverified** | **anyone**, past a warning screen | ~100-user cap on sensitive scopes |
+| In production, verified | anyone, no warning | none |
+
+The middle row is what most small extensions ship as, and it is what the user
+had already experienced from other people's extensions — strangers consenting
+with no relationship to the developer. Publishing needs **no review, no
+submission and no wait**; verification only removes the warning and the cap.
+
+So: **Publish app** in Cloud Console (project `verammp`, owner
+ruthvikmrao@gmail.com). No test users, ever. The 7-day re-consent problem is
+Testing-only and disappears with it.
+
+The cost, accepted knowingly: `gmail.readonly` is **restricted**, and Google
+generally will not grant restricted scopes to an unverified production app — so
+the API path for auto-OTP is expected to stop working. That is survivable
+because the **open-mail-tab scan needs no OAuth at all**, and the OTP mail lands
+in the very inbox the student is about to look at. **Watch for this after
+publishing** and make sure the fallback engages cleanly rather than erroring
+first.
+
+There is no free route to restricted scopes for strangers: that needs
+verification *plus* a paid CASA security assessment, billed annually. Stated
+here so it is not re-litigated.
+
+Later, if the 100-cap or the warning screen starts to matter: drop
+`gmail.readonly` from the code and submit for verification — free review, since
+everything left is merely *sensitive*, and by then the tab-scan is already
+carrying that feature.
+
+### Superseded — the old framing, kept for the findings in it
+
 
 *"for ow think of this has github verion and do it man"*, and separately *"no
 publishing ryt now, just do this ill think of it later"*. So `gmail.readonly`
