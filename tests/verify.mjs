@@ -3607,12 +3607,12 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       vr_da_mail_body({
         code: "all courses",
         dues: [
-          { due: "20-Oct-2026", title: "CSE3009 — Experiment-1" },
-          { due: "20-Oct-2026", title: "CSE3009 — Experiment-2" },
-          { due: "20-Oct-2026", title: "CSE3009 — Experiment-3" },
-          { due: "05-Sep-2026", title: "SWE3004 — Experiment-3" },
-          { due: "27-Aug-2026", title: "SWE3004 — Digital Assessment-1" },
-          { due: "31-Jul-2026", title: "SWE3004 — Experiment-1" },
+          { due: "20-Oct-2026", title: "CSE3009 — Experiment-1", course: "NoSQL Databases" },
+          { due: "20-Oct-2026", title: "CSE3009 — Experiment-2", course: "NoSQL Databases" },
+          { due: "20-Oct-2026", title: "CSE3009 — Experiment-3", course: "NoSQL Databases" },
+          { due: "05-Sep-2026", title: "SWE3004 — Experiment-3", course: "Front End Design and Testing" },
+          { due: "27-Aug-2026", title: "SWE3004 — Digital Assessment-1", course: "Front End Design and Testing" },
+          { due: "31-Jul-2026", title: "SWE3004 — Experiment-1", course: "Front End Design and Testing" },
         ],
       })
     );
@@ -3623,11 +3623,23 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         (mail.html.match(/>SWE3004</g) || []).length === 1,
       mail.html.slice(0, 200)
     );
+    /*
+     * "just add the course name and no comments it would be perfect"
+     * (2026-08-22). The subject cell names the course as a student would say
+     * it, and the grey "N pending" note under it is gone - the count is
+     * already in the header line, and repeating it per subject was noise in a
+     * column that had just been given something worth reading.
+     */
     ok(
-      "each heading carries that subject's count",
-      /CSE3009<div[^>]*>3 pending/.test(mail.html) &&
-        /SWE3004<div[^>]*>3 pending/.test(mail.html),
-      (mail.html.match(/\d+ pending/g) || []).join(" | ")
+      "the subject cell names the course, not just the code",
+      /CSE3009<div[^>]*>NoSQL Databases</.test(mail.html) &&
+        /SWE3004<div[^>]*>Front End Design and Testing</.test(mail.html),
+      (mail.html.match(/<div[^>]*>[A-Z][^<]{4,40}</g) || []).slice(0, 3).join(" | ")
+    );
+    ok(
+      "and carries no per-subject commentary",
+      !/pending/.test(mail.html),
+      (mail.html.match(/\d+ pending/g) || []).join(" | ") || "none"
     );
     ok(
       "the code is stripped from the row once it is in the heading",

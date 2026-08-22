@@ -152,6 +152,9 @@ const vr_da_group_key = (item, info) => {
   return {
     code: m ? m[1] : info.code || "Course",
     title: m ? m[2] : String(item.title || ""),
+    // the readable name ("Front End Design and Testing"), asked for 2026-08-22:
+    // a code alone is not what a student calls the subject
+    course: String(item.course || "").trim(),
   };
 };
 
@@ -160,12 +163,14 @@ const vr_da_mail_body = (info) => {
   const today = new Date().setHours(0, 0, 0, 0);
 
   const groups = new Map();
+  const courseNames = new Map();
   info.dues
     .slice()
     .sort((a, b) => dueMs(a.due) - dueMs(b.due))
     .forEach((item) => {
-      const { code, title } = vr_da_group_key(item, info);
+      const { code, title, course } = vr_da_group_key(item, info);
       if (!groups.has(code)) groups.set(code, []);
+      if (course && !courseNames.has(code)) courseNames.set(code, course);
       groups.get(code).push({ ...item, title });
     });
 
@@ -221,9 +226,14 @@ const vr_da_mail_body = (info) => {
       const subject =
         i === 0
           ? `<td rowspan="${items.length}" style="border:${B};padding:7px 10px;` +
-            `background:#f7f9fb;font-weight:700;vertical-align:top;white-space:nowrap;">` +
-            `${esc(code)}<div style="font-weight:400;color:#666;font-size:12px;">` +
-            `${items.length} pending</div></td>`
+            `background:#f7f9fb;font-weight:700;vertical-align:top;">` +
+            `${esc(code)}` +
+            (courseNames.get(code)
+              ? `<div style="font-weight:400;font-size:12px;">${esc(
+                  courseNames.get(code)
+                )}</div>`
+              : "") +
+            "</td>"
           : "";
       body.push(
         "<tr>" +
@@ -530,7 +540,11 @@ let da_page_2026 = async () => {
       key: meta.course_code || classId,
       code: meta.course_code,
       title: meta.course_title,
-      dues: upcoming.map((a) => ({ due: a.due, title: a.title })),
+      dues: upcoming.map((a) => ({
+        due: a.due,
+        title: a.title,
+        course: meta.course_title,
+      })),
     });
 
     /*
@@ -726,7 +740,11 @@ const renderDaSummary = (classTable, courses) => {
       key: "all",
       code: "all courses",
       title: upcoming.length ? "All upcoming assignments" : "Assignments past due",
-      dues: listed.map((a) => ({ due: a.due, title: `${a.code} — ${a.title}` })),
+      dues: listed.map((a) => ({
+        due: a.due,
+        title: `${a.code} — ${a.title}`,
+        course: a.course,
+      })),
     });
 
     const controls = document.createElement("div");

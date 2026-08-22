@@ -1,5 +1,27 @@
 These are the changes made to the project: 
 
+## The mail names the course, and stops commenting (2026-08-22)
+
+*"like its perfecct just add the course name and no comments it would be
+perfect man"*.
+
+The subject column carried the code and a grey "6 pending" note under it. A
+code is not what a student calls a subject, and the count was already in the
+header line — repeating it per subject was noise in the one column that had
+just been given something worth reading.
+
+The course name was already being collected. `withCourse()` has attached
+`{ code, course }` to every due since the summary bar was built; it simply
+never reached the payload the mail reads. Both payloads now carry `course`,
+`vr_da_group_key` returns it, and the subject cell shows it under the code:
+
+| before | after |
+|---|---|
+| **SWE3004**<br>*6 pending* | **SWE3004**<br>Front End Design and Testing |
+
+A test holds both halves: the cell must name the course, and the word "pending"
+must not appear anywhere in the mail.
+
 ## The dip was being shown as the destination (2026-08-22)
 
 *"idk how i get 0 marhi like i attend all classe again until a month na"* — and
