@@ -7197,7 +7197,19 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const mailBoot = (o = {}) => {
       const seen = { auth: [], sends: [] };
       const { ask, store } = bootAuth({
-        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com", ...(o.store || {}) },
+        /*
+         * Relay explicitly OFF. Since 2026-08-22 a real relay URL ships in
+         * MAIL_RELAY_URL, so relay mode is the default and these tests — which
+         * exist to prove the student's-own-Gmail path — would otherwise never
+         * reach it. "off" is the sentinel that says "declined", as distinct
+         * from "nobody configured one"; the relay-mode test below opts back in
+         * by storing a URL.
+         */
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_mail_relay_url: "off",
+          ...(o.store || {}),
+        },
         webAuth: (url) => {
           seen.auth.push(url);
           return o.refuseScope
@@ -7304,7 +7316,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
     }
     {
-      const { ask } = bootAuth({ noClient: true });
+      // relay off here too, or the send never reaches the no-client-id branch
+      const { ask } = bootAuth({ noClient: true, store: { vrevamp_mail_relay_url: "off" } });
       const r = await ask({ message: "send_mail", subject: "s", text: "t" });
       ok(
         "with no client id it says so instead of opening a doomed consent window",
@@ -7352,6 +7365,61 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       });
       return { ask, seen };
     };
+
+    /* ---- and the way back out of relay mode ----
+     *
+     * A regression caught the day a real relay URL was put into
+     * MAIL_RELAY_URL (2026-08-22). Clearing the field used to just delete the
+     * storage key, which was fine while the constant was blank — nothing to
+     * fall back to. With a URL shipping in the build, deleting the key fell
+     * back to THAT, so clearing the box silently did nothing and the popup's
+     * own instruction ("Leave blank to send from your own Gmail") became
+     * false.
+     *
+     * "I declined a relay" and "nobody configured one" are different states
+     * and now store differently.
+     */
+    {
+      const seen = { posts: [], gmail: 0 };
+      const { ask, store } = bootAuth({
+        store: {
+          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vrevamp_mail_relay_url: "https://script.google.com/macros/s/AKfy-test/exec",
+          vrevamp_reminder_email: "me@vitapstudent.ac.in",
+        },
+        webAuth: () =>
+          Promise.resolve(
+            "https://test-ext-id.chromiumapp.org/#access_token=T&expires_in=3600"
+          ),
+        fetch: (url, init) => {
+          if (/oauth2\/v3\/userinfo/.test(url))
+            return Promise.resolve({
+              ok: true, status: 200,
+              json: () => Promise.resolve({ email: "student@vitapstudent.ac.in" }),
+            });
+          if (/gmail\.googleapis\.com/.test(url)) {
+            seen.gmail += 1;
+            return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: "m" }) });
+          }
+          seen.posts.push(url);
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+        },
+      });
+
+      const cleared = await ask({ message: "set_mail_relay", url: "" });
+      ok(
+        "clearing the relay records a refusal, it does not forget the setting",
+        cleared && cleared.ok === true && store.vrevamp_mail_relay_url === "off",
+        JSON.stringify({ cleared, stored: store.vrevamp_mail_relay_url })
+      );
+
+      await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+      ok(
+        "…and mail then goes through the student's own Gmail, not the shipped relay",
+        seen.gmail === 1 && seen.posts.length === 0,
+        JSON.stringify({ gmail: seen.gmail, relayPosts: seen.posts.length })
+      );
+    }
 
     {
       // Asked 2026-08-16 — "we do not need their oauth too?". For mail: no. Not

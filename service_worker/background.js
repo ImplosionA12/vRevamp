@@ -642,8 +642,24 @@ const MAIL_RELAY_KEY = "vrevamp_mail_relay_url";
  * So the relay does not remove OAuth from the extension — it removes it from
  * the mail feature, which is the feature that was asked for.
  */
+/*
+ * "off" is a real value, not the absence of one.
+ *
+ * While MAIL_RELAY_URL was blank, clearing the field could just delete the key
+ * — nothing was left to fall back to. The moment a relay URL shipped in the
+ * build (2026-08-22), deleting the key started falling back to THAT, so
+ * clearing the box silently did nothing and the popup's own instruction
+ * ("Leave blank to send from your own Gmail") became false.
+ *
+ * A student who would rather their reminders came from their own address must
+ * be able to say so, and "I chose no relay" is not the same state as "nobody
+ * has configured one".
+ */
+const MAIL_RELAY_OFF = "off";
+
 async function mailRelayUrl() {
   const stored = (await chrome.storage.local.get([MAIL_RELAY_KEY]))[MAIL_RELAY_KEY];
+  if (stored === MAIL_RELAY_OFF) return null; // deliberately declined
   if (stored) return String(stored);
   return MAIL_RELAY_URL.trim() || null;
 }
@@ -1911,7 +1927,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       (async () => {
         const url = String(request.url || "").trim();
         if (!url) {
-          await chrome.storage.local.remove([MAIL_RELAY_KEY]);
+          // record the refusal rather than forgetting the setting — see
+          // MAIL_RELAY_OFF above
+          await chrome.storage.local.set({ [MAIL_RELAY_KEY]: MAIL_RELAY_OFF });
           sendResponse({ ok: true, url: "" });
           return;
         }

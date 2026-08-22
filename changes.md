@@ -28,6 +28,27 @@ consent, because writing into someone's calendar requires their permission and
 no relay changes that. The sign-in-free substitute there remains the 📅 one-tap
 TEMPLATE link.
 
+### The relay's off-switch, found by shipping it
+
+Setting `MAIL_RELAY_URL` broke something that had been correct while it was
+blank. Clearing the relay field called `storage.remove(...)` — fine when there
+was nothing to fall back to, and wrong the instant a URL shipped in the build,
+because removal then fell back to *that*. Clearing the box did nothing, and the
+popup's own instruction — *"Leave blank to send from your own Gmail"* — became
+false.
+
+"I declined a relay" and "nobody has configured one" are different states, so
+they store differently now: an explicit `off` sentinel that `mailRelayUrl()`
+reads as null. A student who would rather their reminders came from their own
+address can still say so.
+
+Eight tests went red the moment the constant was filled in, which is the suite
+doing its job: they exist to prove the student's-own-Gmail path and relay mode
+had quietly become the default for all of them. They opt out explicitly now.
+Two more were added for the off-switch itself — that clearing records a refusal,
+and that mail afterwards really does go through Gmail rather than the shipped
+relay.
+
 **The ceiling to watch** is not Gmail's. The script caps itself at 60 sends/day
 (and 12 per recipient) deliberately below the consumer quota of 100, so an
 abuser cannot exhaust the day and silence real reminders. With a hundred
