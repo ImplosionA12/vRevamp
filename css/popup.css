@@ -1,0 +1,340 @@
+/*
+ * The extension popup.
+ *
+ * Rebuilt 2026-08-22. What it replaced was the upstream project's page: a
+ * GitHub corner and a donate button for the original author, his contributors
+ * list, and three Wi-Fi buttons stacked above everything else — so the first
+ * thing this extension showed when you clicked it was somebody else's
+ * identity and its least-used feature.
+ *
+ * Two rules held throughout:
+ *   1. every element id the working scripts bind to survives untouched
+ *      (js/popup.js, js/wifi/hostel.js) — this is a reskin plus a summary,
+ *      never a rewrite of behaviour;
+ *   2. no external requests. The popup renders from chrome.storage only, so
+ *      it opens instantly and works offline. The old page fetched an avatar
+ *      list from GitHub and a button image from a third party on every open.
+ */
+
+:root {
+  --bg: #0f1720;
+  --card: #17212c;
+  --card-2: #1d2936;
+  --line: #2a3947;
+  --text: #e6edf3;
+  --muted: #8b9bab;
+  --accent: #4d9fff;
+  --good: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ---- header ------------------------------------------------------------- */
+
+.vr-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #16222f, var(--bg));
+}
+
+.vr-head img {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+}
+
+.vr-word {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.vr-word span {
+  color: var(--accent);
+}
+
+.vr-sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.vr-ver {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- sections ----------------------------------------------------------- */
+
+.vr-sec {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.vr-sec > h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* ---- glance cards ------------------------------------------------------- */
+
+.vr-cards {
+  display: grid;
+  gap: 8px;
+}
+
+.vr-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+}
+
+.vr-card.good {
+  border-left-color: var(--good);
+}
+.vr-card.warn {
+  border-left-color: var(--warn);
+}
+.vr-card.bad {
+  border-left-color: var(--bad);
+}
+
+.vr-card-i {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.vr-card-t {
+  font-weight: 600;
+}
+
+.vr-card-d {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 1px;
+}
+
+.vr-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+/* ---- controls ----------------------------------------------------------- */
+
+.vr-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 7px 0;
+}
+
+.vr-label {
+  color: var(--muted);
+  min-width: 84px;
+  font-size: 12px;
+}
+
+.vr-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vr-hint {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="url"],
+input[type="password"] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+button {
+  padding: 6px 11px;
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #24344a;
+  border-color: #3a4d63;
+}
+
+button.vr-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06121f;
+  font-weight: 600;
+}
+
+button.vr-primary:hover {
+  background: #6bb0ff;
+}
+
+button.vr-mini {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+button.vr-wide {
+  width: 100%;
+}
+
+.vr-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 2px 0;
+}
+
+details > summary:hover {
+  color: var(--text);
+}
+
+.vr-btnrow {
+  display: flex;
+  gap: 7px;
+}
+
+.vr-btnrow button {
+  flex: 1;
+}
+
+/* ---- Wi-Fi credential dialog -------------------------------------------- */
+
+#modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(4, 10, 16, 0.72);
+}
+
+#modal-content {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 40px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+#modal-form label {
+  display: block;
+  margin: 8px 0 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+#modal-form input {
+  width: 100%;
+}
+
+#modal .close {
+  float: right;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+#modal .close:hover {
+  color: var(--text);
+}
+
+.vr-danger {
+  color: var(--bad);
+  font-size: 11px;
+  margin: 10px 0 0;
+}
+
+/* ---- footer ------------------------------------------------------------- */
+
+.vr-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.vr-foot a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.vr-foot a:hover {
+  text-decoration: underline;
+}
+
+.vr-foot .vr-spacer {
+  margin-left: auto;
+}
+
+#status-message:not(:empty) {
+  margin-top: 8px;
+  padding: 6px 9px;
+  background: var(--card-2);
+  border-radius: 6px;
+  font-size: 11.5px;
+}

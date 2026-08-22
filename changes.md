@@ -1,5 +1,52 @@
 These are the changes made to the project: 
 
+## The popup stops being somebody else's page (2026-08-22)
+
+*"when we click on the extention now i can see the old ui of the old guyyyyy"*.
+
+What opened when you clicked the icon was the upstream project's page: a
+full-height GitHub corner linking to `sanjay7178/vRevamp`, a Buy-Me-A-Coffee
+button for him, his contributors list fetched live from the GitHub API, and —
+above all of it — three hostel Wi-Fi buttons. Somebody else's identity and the
+least-used feature, first.
+
+Rebuilt as a dark 380px panel:
+
+- **At a glance** — attendance headroom, what is still to upload, the next
+  exam. Every one of those numbers was ALREADY being cached by the page
+  scripts and had nowhere to be seen: you had to open VTOP and navigate to the
+  page that wrote it, which is exactly the errand a summary is meant to save.
+- **Reminders & mail** — unchanged in behaviour, restyled.
+- **Hostel Wi-Fi** — folded into a `<details>`; still there, no longer first.
+- Footer links to **this** repo. `js/contributors.js` is deleted.
+
+### Two rules held throughout
+
+**Every id a working script binds to survives untouched.** `js/popup.js` and
+`js/wifi/hostel.js` were not edited at all — the ids they reach for
+(`connect-button`, `vr-digest`, `vr-relay`, `view-offline`, the whole
+credentials modal) are all still there under new styling. A reskin, not a
+rewrite of behaviour.
+
+**Nothing is fetched.** The popup renders from `chrome.storage` only, so it
+opens instantly, works with VTOP closed and works offline. That is also the
+only safe choice: driving VTOP's endpoints from a popup is the replay-with-a-
+scraped-token pattern that ends sessions, and a popup has no VTOP page to
+borrow a live `_csrf` from anyway. The old page made two external requests on
+every open (the GitHub contributor list and a third-party button image); this
+one makes none.
+
+The cost of storage-only is staleness, so **every card says how old it is**
+rather than implying it is live — "updated today", "3 days old". A stale figure
+presented as current is the failure this project keeps hitting, most recently
+the home card showing "0 skippable before CAT-1" long after CAT-1 had passed.
+And when nothing is cached it says which pages to open, rather than an
+unactionable "no data".
+
+Attribution kept, deliberately: the footer still says "forked from vRevamp".
+What went was the donate button and the corner logo that made the popup look
+like his page rather than this one.
+
 ## One empty re-parse killed the grade calculator (2026-08-22)
 
 *"the grade changed or not?"* → *"u can see how much it says it diesnt hange at
