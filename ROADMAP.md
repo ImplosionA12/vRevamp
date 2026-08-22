@@ -181,7 +181,28 @@ Nothing in the extension will do this — the TEMPLATE route has no token and no
 extended property to find them by. Once §1 is done, `deleteOldImports` handles
 future runs.
 
-## 3. Audience — DECIDED 2026-08-23: PUBLISH the consent screen (unverified)
+## 3. Audience — DONE 2026-08-23: PUBLISHED, in production, unverified
+
+**Pushed to production.** Publishing status reads *In production*, user type
+*External*, so anyone with a Google Account can consent — no test-user list,
+and the Testing-mode 7-day re-consent expiry is gone with it.
+
+Confirmed at the same time, closing a question open since 2026-08-16:
+**Google Calendar API is Enabled** on project `verammp` (status shown on the
+API/Service details page). That was the last thing that could have made ✉️ fail
+with `403 accessNotConfigured` while looking like an extension bug. It cannot.
+
+Console note: this is the redesigned **Google Auth Platform** UI. Publishing
+lives under **Audience**, not the old "OAuth consent screen" page. Scopes are
+under **Data access**; **Verification centre** is for submitting for review and
+is deliberately not used.
+
+Still to observe, not yet seen: whether `gmail.readonly` (restricted) is now
+refused for other users, which is expected and is covered by the no-OAuth
+open-mail-tab scan. And whether the ✉️ flow completes for somebody who is not
+the project owner — the one test that has never been run.
+
+
 
 Correction to what this section said for a day: **publishing and verification
 are different things**, and I had them conflated. Three states, not two:
