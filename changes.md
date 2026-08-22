@@ -19,15 +19,20 @@ spacing, and status carried by a quiet tint rather than a saturated bar —
 nothing raises its voice unless something is actually wrong, and then only to a
 warm rose.
 
-Rebuilt as a 380px panel:
+Rebuilt as a 344px panel: **Open VTOP** at the top, **Reminders & mail**
+unchanged in behaviour and restyled, **Hostel Wi-Fi** folded into a `<details>`
+so it is still there but no longer first, and a footer pointing at *this* repo.
+`js/contributors.js` is deleted.
 
-- **At a glance** — attendance headroom, what is still to upload, the next
-  exam. Every one of those numbers was ALREADY being cached by the page
-  scripts and had nowhere to be seen: you had to open VTOP and navigate to the
-  page that wrote it, which is exactly the errand a summary is meant to save.
-- **Reminders & mail** — unchanged in behaviour, restyled.
-- **Hostel Wi-Fi** — folded into a `<details>`; still there, no longer first.
-- Footer links to **this** repo. `js/contributors.js` is deleted.
+An "At a glance" summary was built here first — attendance headroom, dues, the
+next exam, all read from the cache — and removed on request the same day: *"do
+not givve his class info or anything on the popup, they are popup na they will
+eb small"*. Right call, and the reason outlives the code. A popup is a few
+hundred pixels that opens on a click and closes on the next one; every figure
+put in it is a figure read in the wrong place, when the bunk table, the dues
+column and the exam schedule already hold the same numbers with the room to
+explain them. It would also have been the stalest copy of them, since the popup
+cannot fetch and could only ever show what an earlier visit had cached.
 
 ### Two rules held throughout
 
