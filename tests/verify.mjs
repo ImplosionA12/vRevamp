@@ -3532,9 +3532,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok(
       "each heading carries that subject's count",
-      /CSE3009<span[^>]*> — 3 pending/.test(mail.html) &&
-        /SWE3004<span[^>]*> — 3 pending/.test(mail.html),
-      (mail.html.match(/— \d+ pending/g) || []).join(" | ")
+      /CSE3009<div[^>]*>3 pending/.test(mail.html) &&
+        /SWE3004<div[^>]*>3 pending/.test(mail.html),
+      (mail.html.match(/\d+ pending/g) || []).join(" | ")
     );
     ok(
       "the code is stripped from the row once it is in the heading",
@@ -3548,6 +3548,37 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         /day\(s\) overdue/.test(mail.html) &&
         /#c0392b/.test(mail.html),
       (mail.html.match(/\d+ day\(s\) (overdue|left)/g) || []).join(" | ")
+    );
+    /*
+     * "make a proper tabble as we get exam scedule" — the first grouped
+     * attempt emitted one <table> per subject, which is six little tables
+     * stacked, not the exam mail's shape. One table, one thead, subjects as
+     * spanning rows inside it.
+     */
+    ok(
+      "one table with one header row, like the exam schedule mail",
+      (mail.html.match(/<table/g) || []).length === 1 &&
+        (mail.html.match(/<thead/g) || []).length === 1 &&
+        /text-transform:uppercase/.test(mail.html),
+      (mail.html.match(/<table[^>]*>/g) || []).join(" | ")
+    );
+    /*
+     * "send it more in forms of tables okay? Like with proper borders" — the
+     * previous pass had bottom rules only, which still reads as a list with
+     * lines through it. Every cell carries a border now, and the subject is a
+     * MERGED column rather than a spanning header row, so it stays subject-wise
+     * while being an actual grid.
+     */
+    ok(
+      "every cell is bordered, not just ruled underneath",
+      !/border-bottom:1px/.test(mail.html) &&
+        (mail.html.match(/border:1px solid #b0b0b0/g) || []).length >= 8,
+      (mail.html.match(/border[^;"]*/g) || []).slice(0, 4).join(" | ")
+    );
+    ok(
+      "the subject is a merged column spanning its own rows",
+      (mail.html.match(/rowspan="3"/g) || []).length === 2,
+      (mail.html.match(/rowspan="\d+"/g) || []).join(" ")
     );
     ok(
       "styling is inline — Gmail strips <style> blocks",

@@ -169,46 +169,98 @@ const vr_da_mail_body = (info) => {
       groups.get(code).push({ ...item, title });
     });
 
-  const cell = "padding:6px 12px 6px 0;border-bottom:1px solid #eee;font-size:14px";
-  const blocks = [];
+  /*
+   * Styled to match exam_mail_body() in js/exam_schedule.js, by request —
+   * "make a proper tabble as we get exam scedule". Same wrapper, same h2, the
+   * same uppercase thead over a 2px rule, the same 6px/10px cells on a 1px
+   * rule.
+   *
+   * ONE table, not one per subject: the subject is a spanning row inside it,
+   * so it reads as a single table that happens to be grouped rather than as
+   * six little tables stacked up — which is what the previous attempt did, and
+   * why it still did not look like the exam mail.
+   */
+  const esc = (v) =>
+    String(v == null ? "" : v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  /*
+   * A FULLY BORDERED grid, asked for twice: "make a proper tabble as we get
+   * exam scedule", then "send it more in forms of tables okay? Like with
+   * proper borders".
+   *
+   * Two earlier attempts missed it. The first was one table per subject; the
+   * second was one table but with bottom rules only, which still reads as a
+   * list with lines through it. Every cell carries a border here, the header
+   * row is shaded, and the subject is a MERGED first column (rowspan) rather
+   * than a spanning header row — so it is subject-wise and a real grid at the
+   * same time.
+   *
+   * rowspan and inline styles, deliberately: Gmail strips <style> blocks and
+   * ignores most modern CSS, but it has rendered bordered tables since it
+   * existed. Nothing here needs a stylesheet to survive.
+   */
+  const B = "1px solid #b0b0b0";
+  const td = (v, extra) =>
+    `<td style="border:${B};padding:7px 10px;${extra || ""}">${v}</td>`;
+  const head = ["Subject", "Due", "Left", "Assignment"]
+    .map(
+      (h) =>
+        `<th style="border:${B};padding:8px 10px;background:#eef1f5;text-align:left;` +
+        `font-size:12px;text-transform:uppercase;letter-spacing:.04em;">${h}</th>`
+    )
+    .join("");
+
+  const body = [];
   for (const [code, items] of groups) {
-    const rows = items
-      .map((a) => {
-        const days = Math.ceil((dueMs(a.due) - today) / 86400000);
-        const late = days < 0;
-        const when = late
-          ? `<span style="color:#c0392b;font-weight:bold">${-days} day(s) overdue</span>`
-          : `${days} day(s) left`;
-        return (
-          `<tr><td style="${cell}white-space:nowrap">${a.due}</td>` +
-          `<td style="${cell}white-space:nowrap">${when}</td>` +
-          `<td style="${cell}width:100%">${a.title}</td></tr>`
-        );
-      })
-      .join("");
-    blocks.push(
-      `<p style="margin:18px 0 4px;font-size:15px;font-weight:bold">${code}` +
-        `<span style="font-weight:normal;color:#777"> — ${items.length} pending</span></p>` +
-        `<table role="presentation" cellpadding="0" cellspacing="0" ` +
-        `style="border-collapse:collapse;width:100%">${rows}</table>`
-    );
+    items.forEach((a2, i) => {
+      const days = Math.ceil((dueMs(a2.due) - today) / 86400000);
+      const late = days < 0;
+      const subject =
+        i === 0
+          ? `<td rowspan="${items.length}" style="border:${B};padding:7px 10px;` +
+            `background:#f7f9fb;font-weight:700;vertical-align:top;white-space:nowrap;">` +
+            `${esc(code)}<div style="font-weight:400;color:#666;font-size:12px;">` +
+            `${items.length} pending</div></td>`
+          : "";
+      body.push(
+        "<tr>" +
+          subject +
+          td(esc(a2.due), "white-space:nowrap;font-weight:600;") +
+          td(
+            late
+              ? `<span style="color:#c0392b;font-weight:700;">${-days} day(s) overdue</span>`
+              : `${days} day(s)`,
+            "white-space:nowrap;" + (late ? "background:#fdecea;" : "")
+          ) +
+          td(esc(a2.title)) +
+          "</tr>"
+      );
+    });
   }
 
-  // plain-text fallback, rebuilt in group order rather than the flat sort
+  // plain-text fallback, grouped the same way — a client showing this part
+  // must not show the flat list this replaces
   const text = [];
   for (const [code, items] of groups) {
     text.push(code);
-    items.forEach((a) => text.push(`  ${a.due}  ${a.title}`));
+    items.forEach((a2) => text.push(`  ${a2.due}  ${a2.title}`));
     text.push("");
   }
 
   return {
     html:
-      `<p style="font-size:14px">Still to upload — ${info.dues.length} across ` +
-      `${groups.size} subject(s), soonest first within each.</p>` +
-      blocks.join("") +
-      '<p style="color:#777;font-size:12px;margin-top:20px">' +
-      "Sent by vRevamp from your VTOP digital assignments page.</p>",
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111;">` +
+      `<h2 style="margin:0 0 4px;font-size:18px;">Still to upload — ${info.dues.length} assignment(s)</h2>` +
+      `<div style="color:#666;font-size:13px;margin-bottom:12px;">` +
+      `Across ${groups.size} subject(s), soonest first within each.</div>` +
+      `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;` +
+      `border:${B};font-size:14px;">` +
+      `<thead><tr>${head}</tr></thead><tbody>${body.join("")}</tbody></table>` +
+      `<p style="color:#666;font-size:12px;margin-top:16px;">` +
+      `Sent by vRevamp from your VTOP digital assignments page.</p></div>`,
     text: text.join("\n"),
   };
 };

@@ -1,5 +1,62 @@
 These are the changes made to the project: 
 
+## The reminder mail, third time: a bordered grid (2026-08-22)
+
+*"email looks the worst man, like cant u said as table subejct wise"* → *"make
+a proper tabble as we get exam scedule"* → *"send it more in forms of tables
+okay? Like with proper borders"* → **"This one is good"**.
+
+Three passes, and the two rejected ones are worth recording because each looked
+finished:
+
+1. **Flat list.** It was already a `<table>`, which is why the first complaint
+   read oddly — but with no borders, no header and no grouping, twenty-one rows
+   of `date · CODE — Assignment` are a list no matter what tag they are in.
+2. **Grouped, one table per subject.** Better to read, still not the exam
+   mail's shape: six small tables stacked is not a table.
+3. **One bordered grid.** Every cell carries a border, the header row is
+   shaded, and the subject is a **merged column** (`rowspan`) rather than a
+   spanning header row — subject-wise and an actual grid at the same time.
+   Overdue cells are tinted, not just coloured text.
+
+The lesson from pass 2: "grouped" and "a table" were two requirements, and
+satisfying the first by emitting one table per group quietly broke the second.
+
+`rowspan` and inline styles throughout, for the reason `exam_mail_body` already
+documents: Gmail strips `<style>` blocks and ignores most modern CSS, but it
+has rendered bordered tables since it existed. Three tests hold the shape — one
+table with one header row, every cell bordered rather than ruled underneath,
+and the subject column actually spanning its rows.
+
+## Skipping 25–31 August, answered from the real calendar
+
+Asked what attendance would remain after skipping Tue 25 to Mon 31 Aug. Read
+live from VTOP's own academic calendar rather than assumed, and the week is not
+what it looks like:
+
+| date | day | calendar |
+|---|---|---|
+| 25 Aug | Tue | Instructional Day |
+| 26 Aug | Wed | **Holiday — Milad-un-Nabi** |
+| 27 Aug | Thu | Instructional Day |
+| 28 Aug | Fri | Instructional Day |
+| 29 Aug | Sat | **Instructional Day** (working Saturday) |
+| 30 Aug | Sun | Holiday |
+| 31 Aug | Mon | **No Instructional Day** |
+
+Four days actually missed, not seven — and the timetable has **no Monday row at
+all**, so 31 Aug costs nothing twice over.
+
+Result: everything stays above 75% except **CSE3009 Theory, which lands on
+exactly 75.0%** (12/16) — the one subject already carrying an absence, and the
+one that meets three times that week. SWE3004 Lab is untouched, because its only
+session is the Wednesday holiday.
+
+Worth noting for the feature: this is the question the bunk calculator cannot
+answer today. Its columns are "safe to skip now" and "bunkable before CAT-2 /
+FAT" — not "what if I skip this specific date range", which needed the
+calendar, the timetable and the attendance table read together by hand.
+
 ## The reminder mail becomes a table you can scan (2026-08-22)
 
 *"email looks the worst man, like cant u said as table subejct wise"*.
