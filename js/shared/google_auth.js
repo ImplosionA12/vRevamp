@@ -90,8 +90,27 @@ if (typeof window.vrGoogleToken !== "function") {
         ".chromiumapp.org/ (trailing slash) to the OAuth client, then retry";
     if (/not signed in/i.test(e))
       return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
+    /*
+     * access_denied has TWO causes that look identical from here, and the
+     * advice for them is opposite:
+     *
+     *   - the student closed the window   -> clicking again works
+     *   - the app is in Testing mode and  -> clicking again NEVER works, no
+     *     they are not a test user           matter how many times they try
+     *
+     * Google sends the same code for both, so this cannot tell them apart and
+     * must not pretend to. It used to say only "the window was closed — click
+     * again", which is advice that loops forever for anyone who was refused —
+     * and after 2026-08-23 that is the expected case, because the decision was
+     * made not to hand-add test users at all. So name both, and point at the
+     * path that needs no sign-in either way.
+     */
     if (/did not approve|access|denied|closed|cancel/i.test(e))
-      return "the Google consent window was closed — click again and allow access";
+      return (
+        "Google did not grant access — either the consent window was closed, or " +
+        "this account is not on the app's test-user list. The 📅 one-tap links " +
+        "need no sign-in and do the same job."
+      );
     return e
       ? `Google sign-in failed: ${e}`
       : "Google sign-in failed — allow the consent window, then retry";
