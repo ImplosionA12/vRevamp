@@ -412,10 +412,38 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     text = await bodyText();
     ok("CGPA mode reads page CGPA (8.50)", /Current CGPA:\s*8\.50/.test(text), text.slice(0, 160));
     ok("projected CGPA = 8.65", /Projected CGPA:\s*8\.65/.test(text), text.slice(0, 160));
+    {
+      // its own page: this test destroys the table, and everything below still
+      // needs it
+      const p2 = await newPage(browser);
+      await p2.setContent(html);
+      await shim(p2);
+      await inject(p2, ["js/shared/click.js", "js/grade_history_calc.js"]);
+      await p2.evaluate(() => window.__dispatch("exam_grade"));
+      await delay(700);
+      const before = await p2.evaluate(
+        () => !!document.getElementById("vrevamp-gradehist-calc")
+      );
+      const gone = await p2.evaluate(async () => {
+        document.querySelectorAll("table").forEach((t) => t.remove());
+        await new Promise((r) => setTimeout(r, 900)); // build is debounced 400ms
+        return {
+          panel: !!document.getElementById("vrevamp-gradehist-calc"),
+          bar: !!document.getElementById("vrevamp-gh-bar"),
+        };
+      });
+      ok(
+        "the panel is removed once its table is gone, not left quoting a CGPA",
+        before === true && gone.panel === false && gone.bar === false,
+        JSON.stringify({ before, ...gone })
+      );
+      await p2.close();
+    }
     await page.close();
   }
 
   /* =============== Grade calculator on the Grade History page =============== */
+
   console.log("\n=== grade calculator (Grade History page) ===");
   {
     // Real-shaped history: a header row, a "Grade Point" column that must NOT
@@ -448,6 +476,20 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(700); // build is debounced 400ms
 
     ok("panel rendered", await page.evaluate(() => !!document.getElementById("vrevamp-gradehist-calc")));
+
+    /* ---- and it must LEAVE when the table it describes does ----
+     *
+     * Reported 2026-08-22: "the grade history is not we did o can't see the
+     * change or updated cgpa". Read live, the student was on the HOME page -
+     * zero tables in the document - with the calculator still sitting there
+     * saying "Current CGPA: 7.73, change any grade in the table above". There
+     * was no table above, so there was nothing to change and nothing could
+     * ever update.
+     *
+     * Only the fixed bar was being dropped on navigation; the panel was left
+     * behind. A panel quoting a real CGPA on a page with no grades reads as a
+     * broken calculator rather than a stale one.
+     */
 
     const sels = await page.evaluate(() =>
       [...document.querySelectorAll("select.vrevamp-gh-select")].map((s) => ({

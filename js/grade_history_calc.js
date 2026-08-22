@@ -520,7 +520,7 @@
         document.querySelectorAll("table").length +
         ":" +
         (document.getElementById(PANEL_ID) ? 1 : 0);
-      dropBarIfOrphaned();
+      dropIfOrphaned();
       if (sig === lastSig) return;
       lastSig = sig;
       try {
@@ -533,11 +533,28 @@
 
   window.vrDelegate("gh-reset", () => resetAll());
 
-  // The bar is fixed to the viewport, not to the table — so when VTOP navigates
-  // away and the transcript is gone, nothing removes it. Drop it whenever the
-  // table it describes is no longer on screen.
-  const dropBarIfOrphaned = () => {
-    if (document.getElementById(BAR_ID) && !findHistoryTable()) clearBar();
+  /*
+   * Neither the bar nor the PANEL is attached to the table they describe — the
+   * bar is fixed to the viewport, the panel is inserted near the table but
+   * survives VTOP replacing it. So when VTOP navigates away and the transcript
+   * is gone, nothing removed either of them.
+   *
+   * The bar half was handled from the start. The panel half was not, and it is
+   * the one the student actually hits — reported 2026-08-22, "the grade history
+   * is not we did o can't see the change or updated cgpa". Read live: they were
+   * on the HOME page, zero tables in the document, and the calculator was
+   * still sitting there reading "Current CGPA: 7.73 — change any grade in the
+   * table above". There was no table above. Nothing to change, so of course
+   * nothing ever updated.
+   *
+   * Worse than useless: a panel quoting a real CGPA on a page with no grades
+   * looks like a broken calculator rather than a stale one.
+   */
+  const dropIfOrphaned = () => {
+    if (findHistoryTable()) return;
+    clearBar();
+    const panel = document.getElementById(PANEL_ID);
+    if (panel) panel.remove();
   };
 
   chrome.runtime.onMessage.addListener((request) => {
@@ -546,7 +563,7 @@
       request.message === "nav_bar_change" ||
       request.message === "grade_history"
     ) {
-      dropBarIfOrphaned();
+      dropIfOrphaned();
       scheduleBuild();
     }
   });

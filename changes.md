@@ -1,5 +1,37 @@
 These are the changes made to the project: 
 
+## The grade calculator outstayed its table (2026-08-22)
+
+*"the grade history is not we did o can't see the change or updated cgpa"*.
+
+Read live, and the reason was not the calculator's arithmetic. The student was
+on the **home page** — zero `<table>` elements in the document — with the panel
+still sitting there reading:
+
+> vRevamp — grade calculator · Current CGPA: 7.73 · *Change any grade in the
+> table above to see what it does to your CGPA*
+
+There was no table above. `data-vrevamp-gh` count: **0**. Nothing to change, so
+of course nothing ever updated.
+
+Neither the bar nor the panel is attached to the table it describes — the bar
+is fixed to the viewport, the panel is inserted near the table but survives
+VTOP replacing it. The bar half was handled from the beginning
+(`dropBarIfOrphaned`); the panel half was not, and the panel is the half the
+student actually looks at. `buildPanel()` returns early when no table is found,
+which leaves whatever was already on screen exactly where it was.
+
+Now both go together, and the check runs on every mutation the observer sees,
+so navigating away clears it within a debounce.
+
+Worth stating plainly: a panel quoting a **real** CGPA on a page with no grades
+is worse than one showing nothing. It looks like a broken calculator rather
+than a stale one, which is precisely how it was reported.
+
+The test destroys the table and asserts both the panel and the bar are gone —
+and it runs on its own page, because the first version of it wrecked the shared
+fixture every later assertion in that section depends on.
+
 ## The mail names the course, and stops commenting (2026-08-22)
 
 *"like its perfecct just add the course name and no comments it would be
