@@ -924,6 +924,199 @@
     anchor.insertAdjacentElement("beforebegin", banner);
   };
 
+  /* ---------------- the skip planner ----------------------------------------
+   *
+   * Asked for 2026-08-22, after this exact question was answered by hand:
+   * "if i skip the college from tuesday to next monday, 25 - 31 august then how
+   * much attendance would i have remained".
+   *
+   * The bunk table cannot answer it, and the reason is worth stating. Its
+   * columns are "safe to skip now" and "bunkable before CAT-2 / FAT" — every
+   * one of them counts classes from today up to a fixed point. None of them
+   * can answer "what about THESE dates", which is the question a student
+   * actually asks before booking a train.
+   *
+   * Doing it by hand also showed why it needs the calendar rather than a
+   * seven-day guess. For 25–31 Aug the real answer was FOUR class days, not
+   * seven: 26 Aug was Milad-un-Nabi, 30 Aug a Sunday, 31 Aug a "No
+   * Instructional Day" — and that student's timetable has no Monday row at
+   * all, so the last day of the range cost nothing twice over. A planner that
+   * counted weekdays would have been wrong by three days in one direction and
+   * silently right for the wrong reason in the other.
+   */
+  const PLANNER_ID = "vrevamp-skip-planner";
+  const PLANNER_OUT = "vrevamp-skip-result";
+
+  // Classes this subject holds inside [fromIso, toIso], in HISTORY units
+  // (hours for labs). Only real instructional days count, and exam-block days
+  // are excluded for the same reason they are everywhere else: no classes run.
+  const classesBetween = (calendar, meetings, fromIso, toIso) => {
+    if (!calendar || !calendar.instructionalDays) return null;
+    const todayIso = isoOf(new Date());
+    let count = 0;
+    calendar.instructionalDays.forEach((iso) => {
+      if (iso <= todayIso) return; // already held — it is in attended/total
+      if (iso < fromIso || iso > toIso) return;
+      if (examBlockDays.has(iso)) return;
+      count += meetings[wdOfIso(iso)] || 0;
+    });
+    return count;
+  };
+
+  const plannerDays = (calendar, fromIso, toIso) => {
+    const todayIso = isoOf(new Date());
+    const held = [];
+    const off = [];
+    const [fy, fm, fd] = fromIso.split("-").map(Number);
+    const [ty, tm, td] = toIso.split("-").map(Number);
+    const end = new Date(ty, tm - 1, td);
+    const instructional = new Set(calendar ? calendar.instructionalDays : []);
+    for (let d = new Date(fy, fm - 1, fd); d <= end; d.setDate(d.getDate() + 1)) {
+      const iso = isoOf(d);
+      if (iso <= todayIso) continue;
+      if (instructional.has(iso) && !examBlockDays.has(iso)) held.push(iso);
+      else off.push(iso);
+    }
+    return { held, off };
+  };
+
+  const B = "1px solid #b0b0b0";
+  const planCell = (v, extra) =>
+    `<td style="border:${B};padding:6px 9px;${extra || ""}">${v}</td>`;
+
+  const renderSkipResult = (rowsData, calendar, fromIso, toIso) => {
+    const out = document.getElementById(PLANNER_OUT);
+    if (!out) return;
+    if (!calendar) {
+      out.innerHTML =
+        '<p style="color:#c0392b;font-size:12px;margin:8px 0">' +
+        "The academic calendar hasn't loaded, so the classes in that range " +
+        "can't be counted. Reopen this page once it has.</p>";
+      return;
+    }
+    if (toIso < fromIso) {
+      out.innerHTML =
+        '<p style="color:#c0392b;font-size:12px;margin:8px 0">' +
+        "The second date is before the first.</p>";
+      return;
+    }
+
+    const { held, off } = plannerDays(calendar, fromIso, toIso);
+    const head = ["Subject", "Now", "Classes missed", "After", "Headroom left"]
+      .map(
+        (h) =>
+          `<th style="border:${B};padding:7px 9px;background:#eef1f5;text-align:left;` +
+          `font-size:11px;text-transform:uppercase;letter-spacing:.04em;">${h}</th>`
+      )
+      .join("");
+
+    let worst = null;
+    const body = rowsData
+      .map((r) => {
+        const missed = classesBetween(calendar, r.meetings || {}, fromIso, toIso);
+        const after = r.total + missed;
+        const pct = after ? (r.attended / after) * 100 : null;
+        // headroom AFTER the trip, in whole sessions, on the same integer
+        // formula the alert column uses
+        const spare = Math.max(
+          0,
+          Math.floor(Math.floor((4 * r.attended - 3 * after) / 3) / r.size)
+        );
+        const below = pct !== null && pct < 75;
+        if (pct !== null && (worst === null || pct < worst)) worst = pct;
+        const unit = /lab/i.test(r.unit || "") ? "lab(s)" : "class(es)";
+        const shown = Math.round(missed / r.size);
+        return (
+          "<tr>" +
+          planCell(r.name, "font-weight:600;") +
+          planCell(`${r.pct}%`, "white-space:nowrap;") +
+          planCell(
+            missed ? `${shown} ${unit}` : "—",
+            "white-space:nowrap;" + (missed ? "" : "color:#888;")
+          ) +
+          planCell(
+            pct === null ? "—" : `${pct.toFixed(1)}%`,
+            "white-space:nowrap;font-weight:700;" +
+              (below
+                ? "color:#c0392b;background:#fdecea;"
+                : pct !== null && pct < 76
+                  ? "color:#b8860b;background:#fff8e1;"
+                  : "color:#2e7d32;")
+          ) +
+          planCell(
+            below ? "DEBARRED" : `${spare} ${unit}`,
+            "white-space:nowrap;" + (below ? "color:#c0392b;font-weight:700;" : "")
+          ) +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    const offNote = off.length
+      ? ` ${off.length} day(s) in that range cost you nothing (holidays, ` +
+        "Sundays, exam days or days you have no class)."
+      : "";
+    out.innerHTML =
+      `<p style="margin:10px 0 6px;font-size:13px;">` +
+      `<b>${held.length} teaching day(s)</b> in ${fromIso} → ${toIso}.${offNote}</p>` +
+      `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;` +
+      `border:${B};font-size:13px;">` +
+      `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>` +
+      (worst !== null && worst < 75
+        ? '<p style="color:#c0392b;font-size:12px;margin:8px 0 0">' +
+          "At least one subject drops below 75% — that is a debar, not a warning.</p>"
+        : worst !== null && worst < 76
+          ? '<p style="color:#b8860b;font-size:12px;margin:8px 0 0">' +
+            `Tightest subject lands on ${worst.toFixed(1)}% — no margin left after this.</p>`
+          : "");
+  };
+
+  const renderSkipPlanner = (rowsData, calendar, container) => {
+    if (document.getElementById(PLANNER_ID)) return;
+    const box = document.createElement("div");
+    box.id = PLANNER_ID;
+    box.style.cssText =
+      "margin:14px 0;padding:10px 12px;border:1px solid #ccc;border-radius:4px;" +
+      "background:#fafafa;font-size:13px;";
+    const iso = (d) => isoOf(d);
+    const today = new Date();
+    const weekOut = new Date();
+    weekOut.setDate(weekOut.getDate() + 7);
+    box.innerHTML =
+      '<div style="font-weight:700;margin-bottom:6px;">' +
+      "Planning to skip? Pick the dates</div>" +
+      '<label style="margin-right:10px;">From ' +
+      `<input type="date" id="vrevamp-skip-from" value="${iso(today)}" ` +
+      'style="font-size:13px;padding:2px 4px;"></label>' +
+      '<label style="margin-right:10px;">To ' +
+      `<input type="date" id="vrevamp-skip-to" value="${iso(weekOut)}" ` +
+      'style="font-size:13px;padding:2px 4px;"></label>' +
+      `<span id="${PLANNER_OUT}"></span>`;
+    container.insertAdjacentElement("afterend", box);
+
+    // the result node has to be a block sibling, not the inline span above
+    const out = document.createElement("div");
+    out.id = PLANNER_OUT;
+    document.getElementById(PLANNER_OUT).replaceWith(out);
+
+    if (typeof window.vrButton === "function") {
+      const go = window.vrButton("skip-plan", "Show me");
+      go.style.cssText =
+        "font-size:13px;padding:3px 12px;cursor:pointer;border:1px solid #999;" +
+        "border-radius:3px;background:#4975b6;color:#fff;";
+      out.insertAdjacentElement("beforebegin", go);
+    }
+
+    if (typeof window.vrDelegate === "function") {
+      window.vrDelegate("skip-plan", () => {
+        const from = (document.getElementById("vrevamp-skip-from") || {}).value;
+        const to = (document.getElementById("vrevamp-skip-to") || {}).value;
+        if (!from || !to) return;
+        renderSkipResult(rowsData, calendar, from, to);
+      });
+    }
+  };
+
   /* ---------------- bunk table rendering ---------------- */
 
   const TD_STYLE =
@@ -1467,6 +1660,10 @@
         attended,
         total,
         size,
+        // the weekly pattern this subject meets on, carried out of here so the
+        // skip planner below can count the classes inside an arbitrary date
+        // range rather than only up to an exam (2026-08-22)
+        meetings,
         remainEntries,
         staleSince,
         debarNote,
@@ -1516,6 +1713,10 @@
 
     renderForecastBanner(rowsData);
     renderBunkTable(rowsData);
+    // and the planner, under the bunk table it complements — that table
+    // answers "up to CAT-2", this one answers "between these two dates"
+    const bunkBox = document.getElementById("vrevamp-bunk-table-container");
+    if (bunkBox) renderSkipPlanner(rowsData, calendar, bunkBox);
 
     // stale registers also get a visible nudge on VTOP's own row, where the
     // (outdated) percentage is displayed

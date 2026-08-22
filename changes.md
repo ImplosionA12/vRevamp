@@ -1,5 +1,64 @@
 These are the changes made to the project: 
 
+## "What if I skip these dates" is now a control, not a hand calculation (2026-08-22)
+
+Asked after the 25–31 August question was answered by hand: *"yes build it,
+pick two dates and show that table"*.
+
+The bunk table could not answer it, and the reason is the point. Every column
+it has — *safe to skip now*, *bunkable before CAT-2*, *bunkable before FAT* —
+counts classes from today up to a fixed point. None of them answers "what about
+**these** dates", which is the question a student actually asks before booking
+a train.
+
+Two date pickers under the bunk table, and a bordered table back:
+
+| Subject | Now | Classes missed | After | Headroom left |
+|---|---|---|---|---|
+
+with the "After" cell tinted — red under 75% and the word DEBARRED in the last
+column, amber between 75 and 76 where there is no margin left, green otherwise.
+
+**It counts teaching days, not calendar days**, and doing the 25–31 Aug case by
+hand is what proved that matters:
+
+| date | day | calendar |
+|---|---|---|
+| 25 Aug | Tue | Instructional Day |
+| 26 Aug | Wed | Holiday — Milad-un-Nabi |
+| 27 Aug | Thu | Instructional Day |
+| 28 Aug | Fri | Instructional Day |
+| 29 Aug | Sat | Instructional Day (working Saturday) |
+| 30 Aug | Sun | Holiday |
+| 31 Aug | Mon | No Instructional Day |
+
+Four teaching days out of seven — and that student's timetable has no Monday
+row at all, so the last day of the range cost nothing twice over. A planner
+counting weekdays would have been wrong by three days in one direction and
+right for the wrong reason in the other. Exam-block days drop out too, on the
+same rule as everywhere else in this file.
+
+The test holds exactly that property: in a July with instructional days on the
+5th, 7th, 9th, 12th, 14th, 16th and 18th, a CAT on the 10th and a holiday on
+the 15th, the range 05→15 July must report **5 teaching days** and not the
+eleven a calendar-day count would give.
+
+### And a note on what "bunkable before CAT-2 = 4" means
+
+Asked directly, so it belongs in writing. The formula is
+`floor(A + R − 0.75 × (T + R))`, capped at `R`, derived from
+`(A + R − b) / (T + R) ≥ 75%`. So **it assumes you attend every other class
+between now and CAT-2** — 4 is the most you can skip out of those and still be
+at or above 75% on the exam day, not 4 on top of skipping anything else.
+
+### Caught while writing the test
+
+The assertion went into the file carrying a literal `0x08` byte where `\b` was
+meant — the same mangling `js/timetable/timetable.js` once shipped with. It
+turned the regex into one that could never match, and the test failed loudly
+rather than passing for the wrong reason. Worth remembering that the failure
+mode here is a regex that silently matches nothing.
+
 ## The reminder mail, third time: a bordered grid (2026-08-22)
 
 *"email looks the worst man, like cant u said as table subejct wise"* → *"make

@@ -1380,6 +1380,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, [
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
+      "js/shared/click.js", // the skip planner's button is delegated
       "js/shared/vtop.js",
       "js/attendance_insights.js",
     ]);    await page.evaluate(() => window.__dispatch("view_attendance"));
@@ -1415,6 +1416,50 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       instr.length === 7 && new Set(instr).size === 7,
       `instructionalDays=${JSON.stringify(instr)}`
     );
+
+    /* ---- the skip planner: real teaching days, not calendar days ----
+     *
+     * Added 2026-08-22, after this was worked out by hand for 25-31 Aug and
+     * came to FOUR teaching days rather than seven - a holiday, a Sunday and a
+     * "No Instructional Day" sat inside the range, and the student had no
+     * Monday classes at all.
+     *
+     * This fixture's July is instructional on the 5th, 7th, 9th, 12th, 14th,
+     * 16th and 18th; the 10th is CAT-I and the 15th a holiday. So 05-Jul to
+     * 15-Jul is FIVE teaching days where counting calendar days says eleven.
+     * That gap is the entire feature.
+     */
+    const planner = await page.evaluate(() => !!document.getElementById("vrevamp-skip-planner"));
+    ok("the skip planner renders under the bunk table", planner, String(planner));
+    if (planner) {
+      await page.evaluate(() => {
+        document.getElementById("vrevamp-skip-from").value = "2025-07-05";
+        document.getElementById("vrevamp-skip-to").value = "2025-07-15";
+      });
+      await page.click('[data-vr-action="skip-plan"]');
+      await delay(400);
+      const result = await page.evaluate(() => {
+        const el = document.getElementById("vrevamp-skip-result");
+        return el
+          ? { text: el.textContent.replace(/\s+/g, " "), rows: el.querySelectorAll("tbody tr").length }
+          : null;
+      });
+      ok(
+        "it counts teaching days from the calendar, not calendar days",
+        !!result && /5 teaching day\(s\)/.test(result.text) && !/11 teaching/.test(result.text),
+        (result && result.text.slice(0, 130)) || "no result"
+      );
+      ok(
+        "the holiday and the CAT day inside the range are named as free",
+        !!result && /cost you nothing/.test(result.text),
+        (result && result.text.slice(0, 170)) || "no result"
+      );
+      ok(
+        "one row per subject, each carrying an after-percentage",
+        !!result && result.rows === 2 && /%/.test(result.text),
+        JSON.stringify(result && result.rows)
+      );
+    }
     await page.close();
   }
 
