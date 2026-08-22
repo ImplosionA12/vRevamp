@@ -88,11 +88,27 @@ with a re-import *replacing* the previous one (`deleteOldImports` runs first).
 **Not yet retested on the timetable page** — do that next, and it should also
 clear the duplicate-events problem in §2.
 
-## 1b. ONE STEP LEFT: deploy the mail relay
+## 1b. ~~ONE STEP LEFT: deploy the mail relay~~ — DONE 2026-08-22
 
-Code is done and tested; it is dormant until `MAIL_RELAY_URL` in
-`service_worker/background.js` is filled in. Blank = mail still sends from the
-student's own Gmail, exactly as today.
+Deployed under **vtopextention@gmail.com** (the club account) and live in
+`MAIL_RELAY_URL`. 📧 mail now sends from that address with **no Google sign-in
+and not one scope**.
+
+Verified with an **unauthenticated** GET before it was committed — that detail
+matters, because opening the `/exec` URL while signed in as the owner succeeds
+even when "Who has access" is set wrong. An anonymous request is the only test
+that distinguishes them, and the extension is an anonymous caller:
+
+```
+{"ok":true,"service":"vRevamp mail relay","quotaLeft":100}
+```
+
+A student can decline it and send from their own Gmail instead: clearing the
+relay field in the popup stores an explicit `off`. That needed fixing the same
+day — while the constant was blank, clearing simply deleted the key, which
+started falling back to the shipped URL the moment one existed.
+
+The steps below are kept for whoever redeploys it.
 
 1. Make the sender account, e.g. `veramp.mailer@gmail.com`. **Do the rest signed
    in as that account** — it is the From line students will see.
@@ -165,7 +181,33 @@ Nothing in the extension will do this — the TEMPLATE route has no token and no
 extended property to find them by. Once §1 is done, `deleteOldImports` handles
 future runs.
 
-## 3. Decide the audience — this one is a fork in the road
+## 3. Audience — DECIDED 2026-08-22: GitHub / unpacked, no publishing yet
+
+*"for ow think of this has github verion and do it man"*, and separately *"no
+publishing ryt now, just do this ill think of it later"*. So `gmail.readonly`
+stays and the auto-OTP keeps working; the table below is what to re-read
+whenever publishing comes back up.
+
+Two things learned while deciding, worth not re-deriving:
+
+- **Dropping `gmail.readonly` would not cost the OTP feature**, only the
+  convenience of it. There are two paths: the Gmail API read (restricted
+  scope), and scanning an already-open mail tab — which needs **no OAuth at
+  all** and covers Outlook too. With the scope gone, a student just needs their
+  mail open in a tab, which during a VTOP login they usually do.
+- **Opt-in does not need two builds.** `gmailClientId()` already prefers a
+  stored override, so one published build can ship a verified client
+  (`calendar.events` + `gmail.send`) while anyone wanting auto-OTP pastes a
+  second, Testing-mode client id. Same extension id, so both clients share the
+  one `chromiumapp.org` redirect. There is no UI field for it yet — the storage
+  key exists, the input does not.
+
+Unpacked distribution has one cost to write down: **it never auto-updates.**
+Every fix reaches people only when they re-download and reload, so the README
+needs the reload step next to the download link. It works at all only because
+`manifest.key` is committed — that fixes the extension id across everyone's
+install, which is what keeps the OAuth redirect valid.
+
 
 `calendar.events` is a **sensitive** scope. Consequences:
 
