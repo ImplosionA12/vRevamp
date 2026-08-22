@@ -10,7 +10,16 @@ button for him, his contributors list fetched live from the GitHub API, and —
 above all of it — three hostel Wi-Fi buttons. Somebody else's identity and the
 least-used feature, first.
 
-Rebuilt as a dark 380px panel:
+Restyled the same day. The first attempt was a dark, high-contrast panel and
+the verdict was *"so aish — make it smth peaceful and good"*. Fair: this is a
+thing you open between classes to find out whether you can skip one, not a
+dashboard to stare at. Loud red-on-black made a calm answer ("you're fine")
+feel like an alarm. It is paper-white now, one soft sage accent, generous
+spacing, and status carried by a quiet tint rather than a saturated bar —
+nothing raises its voice unless something is actually wrong, and then only to a
+warm rose.
+
+Rebuilt as a 380px panel:
 
 - **At a glance** — attendance headroom, what is still to upload, the next
   exam. Every one of those numbers was ALREADY being cached by the page

@@ -7,6 +7,16 @@
  * thing this extension showed when you clicked it was somebody else's
  * identity and its least-used feature.
  *
+ * RESTYLED the same day. The first attempt was a dark, high-contrast panel and
+ * the verdict was "so aish — make it smth peaceful and good". Fair: this is a
+ * thing a student opens between classes to find out whether they can skip one,
+ * not a dashboard to stare at. Loud red-on-black states make a calm answer
+ * ("you're fine") feel like an alarm.
+ *
+ * So: paper-white, generous spacing, one soft accent, and status carried by a
+ * quiet tint rather than a saturated colour. Nothing shouts unless something is
+ * actually wrong, and even then it is a warm rose rather than a siren red.
+ *
  * Two rules held throughout:
  *   1. every element id the working scripts bind to survives untouched
  *      (js/popup.js, js/wifi/hostel.js) — this is a reskin plus a summary,
@@ -17,16 +27,20 @@
  */
 
 :root {
-  --bg: #0f1720;
-  --card: #17212c;
-  --card-2: #1d2936;
-  --line: #2a3947;
-  --text: #e6edf3;
-  --muted: #8b9bab;
-  --accent: #4d9fff;
-  --good: #3fb950;
-  --warn: #d29922;
-  --bad: #f85149;
+  --bg: #fbfaf8;
+  --card: #ffffff;
+  --line: #e8e6e1;
+  --line-soft: #f0eeea;
+  --text: #2f3437;
+  --muted: #8a8f94;
+  --accent: #5b8c7e;
+  --accent-soft: #eef4f2;
+  --good: #5b8c7e;
+  --good-soft: #eef4f2;
+  --warn: #b58a4b;
+  --warn-soft: #faf4e8;
+  --bad: #b5675f;
+  --bad-soft: #fbf0ee;
 }
 
 * {
@@ -39,7 +53,8 @@ body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 13px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ---- header ------------------------------------------------------------- */
@@ -47,21 +62,19 @@ body {
 .vr-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, #16222f, var(--bg));
+  gap: 11px;
+  padding: 18px 20px 15px;
 }
 
 .vr-head img {
   width: 26px;
   height: 26px;
-  border-radius: 6px;
+  border-radius: 7px;
 }
 
 .vr-word {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 650;
   letter-spacing: -0.2px;
 }
 
@@ -72,6 +85,7 @@ body {
 .vr-sub {
   color: var(--muted);
   font-size: 11px;
+  margin-top: -1px;
 }
 
 .vr-ver {
@@ -84,16 +98,21 @@ body {
 /* ---- sections ----------------------------------------------------------- */
 
 .vr-sec {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line);
+  padding: 14px 20px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.vr-sec:first-of-type {
+  border-top: none;
+  padding-top: 4px;
 }
 
 .vr-sec > h4 {
-  margin: 0 0 8px;
-  font-size: 11px;
+  margin: 0 0 10px;
+  font-size: 10.5px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   color: var(--muted);
 }
 
@@ -101,48 +120,58 @@ body {
 
 .vr-cards {
   display: grid;
-  gap: 8px;
+  gap: 9px;
 }
 
+/*
+ * Tinted, not outlined. A left border-rule reads as a status bar and made
+ * three stacked cards look like three warnings; a soft wash of the same hue
+ * says the same thing without raising its voice.
+ */
 .vr-card {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 11px;
+  padding: 12px 14px;
   background: var(--card);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--accent);
-  border-radius: 8px;
+  border-radius: 11px;
 }
 
 .vr-card.good {
-  border-left-color: var(--good);
+  background: var(--good-soft);
+  border-color: #dde9e4;
 }
 .vr-card.warn {
-  border-left-color: var(--warn);
+  background: var(--warn-soft);
+  border-color: #efe3cc;
 }
 .vr-card.bad {
-  border-left-color: var(--bad);
+  background: var(--bad-soft);
+  border-color: #f0dcd9;
 }
 
 .vr-card-i {
-  font-size: 15px;
-  line-height: 1.2;
+  font-size: 14px;
+  line-height: 1.4;
+  opacity: 0.85;
 }
 
 .vr-card-t {
   font-weight: 600;
+  font-size: 13px;
 }
 
 .vr-card-d {
   color: var(--muted);
   font-size: 11.5px;
-  margin-top: 1px;
+  margin-top: 2px;
 }
 
 .vr-empty {
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.5;
   padding: 2px 0;
 }
 
@@ -152,7 +181,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 7px 0;
+  margin: 8px 0;
 }
 
 .vr-label {
@@ -171,6 +200,7 @@ body {
 .vr-hint {
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.5;
 }
 
 input[type="text"],
@@ -179,10 +209,10 @@ input[type="url"],
 input[type="password"] {
   flex: 1;
   min-width: 0;
-  padding: 6px 8px;
-  background: var(--bg);
+  padding: 7px 9px;
+  background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   font: inherit;
   font-size: 12px;
@@ -191,37 +221,40 @@ input[type="password"] {
 input:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 button {
-  padding: 6px 11px;
-  background: var(--card-2);
+  padding: 7px 12px;
+  background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 button:hover {
-  background: #24344a;
-  border-color: #3a4d63;
+  background: #f4f2ee;
+  border-color: #dcd9d3;
 }
 
 button.vr-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #06121f;
+  color: #fff;
   font-weight: 600;
 }
 
 button.vr-primary:hover {
-  background: #6bb0ff;
+  background: #4e7c6f;
+  border-color: #4e7c6f;
 }
 
 button.vr-mini {
-  padding: 4px 8px;
+  padding: 5px 9px;
   font-size: 11px;
 }
 
@@ -232,16 +265,35 @@ button.vr-wide {
 .vr-check {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.vr-check input {
+  accent-color: var(--accent);
 }
 
 details > summary {
   cursor: pointer;
   color: var(--muted);
   font-size: 11.5px;
-  padding: 2px 0;
+  padding: 3px 0;
+  list-style: none;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::before {
+  content: "› ";
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
 }
 
 details > summary:hover {
@@ -250,7 +302,7 @@ details > summary:hover {
 
 .vr-btnrow {
   display: flex;
-  gap: 7px;
+  gap: 8px;
 }
 
 .vr-btnrow button {
@@ -264,23 +316,24 @@ details > summary:hover {
   position: fixed;
   inset: 0;
   z-index: 20;
-  background: rgba(4, 10, 16, 0.72);
+  background: rgba(47, 52, 55, 0.28);
 }
 
 #modal-content {
   position: absolute;
-  left: 16px;
-  right: 16px;
-  top: 40px;
-  padding: 14px 16px;
+  left: 20px;
+  right: 20px;
+  top: 44px;
+  padding: 16px 18px;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(47, 52, 55, 0.14);
 }
 
 #modal-form label {
   display: block;
-  margin: 8px 0 3px;
+  margin: 10px 0 4px;
   font-size: 11.5px;
   color: var(--muted);
 }
@@ -293,7 +346,7 @@ details > summary:hover {
   float: right;
   cursor: pointer;
   color: var(--muted);
-  font-size: 18px;
+  font-size: 19px;
   line-height: 1;
 }
 
@@ -304,7 +357,8 @@ details > summary:hover {
 .vr-danger {
   color: var(--bad);
   font-size: 11px;
-  margin: 10px 0 0;
+  line-height: 1.5;
+  margin: 12px 0 0;
 }
 
 /* ---- footer ------------------------------------------------------------- */
@@ -312,8 +366,9 @@ details > summary:hover {
 .vr-foot {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px 12px;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line-soft);
   color: var(--muted);
   font-size: 11px;
 }
@@ -332,9 +387,9 @@ details > summary:hover {
 }
 
 #status-message:not(:empty) {
-  margin-top: 8px;
-  padding: 6px 9px;
-  background: var(--card-2);
-  border-radius: 6px;
+  margin-top: 9px;
+  padding: 7px 10px;
+  background: var(--accent-soft);
+  border-radius: 8px;
   font-size: 11.5px;
 }
