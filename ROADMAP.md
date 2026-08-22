@@ -187,10 +187,11 @@ future runs.
 *External*, so anyone with a Google Account can consent — no test-user list,
 and the Testing-mode 7-day re-consent expiry is gone with it.
 
-Confirmed at the same time, closing a question open since 2026-08-16:
-**Google Calendar API is Enabled** on project `verammp` (status shown on the
-API/Service details page). That was the last thing that could have made ✉️ fail
-with `403 accessNotConfigured` while looking like an extension bug. It cannot.
+**Google Calendar API: Enabled** — confirmed on the console page, though it was
+never actually in doubt. §1 above has recorded since 2026-08-16 that six events
+were written through that API, which is stronger evidence than a status label.
+A stale "STILL UNKNOWN" note elsewhere kept the question alive and cost a trip
+to the console to re-answer it. No `403 accessNotConfigured` was ever seen.
 
 Console note: this is the redesigned **Google Auth Platform** UI. Publishing
 lives under **Audience**, not the old "OAuth consent screen" page. Scopes are
