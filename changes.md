@@ -1,3 +1,45 @@
+## Mail sends from the club address now (2026-08-22)
+
+`MAIL_RELAY_URL` is no longer blank. The Apps Script relay is deployed under
+**vtopextention@gmail.com**, the club account, and the `/exec` URL ships in the
+build — so nobody pastes anything. The popup's relay field stays what it always
+was: a per-user override for someone running their own.
+
+Verified before committing, and the *way* it was verified is the point:
+
+```
+$ GET /exec          (unauthenticated, no Google session)
+{"ok":true,"service":"vRevamp mail relay","quotaLeft":100}
+```
+
+Opening that URL in the owner's own browser would have succeeded even if
+"Who has access" were set to *Anyone with a Google account* — the owner is
+signed in, so the misconfiguration is invisible from there. An anonymous fetch
+is the only test that distinguishes them, and the extension is an anonymous
+caller.
+
+What this buys, precisely: the 📧 mail button needs **no Google sign-in and not
+one scope**. The relay owns the sending identity; the only unknown left is the
+recipient, which the student types once. It works for a student with no Google
+account at all.
+
+What it does not buy: the ✉️ Calendar button still needs that student's own
+consent, because writing into someone's calendar requires their permission and
+no relay changes that. The sign-in-free substitute there remains the 📅 one-tap
+TEMPLATE link.
+
+**The ceiling to watch** is not Gmail's. The script caps itself at 60 sends/day
+(and 12 per recipient) deliberately below the consumer quota of 100, so an
+abuser cannot exhaust the day and silence real reminders. With a hundred
+students on the digest, that 60 binds first — the fixes then are raising the
+cap toward 100, or moving the mailbox to Workspace, where the quota is 1500.
+
+And the trade-off the relay's own header states rather than hides: the `/exec`
+URL ships inside the extension and is therefore public. Anyone who unzips a
+build can POST to it. The caps are the mitigation, not prevention. Proportionate
+for a single-campus unpacked build; a Web Store release would want a per-user
+token from something stateful.
+
 These are the changes made to the project: 
 
 ## The popup stops being somebody else's page (2026-08-22)

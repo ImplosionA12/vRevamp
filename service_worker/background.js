@@ -620,7 +620,8 @@ const REMINDER_EMAIL_KEY = "vrevamp_reminder_email";
  * Store release would want a per-user token issued by something stateful.
  */
 // >>> PASTE THE APPS SCRIPT /exec URL HERE <<<  (blank = send from the student)
-const MAIL_RELAY_URL = "";
+const MAIL_RELAY_URL =
+  "https://script.google.com/macros/s/AKfycbxJSxzfsUM4ezJLE2k8_ncMi5a7nCpd-1f75_7mqFZQ8nYkFgDwk791nhwpEQ1StCBw/exec";
 const MAIL_RELAY_KEY = "vrevamp_mail_relay_url";
 
 /*
