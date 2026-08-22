@@ -2,7 +2,8 @@
   "action": {
     "default_popup": "html/popup.html"
   },
-  "author": "sanjay7178.github.io",
+  "author": "ImplosionA12",
+  "homepage_url": "https://github.com/ImplosionA12/vRevamp",
   "background": {
     "service_worker": "service_worker/background.js"
   },
