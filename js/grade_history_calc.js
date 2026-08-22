@@ -466,7 +466,26 @@
 
     const cols = columnsOf(table);
     const seen = {};
-    courses = ownRows(table)
+    /*
+     * Parse into a LOCAL and commit only on success.
+     *
+     * This used to assign straight into `courses` and then bail out when the
+     * parse came back empty — which left the module holding an empty course
+     * list while the panel and all 29 grade dropdowns stayed on screen. The
+     * next grade the student changed was then computed against nothing:
+     * "Couldn't read any graded rows on this page", no projected CGPA, no bar,
+     * and the row still tinted yellow as though it had registered.
+     *
+     * Reproduced live 2026-08-22 on the real transcript — select moved B → A,
+     * row highlighted, panel replaced by the error. This page carries TWENTY
+     * tables and VTOP re-renders them, so a rebuild that momentarily parses
+     * nothing is normal; it must not be able to poison a working panel.
+     *
+     * Keeping the last good parse is right rather than merely safer: the rows
+     * on screen are the rows the student is editing, and a transient failure
+     * to re-read them changes nothing about what they mean.
+     */
+    const parsed = ownRows(table)
       .map((tr) => parseRow(tr, cols))
       .filter(Boolean)
       .map((c) => {
@@ -474,7 +493,8 @@
         seen[k] = (seen[k] || 0) + 1;
         return { ...c, n: seen[k] };
       });
-    if (!courses.length) return;
+    if (!parsed.length) return; // keep whatever was already working
+    courses = parsed;
 
     details = parseCgpaDetails();
     fitSelects();

@@ -1,5 +1,52 @@
 These are the changes made to the project: 
 
+## One empty re-parse killed the grade calculator (2026-08-22)
+
+*"the grade changed or not?"* → *"u can see how much it says it diesnt hange at
+all"*. Reproduced live on the real transcript rather than reasoned about:
+focused row 27 (SWE2002), pressed a key, and watched the select move **B → A**,
+the row tint yellow as though it had registered — and the panel replace itself
+with:
+
+> Couldn't read any graded rows on this page.
+
+No projected CGPA. No bar. The change was recorded and then computed against
+nothing.
+
+`buildPanel()` did this:
+
+```js
+courses = ownRows(table).map(...)   // clobber the good state FIRST
+if (!courses.length) return;        // …then bail, leaving it empty
+```
+
+So a single rebuild that parsed nothing left the module holding an empty course
+list **while the panel and all twenty-nine dropdowns stayed on screen**. Every
+grade changed after that computed against `courses = []`. The Grade History
+page carries **twenty tables** and VTOP re-renders them, so an empty rebuild is
+ordinary — it must not be able to poison a working panel.
+
+Now the parse goes into a local and is committed only when it produced
+something. Keeping the last good parse is right rather than merely safer: the
+rows on screen are the rows being edited, and a transient failure to re-read
+them changes nothing about what they mean.
+
+The test blanks the history table's cells without removing it — an empty
+rebuild, exactly as observed — then changes a grade and requires a real
+projection to come back.
+
+### Why yesterday's fixes did not catch it
+
+Two different faults wearing the same symptom, both real, fixed in order:
+
+1. the panel outliving its table (previous entry) — the student was on the home
+   page with a calculator quoting a CGPA;
+2. this one — the right page, the right panel, and an empty `courses`.
+
+The first was found by reading the DOM; the second only by *driving* the
+control and watching what came back. The lesson is the one this project keeps
+relearning: a rendered panel is not a working one.
+
 ## The grade calculator outstayed its table (2026-08-22)
 
 *"the grade history is not we did o can't see the change or updated cgpa"*.

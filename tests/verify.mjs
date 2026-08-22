@@ -412,6 +412,51 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     text = await bodyText();
     ok("CGPA mode reads page CGPA (8.50)", /Current CGPA:\s*8\.50/.test(text), text.slice(0, 160));
     ok("projected CGPA = 8.65", /Projected CGPA:\s*8\.65/.test(text), text.slice(0, 160));
+    /* ---- a failed re-parse must not poison a working panel ----
+     *
+     * Reproduced live 2026-08-22 on the real transcript: the select moved
+     * B -> A, the row tinted yellow as though it had registered, and the panel
+     * replaced itself with "Couldn't read any graded rows on this page" - no
+     * projected CGPA, no bar.
+     *
+     * buildPanel() assigned straight into `courses` and only then checked
+     * whether the parse had produced anything, so one empty rebuild left the
+     * module holding no courses while the panel and all its dropdowns stayed
+     * on screen. That page carries twenty tables and VTOP re-renders them, so
+     * an empty rebuild is ordinary - it must not be able to do this.
+     */
+    {
+      const p3 = await newPage(browser);
+      await p3.setContent(html);
+      await shim(p3);
+      await inject(p3, ["js/shared/click.js", "js/grade_history_calc.js"]);
+      await p3.evaluate(() => window.__dispatch("exam_grade"));
+      await delay(700);
+      const after = await p3.evaluate(async () => {
+        // a rebuild that parses nothing: blank every cell of the history table
+        // without removing it, then let the observer run
+        const t = [...document.querySelectorAll("table")].sort(
+          (a, b) => b.rows.length - a.rows.length
+        )[0];
+        t.querySelectorAll("td").forEach((td) => {
+          if (!td.querySelector("select")) td.textContent = "";
+        });
+        await new Promise((r) => setTimeout(r, 900));
+        // now change a grade, as the student would
+        const sel = document.querySelector("select.vrevamp-gh-select:not([disabled])");
+        sel.value = sel.value === "S" ? "A" : "S";
+        sel.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 300));
+        return document.getElementById("vrevamp-gradehist-body").textContent;
+      });
+      ok(
+        "an empty re-parse cannot leave the calculator with no courses",
+        !/Couldn't read any graded rows/.test(after),
+        after.replace(/\s+/g, " ").slice(0, 110)
+      );
+      await p3.close();
+    }
+
     {
       // its own page: this test destroys the table, and everything below still
       // needs it
