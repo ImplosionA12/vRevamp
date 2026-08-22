@@ -1459,6 +1459,54 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         !!result && result.rows === 2 && /%/.test(result.text),
         JSON.stringify(result && result.rows)
       );
+
+      /* ---- the recovery column ----
+       *
+       * "idk how i get 0 marhi like i attend all classe again until a month
+       * na". The dip was being presented as the outcome: headroom measured on
+       * the last day of the trip, with nothing said about the month of classes
+       * after it. For the real 25-31 Aug case that meant showing 75.0% and
+       * hiding the 85.7% the same student reaches by CAT-2.
+       *
+       * Range 05-08 July here so the exam (CAT-I, the 10th) falls AFTER it and
+       * there is a teaching day between the two - the 9th - for the recovery
+       * to be computed from. The property: the last column is a real figure
+       * and never lower than the dip beside it.
+       */
+      await page.evaluate(() => {
+        document.getElementById("vrevamp-skip-from").value = "2025-07-05";
+        document.getElementById("vrevamp-skip-to").value = "2025-07-08";
+      });
+      await page.click('[data-vr-action="skip-plan"]');
+      await delay(400);
+      const pair = await page.evaluate(() =>
+        [...document.querySelectorAll("#vrevamp-skip-result tbody tr")].map((tr) => {
+          const cells = [...tr.cells].map((c) => c.textContent);
+          const num = (t) => {
+            const m = /(\d+(?:\.\d+)?)%/.exec(t || "");
+            return m ? parseFloat(m[1]) : null;
+          };
+          return { dip: num(cells[3]), back: num(cells[4]), backText: cells[4] };
+        })
+      );
+      ok(
+        "the recovery column is a real number, not a dash",
+        pair.length === 2 && pair.every((p2) => typeof p2.back === "number"),
+        JSON.stringify(pair.map((p2) => p2.backText))
+      );
+      ok(
+        "attending everything afterwards never leaves you lower than the dip",
+        pair.every((p2) => p2.back >= p2.dip),
+        JSON.stringify(pair.map((p2) => `${p2.dip} -> ${p2.back}`))
+      );
+      ok(
+        "the dip is labelled as the low point, not as the outcome",
+        await page.evaluate(() =>
+          /Lowest it gets/.test(document.getElementById("vrevamp-skip-result").textContent) ||
+          /Lowest it gets/.test(document.getElementById("vrevamp-skip-planner").textContent)
+        ),
+        "header text"
+      );
     }
     await page.close();
   }

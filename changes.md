@@ -1,5 +1,41 @@
 These are the changes made to the project: 
 
+## The dip was being shown as the destination (2026-08-22)
+
+*"idk how i get 0 marhi like i attend all classe again until a month na"* — and
+that is the planner's fault, not a misreading.
+
+"Headroom left: 0" was measured on the **last day of the trip** and the table
+then said nothing about the month of classes that follows. For the real 25–31
+August case it printed **75.0%** and hid the fact that the same student is back
+to **24/28 = 85.7%** by CAT-2 having attended everything after. Both figures
+are true. Showing only the first made a survivable trip look like a debar.
+
+The dip still matters and is still shown, because the days immediately after it
+are the genuinely risky ones — at 12/16 one unplanned absence on 1 Sept is
+12/17 = 70.6%, with nothing to cushion it. But it is labelled **"Lowest it
+gets"**, with **"By the next exam"** beside it:
+
+| Subject | Now | Classes missed | Lowest it gets | By the next exam |
+|---|---|---|---|---|
+| CSE3009 Theory | 93% | 3 class(es) | **75.0%** · 0 spare | **85.7%** · CAT-2, attending the rest |
+
+The summary line changed with it. It used to end "no margin left after this",
+which is the same error in prose; it now says the low point is the low point,
+names where you land, and points at the real risk — the few days right after,
+not the exam.
+
+### Checked against the extension's own arithmetic
+
+Worked out independently while answering: classes from now to CAT-2 for that
+subject are 3 (the trip) + 12 (September) = 15, so the bunk table's
+`floor(12 + 15 − 0.75 × 28)` = **6**, which is exactly what its "Bunkable
+before CAT-2" column already displayed. Two different code paths, one number.
+
+September is 4 of each weekday Tue–Sat and nothing else: every Monday in the
+month is a holiday or a No Instructional Day, and this student has no Monday
+classes anyway.
+
 ## "What if I skip these dates" is now a control, not a hand calculation (2026-08-22)
 
 Asked after the 25–31 August question was answered by hand: *"yes build it,

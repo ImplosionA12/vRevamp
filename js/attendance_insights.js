@@ -1002,7 +1002,35 @@
     }
 
     const { held, off } = plannerDays(calendar, fromIso, toIso);
-    const head = ["Subject", "Now", "Classes missed", "After", "Headroom left"]
+    /*
+     * The recovery column, added the same day the planner shipped.
+     *
+     * "idk how i get 0 marhi like i attend all classe again until a month na"
+     * — and that is the tool's fault, not a misreading. "Headroom 0" was
+     * measured at the BOTTOM of the dip, the last day of the trip, and the
+     * table then said nothing about the month of classes that follows. It
+     * showed the scare and hid the recovery.
+     *
+     * Worked through for the 25-31 Aug case: CSE3009 Theory bottoms out at
+     * exactly 75.0% on 31 Aug and is back to 24/28 = 85.7% by CAT-2 if every
+     * class after the trip is attended. Both numbers are true; presenting only
+     * the first one is what made a survivable trip look like a debar.
+     *
+     * So: the dip is still shown, because the days right after it are the
+     * genuinely risky ones, and beside it where the student actually ends up.
+     */
+    const nextDay = (iso) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      const t = new Date(y, m - 1, d + 1);
+      return isoOf(t);
+    };
+    const prevDay = (iso) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      const t = new Date(y, m - 1, d - 1);
+      return isoOf(t);
+    };
+
+    const head = ["Subject", "Now", "Classes missed", "Lowest it gets", "By the next exam"]
       .map(
         (h) =>
           `<th style="border:${B};padding:7px 9px;background:#eef1f5;text-align:left;` +
@@ -1026,6 +1054,23 @@
         if (pct !== null && (worst === null || pct < worst)) worst = pct;
         const unit = /lab/i.test(r.unit || "") ? "lab(s)" : "class(es)";
         const shown = Math.round(missed / r.size);
+
+        // …and where it ends up: every class from the day after the trip until
+        // the next exam, attended
+        let recovered = null;
+        if (r.nextExamIso && r.nextExamIso > toIso) {
+          const back = classesBetween(
+            calendar,
+            r.meetings || {},
+            nextDay(toIso),
+            prevDay(r.nextExamIso)
+          );
+          if (back !== null) {
+            const denom = after + back;
+            if (denom) recovered = ((r.attended + back) / denom) * 100;
+          }
+        }
+
         return (
           "<tr>" +
           planCell(r.name, "font-weight:600;") +
@@ -1035,7 +1080,10 @@
             "white-space:nowrap;" + (missed ? "" : "color:#888;")
           ) +
           planCell(
-            pct === null ? "—" : `${pct.toFixed(1)}%`,
+            (pct === null ? "—" : `${pct.toFixed(1)}%`) +
+              `<div style="font-weight:400;color:#666;font-size:11px;">` +
+              (below ? "below the line" : `${spare} ${unit} spare`) +
+              "</div>",
             "white-space:nowrap;font-weight:700;" +
               (below
                 ? "color:#c0392b;background:#fdecea;"
@@ -1044,8 +1092,15 @@
                   : "color:#2e7d32;")
           ) +
           planCell(
-            below ? "DEBARRED" : `${spare} ${unit}`,
-            "white-space:nowrap;" + (below ? "color:#c0392b;font-weight:700;" : "")
+            recovered === null
+              ? '<span style="color:#888;">—</span>'
+              : `${recovered.toFixed(1)}%` +
+                  `<div style="font-weight:400;color:#666;font-size:11px;">` +
+                  `${r.nextExamLabel || "next exam"}, attending the rest</div>`,
+            "white-space:nowrap;font-weight:700;" +
+              (recovered !== null && recovered < 75
+                ? "color:#c0392b;background:#fdecea;"
+                : "color:#2e7d32;")
           ) +
           "</tr>"
         );
@@ -1067,7 +1122,11 @@
           "At least one subject drops below 75% — that is a debar, not a warning.</p>"
         : worst !== null && worst < 76
           ? '<p style="color:#b8860b;font-size:12px;margin:8px 0 0">' +
-            `Tightest subject lands on ${worst.toFixed(1)}% — no margin left after this.</p>`
+            `Tightest subject bottoms out at ${worst.toFixed(1)}% on the last day of ` +
+            "the trip. That is the low point, not where you end up — the last " +
+            "column is where you land if you attend everything afterwards. The " +
+            "risk is the few days right after, when one more absence has " +
+            "nothing to cushion it.</p>"
           : "");
   };
 
