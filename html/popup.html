@@ -15,6 +15,13 @@
     Wi-Fi buttons above everything else — somebody else's identity and the
     least-used feature, first.
 
+    No class data here, on request: "they are popup na they will eb small".
+    A popup is a few hundred pixels that opens on a click and closes on the
+    next one; the attendance, dues and exam figures already live on the pages
+    that own them, with the room to explain themselves. A copy here could only
+    be worse and staler — the popup cannot fetch, so it would show whatever was
+    cached at some earlier visit.
+
     Every id below that a script binds to is unchanged, on purpose:
       js/wifi/hostel.js  edit-button, logout-button, connect-button,
                          status-message, modal, username, password,
@@ -23,7 +30,7 @@
                          vr-google-switch, vr-mail-to, vr-mail-save,
                          vr-digest, vr-digest-when, vr-advanced, vr-relay,
                          vr-relay-save, vr-mail-status
-    This is a reskin plus a summary, never a rewrite of behaviour.
+    This is a reskin, never a rewrite of behaviour.
   -->
 
   <header class="vr-head">
@@ -35,20 +42,10 @@
     <div class="vr-ver" id="vr-version"></div>
   </header>
 
-  <!--
-    AT A GLANCE — rendered from chrome.storage only, so it opens instantly and
-    works with VTOP closed or offline. Every number here was already being
-    cached by the page scripts and had nowhere to be seen.
-  -->
   <section class="vr-sec">
-    <h4>At a glance</h4>
-    <div class="vr-cards" id="vr-glance">
-      <div class="vr-empty">Reading your cached data…</div>
-    </div>
-    <div class="vr-row" style="margin-top:10px">
-      <button type="button" class="vr-primary vr-wide" id="vr-open-vtop">Open VTOP</button>
-    </div>
+    <button type="button" class="vr-primary vr-wide" id="vr-open-vtop">Open VTOP</button>
   </section>
+
 
   <!--
     Reminders & mail.
@@ -147,7 +144,7 @@
     <span class="vr-spacer">forked from vRevamp</span>
   </footer>
 
-  <script src="../js/popup_glance.js"></script>
+  <script src="../js/popup_meta.js"></script>
   <script src="../js/wifi/hostel.js"></script>
   <script src="../js/popup.js"></script>
 </body>
