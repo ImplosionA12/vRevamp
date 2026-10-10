@@ -36,6 +36,70 @@
     });
   };
 
+  /*
+   * Update check. An unpacked extension never updates itself and Chrome's
+   * `update_url` only works for Web Store installs, so the one thing that can
+   * be done is to LOOK: read the manifest on the default branch and say so
+   * when it is newer than the running copy. raw.githubusercontent.com sends
+   * `Access-Control-Allow-Origin: *`, so this needs no host permission.
+   * At most one request every six hours; any failure is silent.
+   */
+  const RAW_MANIFEST =
+    "https://raw.githubusercontent.com/ImplosionA12/vRevamp/master/manifest.json";
+  const RELEASES = "https://github.com/ImplosionA12/vRevamp/releases/latest";
+  const CHECK_KEY = "vrevamp_update_check";
+  const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+
+  const isNewer = (remote, local) => {
+    const a = String(remote).split(".").map((n) => parseInt(n, 10) || 0);
+    const b = String(local).split(".").map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+    }
+    return false;
+  };
+  window.vrIsNewerVersion = isNewer;
+
+  const showUpdate = (remote) => {
+    const box = document.getElementById("vr-update");
+    if (!box) return;
+    box.hidden = false;
+    box.textContent = "";
+    const text = document.createElement("span");
+    text.textContent = `v${remote} is available. `;
+    const link = document.createElement("a");
+    link.href = RELEASES;
+    link.textContent = "Download it";
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      chrome.tabs.create({ url: RELEASES });
+    });
+    const how = document.createElement("div");
+    how.className = "vr-hint";
+    how.textContent =
+      "Unzip over the old folder, then press reload on vRevamp at chrome://extensions.";
+    box.append(text, link, how);
+  };
+
+  const checkForUpdate = async () => {
+    let local;
+    try {
+      local = chrome.runtime.getManifest().version;
+      const stored = (await chrome.storage.local.get(CHECK_KEY))[CHECK_KEY] || {};
+      let remote = stored.version;
+      if (!stored.at || Date.now() - stored.at > CHECK_EVERY_MS) {
+        const res = await fetch(RAW_MANIFEST, { cache: "no-store" });
+        if (!res.ok) return;
+        remote = (await res.json()).version;
+        await chrome.storage.local.set({ [CHECK_KEY]: { at: Date.now(), version: remote } });
+      }
+      if (remote && isNewer(remote, local)) showUpdate(remote);
+    } catch {
+      /* offline, rate-limited, or not an extension context: say nothing */
+    }
+  };
+
   version();
   openVtop();
+  checkForUpdate();
 })();

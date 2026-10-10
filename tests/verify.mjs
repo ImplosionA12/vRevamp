@@ -9232,6 +9232,40 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
    * consider the bare picker "already loaded" (which would make it a no-op
    * forever).
    */
+  /* ============ popup: update check against the GitHub manifest ============ */
+  console.log("\n=== popup: says so when GitHub has a newer version ===");
+  {
+    const run = async (remote) => {
+      const p = await newPage(browser);
+      await p.setContent("<body><div id='vr-version'></div><button id='vr-open-vtop'></button><div id='vr-update' hidden></div></body>");
+      await shim(p, {});
+      await p.evaluate((remoteVersion) => {
+        chrome.runtime.getManifest = () => ({ version: "4.6.0" });
+        chrome.tabs = { create: () => {} };
+        window.fetch = async () => {
+          if (remoteVersion === "FAIL") throw new Error("offline");
+          return { ok: true, json: async () => ({ version: remoteVersion }) };
+        };
+      }, remote);
+      await inject(p, ["js/popup_meta.js"]);
+      await delay(300);
+      const r = await p.evaluate(() => ({
+        shown: !document.getElementById("vr-update").hidden,
+        text: document.getElementById("vr-update").textContent,
+        newer: [window.vrIsNewerVersion("4.10.0", "4.9.9"), window.vrIsNewerVersion("4.6.0", "4.6.0"), window.vrIsNewerVersion("4.5.20", "4.6.0")],
+      }));
+      await p.close();
+      return r;
+    };
+    const newer = await run("4.7.0");
+    ok("a newer GitHub version shows the banner with the version", newer.shown && /v4\.7\.0/.test(newer.text), JSON.stringify(newer));
+    ok("versions compare numerically, not as text", JSON.stringify(newer.newer) === "[true,false,false]", JSON.stringify(newer.newer));
+    const same = await run("4.6.0");
+    ok("the same version shows nothing", !same.shown, JSON.stringify(same));
+    const failed = await run("FAIL");
+    ok("an offline check is silent", !failed.shown, JSON.stringify(failed));
+  }
+
   /* ============ page-open beats the DOM: the previous page's picker is still there ============
    * SEEN LIVE 2026-10-10 (Attendance -> Marks View, Attendance -> DA Upload):
    * the worker's semester_page_open message arrives BEFORE VTOP draws the new

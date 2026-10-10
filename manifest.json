@@ -130,9 +130,8 @@
     "notifications",
     "scripting"
   ],
-  "update_url": "https://clients2.google.com/service/update2/crx",
 
-  "version": "4.5.20",
+  "version": "4.6.0",
   "web_accessible_resources": [
     {
       "matches": ["*://*.vit.ac.in/*", "*://*.vitap.ac.in/*"],

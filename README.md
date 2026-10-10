@@ -1,27 +1,66 @@
 # vRevamp
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) ![Chrome Extension Passing](https://img.shields.io/badge/Google%20Chrome-4285F4?style=for-the-badge&logo=GoogleChrome&logoColor=white) [![Update Chrome Extension](https://github.com/sanjay7178/vRevamp/actions/workflows/main.yml/badge.svg)](https://github.com/sanjay7178/vRevamp/actions/workflows/main.yml)
-## New Release 
-you can find out at [Releases](https://github.com/sanjay7178/vRevamp/releases/) (current version: see `manifest.json`, changelog in [changes.md](changes.md))
 
-Enhancing the better way to use VTOP
----------------------------------------------------------------
-It automatically fills out the captcha and makes your experience more convenient than ever
+A Chrome extension that makes the VIT-AP VTOP portal faster and more useful.
+Works on `vtop.vitap.ac.in` (and `web.vitap.ac.in`).
 
-Utilize our attendance calculator to keep a minimum of 80% of attendance and eliminate the worry of being prohibited.
+## What it does
 
-Calculating the passing grades doesn't take much time. Our addon displays the grade requirements for passing
+- **Fills the login captcha** for you, and can fetch the login OTP from your mail.
+- **Auto-picks the current semester** on Attendance, Marks, Time Table, DA Upload
+  and Exam Schedule, so you stop choosing it every time.
+- **Attendance**: how many classes you can still skip, per subject, before each
+  CAT/FAT and the 75% debar line, plus a skip planner for a date range.
+- **Home card**: days to CAT-1/CAT-2/FAT, the next holiday, and subjects close to debar.
+- **Digital Assignments**: shows what you owe and when, with reminders.
+- **Exam Schedule**: download as `.ics`, get Chrome notifications before each exam,
+  or have Google Calendar email you 24 h and 2 h before.
+- **Time Table**: export to `.ics` / Google Calendar, a "next class" card, PNG download.
+- **Grades**: a what-if CGPA calculator on Grade History, and marks needed for the
+  next grade using each subject's own cutoffs.
+- **Leave**: tells you when a General Outing request gets approved.
 
-Easily sync the location and time of your exam with your Google Calendar, and access it from any device.
+Your VTOP password and data stay in your browser. Something leaves it only when you
+press a button that needs it: the Calendar and Gmail buttons talk to Google (and ask you
+to sign in first), and "Mail me the list now" sends that one email through a small
+relay run by the project, unless you switch the relay off in the popup.
 
-Struggling to find important options in VTOP, the Home screen includes a Navbar with links to the most frequently used VTOP pages.
-Your problems are over because the materials you download will be named as such and with single click you can download all you needed materials at one click
+## Install (GitHub)
 
-You can see your semester's grades and weighting immediately on the marks page, and you can make plans based on that information.
+1. Open the [latest release](https://github.com/ImplosionA12/vRevamp/releases/latest)
+   and download the source zip, then unzip it somewhere permanent
+   (Chrome reads the extension from that folder, so do not delete it).
+2. Go to `chrome://extensions` and switch on **Developer mode** (top right).
+3. Click **Load unpacked** and pick the unzipped folder (the one containing `manifest.json`).
 
-Find an issue with this extension? Fix it on GitHub (https://github.com/sanjay7178/vRevamp)
-Read less
+## Update
 
-## Chrome Extension
-you can find out the chrome extension at [vRevamp](https://chrome.google.com/webstore/detail/vrevamp/jfmlhhjlkbliphgkmeingeacbijcilcl)
-## Privacy Policy
-you can find out the privacy policy at [link](https://vrevamp.nullchapter.tech/privacy-policy)
+Unpacked extensions never update themselves. The popup shows **"vX is available"**
+when a newer version is on GitHub. To update:
+
+1. Download the new release and unzip it **over the old folder** (same location).
+2. Go to `chrome://extensions` and press the **reload** (circular arrow) button on vRevamp.
+3. Reload any open VTOP tab.
+
+If something stops working after you changed or re-downloaded files, step 2 is
+the first thing to try: Chrome keeps running the old code until you reload.
+
+## Troubleshooting
+
+- A section "does nothing" or the page keeps loading: reload the extension and the VTOP tab.
+- Google sign-in shows an "unverified app" screen: choose **Advanced > Continue**.
+- Report issues at <https://github.com/ImplosionA12/vRevamp/issues>.
+
+## Develop
+
+```
+npm install
+npm run lint
+npm test        # about 5 minutes; drives the content scripts in a headless browser
+```
+
+Changes are logged in [changes.md](changes.md); open work is in [ROADMAP.md](ROADMAP.md).
+
+## Credits and licence
+
+Started from [sanjay7178/vRevamp](https://github.com/sanjay7178/vRevamp) and
+substantially reworked. Licensed under GPL-3.0, see [LICENSE](LICENSE).

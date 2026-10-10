@@ -4246,3 +4246,12 @@ one page, as Chrome does at inject time:
   Gmail sign-in as `btn-outline-primary`, status as `small text-muted/-success/-danger`.
 - Checked as a markup preview on VTOP's real login stylesheet; the logged-in exam
   page itself was not reachable (session expired), so confirm it after reloading.
+
+## 4.6.0 - GitHub distribution (2026-10-11)
+- Decided: ship on GitHub as an unpacked extension (not the Web Store).
+- **Update checker.** The popup reads the manifest on `master` (raw.githubusercontent.com
+  sends CORS `*`, so no new permission) at most every 6 h and shows "vX is available"
+  with the unzip-and-reload steps when it is newer. Silent when offline.
+- README rewritten for this repo: what it does, install, update (including the
+  reload step), troubleshooting, an accurate note on what leaves the browser.
+- Removed the Web Store `update_url` from the manifest; version 4.5.20 -> 4.6.0.
