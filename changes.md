@@ -4234,3 +4234,15 @@ one page, as Chrome does at inject time:
 - **Many "feature X does nothing" reports were a stale extension.** The Chrome
   profile ran code older than the repo; an unpacked extension never updates
   itself. Reload it at chrome://extensions after every change.
+
+## 2026-10-10 (later) - buttons take VTOP's own look
+- Every injected button now uses VTOP's Bootstrap classes (`btn btn-primary btn-sm`)
+  with no colour of its own; the old hard-coded rgb(73,117,182) was a different
+  blue from the portal's buttons.
+- Exam row: one primary (Download CATn (.ics)) and three outlined options, no
+  emoji, sentence-case labels; status text uses text-success/text-danger; the
+  address prompt uses VTOP's `form-control form-control-sm`.
+- Login "Fill OTP from mail": same `btn btn-sm btn-primary` as the page's Submit,
+  Gmail sign-in as `btn-outline-primary`, status as `small text-muted/-success/-danger`.
+- Checked as a markup preview on VTOP's real login stylesheet; the logged-in exam
+  page itself was not reachable (session expired), so confirm it after reloading.

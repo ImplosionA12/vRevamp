@@ -142,9 +142,11 @@
   window.vrButton = (action, label, data) => {
     const button = document.createElement("button");
     button.type = "button"; // never submit the enclosing VTOP form
-    button.className = "btn btn-primary";
-    button.style.marginLeft = "1%";
-    button.style.background = "rgb(73,117,182)";
+    // VTOP's own Bootstrap classes and NO colour of our own, so the button
+    // takes whatever blue and size the portal defines (2026-10-10: the old
+    // hard-coded rgb(73,117,182) was a different blue from VTOP's own buttons).
+    button.className = "btn btn-primary btn-sm";
+    button.style.margin = "2px 0 2px 6px";
     button.dataset.vrAction = action;
     button.textContent = label;
     Object.entries(data || {}).forEach(([k, v]) => {

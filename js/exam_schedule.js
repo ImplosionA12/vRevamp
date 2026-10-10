@@ -256,11 +256,14 @@ const exam_status = (button, text, good) => {
   if (!note || note.className !== "vrevamp-exam-note") {
     note = document.createElement("span");
     note.className = "vrevamp-exam-note";
-    note.style.cssText = "margin-left:8px;font-size:12px;font-weight:normal;";
+    note.style.cssText = "margin-left:6px;font-size:12px;font-weight:normal;";
     button.insertAdjacentElement("afterend", note);
   }
   note.textContent = text;
-  note.style.color = good ? "#1a7f37" : "#c00";
+  // Bootstrap's own text colours, so the message reads as part of VTOP
+  note.classList.toggle("text-success", !!good);
+  note.classList.toggle("text-danger", !good);
+  note.style.color = "";
 };
 
 // Our buttons are identified by the `data-vr-action` attribute and serviced by
@@ -967,29 +970,32 @@ const exam_ask_address = (btn, onSaved) => {
   }
   box = document.createElement("span");
   box.className = "vrevamp-exam-addr";
-  box.style.cssText = "margin-left:8px;font-size:12px;font-weight:normal;white-space:nowrap;";
+  box.style.cssText =
+    "margin-left:6px;font-size:12px;font-weight:normal;white-space:nowrap;" +
+    "display:inline-flex;align-items:center;gap:4px;";
 
   const input = document.createElement("input");
   input.type = "email";
   input.placeholder = "you@example.com";
   input.setAttribute("aria-label", "Email address for vRevamp reminders");
-  input.style.cssText =
-    "font-size:12px;padding:3px 6px;border:1px solid #b9b9b9;border-radius:3px;min-width:210px;";
+  // VTOP's own form control, so it matches the portal's inputs
+  input.className = "form-control form-control-sm";
+  input.style.cssText = "width:220px;display:inline-block;";
 
   // type=button, like every other injected control: these sit inside VTOP's own
   // <form id="examSchedule"> and a default-type button submits it
-  const save = window.vrButton("exam-addr", " save ", {});
-  save.style.marginLeft = "4px";
+  const save = window.vrButton("exam-addr", "Save", {});
+  save.style.marginLeft = "0";
 
   const note = document.createElement("span");
-  note.style.cssText = "margin-left:6px;color:#c00;";
+  note.className = "text-danger";
+  note.style.cssText = "margin-left:6px;";
 
   box.append(input, save, note);
   btn.insertAdjacentElement("afterend", box);
   input.focus();
 
   const submit = async () => {
-    note.style.color = "#c00";
     const r = await window.vrSetReminderEmail(input.value);
     if (!r || !r.ok) {
       note.textContent = (r && r.error) || "couldn't save that";
@@ -1159,16 +1165,17 @@ let exam_schedule_sync = () => {
     if (head.querySelector(VR_BTN_SEL)) continue; // this group already has them
     const exam_type = vr_group_type(head);
     head.appendChild(
-      window.vrButton("exam-ics", ` Download ${exam_type} to .ics Format `, {
+      window.vrButton("exam-ics", `Download ${exam_type} (.ics)`, {
         vrExamType: exam_type,
       })
     );
 
     // 🔔 Chrome desktop notifications 1 day and 2 h before each upcoming
     // exam — pure chrome.alarms, works with zero Google sign-in
-    const bell = window.vrButton("exam-bell", " 🔔 notify me before each exam ", {
+    const bell = window.vrButton("exam-bell", "Notify me before each exam", {
       vrExamType: exam_type,
     });
+    bell.className = "btn btn-outline-primary btn-sm";
     bell.title =
       "Chrome notification 1 day and 2 h before each exam — no sign-in needed";
     head.appendChild(bell);
@@ -1176,9 +1183,10 @@ let exam_schedule_sync = () => {
     // ✉️ one Google Calendar event per upcoming exam, with email reminders 24 h
     // AND 2 h before. Sent by Google's servers, so they arrive on a phone with
     // Chrome closed — and they come from Google Calendar, not from the student.
-    const mail = window.vrButton("exam-mail", " ✉️ email me 24 h & 2 h before ", {
+    const mail = window.vrButton("exam-mail", "Email me 24 h & 2 h before", {
       vrExamType: exam_type,
     });
+    mail.className = "btn btn-outline-primary btn-sm";
     mail.title =
       "One Google Calendar event per exam; Google emails you 24 h and 2 h before each. " +
       "Sent by Google's servers, so it arrives even with Chrome closed. Needs one-time Google consent.";
@@ -1186,9 +1194,10 @@ let exam_schedule_sync = () => {
 
     // 📧 the whole list, mailed now, from the student's own Gmail. The ✉️
     // above is "remind me later"; this is "put it in my inbox".
-    const send = window.vrButton("exam-send", " 📧 mail me the list now ", {
+    const send = window.vrButton("exam-send", "Mail me the list now", {
       vrExamType: exam_type,
     });
+    send.className = "btn btn-outline-primary btn-sm";
     send.title =
       "Sends the upcoming exams of this group to your own inbox straight away — needs one-time Google consent";
     head.appendChild(send);

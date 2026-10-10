@@ -158,8 +158,11 @@
   const say = (text, tone) => {
     if (!note) return;
     note.textContent = text;
-    note.style.color =
-      tone === "bad" ? "#b3261e" : tone === "good" ? "#0b6b3a" : "#444";
+    // Bootstrap's own text colours — the login page is Bootstrap 5, so the
+    // message takes the portal's palette instead of a hard-coded one
+    note.classList.toggle("text-danger", tone === "bad");
+    note.classList.toggle("text-success", tone === "good");
+    note.classList.toggle("text-muted", tone !== "bad" && tone !== "good");
   };
 
   // Codes already filled once are ALWAYS skipped, clicks included. An earlier
@@ -288,23 +291,20 @@
   const mount = (input) => {
     if (panel) return;
     panel = document.createElement("div");
-    panel.style.cssText = "margin:6px 0;font:12px system-ui,sans-serif;";
+    // one tidy row under the OTP field, in the page's own font and sizes
+    panel.className = "d-flex align-items-center flex-wrap gap-2 mt-2";
 
     button = document.createElement("button");
     button.type = "button"; // never let it submit the login form
     button.textContent = "Fill OTP from mail";
-    button.style.cssText =
-      "padding:4px 10px;font:12px system-ui,sans-serif;cursor:pointer;" +
-      "border:1px solid #888;border-radius:4px;background:#f4f4f4;";
+    button.className = "btn btn-sm btn-primary"; // same as the page's Submit
     button.addEventListener("click", () => run(input));
 
     signIn = document.createElement("button");
     signIn.type = "button";
     signIn.textContent = "Sign in to Gmail";
     signIn.hidden = true;
-    signIn.style.cssText =
-      "margin-left:6px;padding:4px 10px;font:12px system-ui,sans-serif;" +
-      "cursor:pointer;border:1px solid #888;border-radius:4px;background:#eaf1fb;";
+    signIn.className = "btn btn-sm btn-outline-primary";
     signIn.addEventListener("click", async () => {
       say("Opening Google sign-in — pick your STUDENT account…");
       const reply = await askSignIn();
@@ -321,7 +321,7 @@
     });
 
     note = document.createElement("span");
-    note.style.cssText = "margin-left:8px;color:#444;";
+    note.className = "small text-muted";
 
     panel.append(button, signIn, note);
     (input.parentElement || document.body).insertBefore(

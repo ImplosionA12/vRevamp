@@ -2710,8 +2710,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok("one download button per exam group (FAT + CAT1)", btns.length === 2, JSON.stringify(btns));
     const counts = await page.evaluate(() => ({
-      notify: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
-      mail: [...document.querySelectorAll("button")].filter((b) => /email me/.test(b.textContent)).length,
+      notify: [...document.querySelectorAll("button")].filter((b) => /notify me/i.test(b.textContent)).length,
+      mail: [...document.querySelectorAll("button")].filter((b) => /email me/i.test(b.textContent)).length,
     }));
     ok(
       "one 🔔 notify + one ✉️ email button per exam group",
@@ -2810,7 +2810,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const bellNote = (btnRe, which) =>
       page.evaluate(([bre, re]) => {
         const b = [...document.querySelectorAll("button")]
-          .filter((x) => new RegExp(bre).test(x.textContent))
+          .filter((x) => new RegExp(bre, "i").test(x.textContent))
           .find((x) => new RegExp(re).test(x.closest("td").textContent));
         return b && b.nextElementSibling ? b.nextElementSibling.textContent : null;
       }, [btnRe, which]);
@@ -2819,7 +2819,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // upcoming exam (past FRL1001 and no-time PHY0000 skipped)
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
-        .filter((b) => /notify me/.test(b.textContent))[0]
+        .filter((b) => /notify me/i.test(b.textContent))[0]
         .click();
     });
     await delay(300);
@@ -2846,7 +2846,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
-        .filter((b) => /notify me/.test(b.textContent))[1]
+        .filter((b) => /notify me/i.test(b.textContent))[1]
         .click();
     });
     await delay(300);
@@ -2870,7 +2870,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => {
       window.__mails = [];
       [...document.querySelectorAll("button")]
-        .filter((b) => /mail me the list/.test(b.textContent))[0]
+        .filter((b) => /mail me the list/i.test(b.textContent))[0]
         .click();
     });
     await delay(400);
@@ -2907,7 +2907,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       window.__mailError = "gmail_send_scope";
       window.__mails = [];
       [...document.querySelectorAll("button")]
-        .filter((b) => /mail me the list/.test(b.textContent))[0]
+        .filter((b) => /mail me the list/i.test(b.textContent))[0]
         .click();
     });
     await delay(400);
@@ -2921,7 +2921,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       window.__mailError = null;
       window.__mails = [];
       [...document.querySelectorAll("button")]
-        .filter((b) => /mail me the list/.test(b.textContent))[1]
+        .filter((b) => /mail me the list/i.test(b.textContent))[1]
         .click();
     });
     await delay(400);
@@ -2935,7 +2935,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // ✉️ without a Google sign-in: surface the real identity error, create nothing
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
-        .filter((b) => /email me/.test(b.textContent))[0]
+        .filter((b) => /email me/i.test(b.textContent))[0]
         .click();
     });
     await delay(300);
@@ -2949,7 +2949,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => (window.__storage.token = "tok123"));
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
-        .filter((b) => /email me/.test(b.textContent))[0]
+        .filter((b) => /email me/i.test(b.textContent))[0]
         .click();
     });
     await delay(900);
@@ -3020,7 +3020,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // a group whose exams are all in the past: say so, create nothing
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
-        .filter((b) => /email me/.test(b.textContent))[1]
+        .filter((b) => /email me/i.test(b.textContent))[1]
         .click();
     });
     await delay(300);
@@ -3072,7 +3072,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(300);
 
     const firstPass = await page.evaluate(() => ({
-      bells: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
+      bells: [...document.querySelectorAll("button")].filter((b) => /notify me/i.test(b.textContent)).length,
       bound: document.querySelectorAll("[data-vr-action]").length,
       // the submit bug: a type="submit" button inside a VTOP form navigates
       // instead of running its handler
@@ -3081,7 +3081,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // clear the BlockUI overlay and ended up drawing these buttons on top of
       // the site's open sidebar menu
       zIndex: (() => {
-        const b = [...document.querySelectorAll("button")].find((x) => /notify me/.test(x.textContent));
+        const b = [...document.querySelectorAll("button")].find((x) => /notify me/i.test(x.textContent));
         return b ? getComputedStyle(b).zIndex : null;
       })(),
     }));
@@ -3104,7 +3104,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const section = document.getElementById("main-section");
       const snapshot = section.innerHTML; // the identity serialises with it
       section.innerHTML = snapshot;
-      const b = [...document.querySelectorAll("button")].find((x) => /notify me/.test(x.textContent));
+      const b = [...document.querySelectorAll("button")].find((x) => /notify me/i.test(x.textContent));
       // NO message is dispatched here: the whole point is that the clone needs
       // no repair. This is the click that used to do nothing at all.
       b.click();
@@ -3130,7 +3130,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(300);
     const repaired = await page.evaluate(() => ({
-      bells: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
+      bells: [...document.querySelectorAll("button")].filter((b) => /notify me/i.test(b.textContent)).length,
       bound: document.querySelectorAll("[data-vr-action]").length,
     }));
     ok("a later sync adds no duplicates beside the restored set",
@@ -3178,7 +3178,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         "position:fixed;inset:0;z-index:1000;background:#000;opacity:0.001;";
       document.body.appendChild(overlay);
       const bell = [...document.querySelectorAll("button")].find((b) =>
-        /notify me/.test(b.textContent)
+        /notify me/i.test(b.textContent)
       );
       const r = bell.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -3264,7 +3264,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           window.__submits++;
           e.preventDefault(); // keep the harness on this page either way
         });
-        const b = [...document.querySelectorAll("button")].find((x) => /notify me/.test(x.textContent));
+        const b = [...document.querySelectorAll("button")].find((x) => /notify me/i.test(x.textContent));
         b.click();
         await new Promise((r) => setTimeout(r, 300));
         const note = document.querySelector(".vrevamp-exam-note");
@@ -3305,7 +3305,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await delay(3000);
       const eventually = await page.evaluate(() => ({
         buttons: document.querySelectorAll("[data-vr-action]").length,
-        bells: [...document.querySelectorAll("button")].filter((b) => /notify me/.test(b.textContent)).length,
+        bells: [...document.querySelectorAll("button")].filter((b) => /notify me/i.test(b.textContent)).length,
       }));
       ok(
         "nothing to inject into when the message arrives (the live race)",
@@ -7869,12 +7869,12 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
-        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+        .filter((b) => /mail me the list/i.test(b.textContent))[0].click();
     });
     await delay(600);
     const firstNote = await page.evaluate(() => {
       const b = [...document.querySelectorAll("button")]
-        .find((x) => /mail me the list/.test(x.textContent));
+        .find((x) => /mail me the list/i.test(x.textContent));
       return b && b.nextElementSibling ? b.nextElementSibling.textContent : null;
     });
     ok(
@@ -7981,7 +7981,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(400);
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
-        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+        .filter((b) => /mail me the list/i.test(b.textContent))[0].click();
     });
     await delay(400);
     const prompted = await page.evaluate(() => {
@@ -8027,7 +8027,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       mail: (window.__mails || [])[0] || null,
       note: (() => {
         const b = [...document.querySelectorAll("button")]
-          .find((x) => /mail me the list/.test(x.textContent));
+          .find((x) => /mail me the list/i.test(x.textContent));
         return b && b.nextElementSibling ? b.nextElementSibling.textContent : null;
       })(),
     }));
@@ -8084,7 +8084,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => {
       window.__mails = [];
       [...document.querySelectorAll("button")]
-        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+        .filter((b) => /mail me the list/i.test(b.textContent))[0].click();
     });
     await delay(600);
 
@@ -8155,7 +8155,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => {
       window.__mails = [];
       [...document.querySelectorAll("button")]
-        .filter((b) => /mail me the list/.test(b.textContent))[0].click();
+        .filter((b) => /mail me the list/i.test(b.textContent))[0].click();
     });
     await delay(600);
     await page.evaluate((h) => {
