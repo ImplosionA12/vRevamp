@@ -1388,7 +1388,7 @@ const scheduleLocalReminders = async (tag, reminders) => {
       continue; // already past (or about to be)
     const name = `${prefix}${++scheduled}`;
     store[name] = {
-      title: String(item.title || "vRevamp reminder").slice(0, 150),
+      title: String(item.title || "VTOP Extension reminder").slice(0, 150),
       body: String(item.body || "").slice(0, 500),
       when: item.when,
     };
@@ -1635,14 +1635,14 @@ async function buildDigest() {
     month: "short",
   });
   return {
-    subject: `vRevamp — ${headline.slice(0, 2).join(", ") || "your day"} (${today})`,
+    subject: `VTOP Extension — ${headline.slice(0, 2).join(", ") || "your day"} (${today})`,
     html:
       `<div style="font-family:system-ui,sans-serif;max-width:560px">` +
       `<p>Here's where things stand, ${today}.</p>` +
       sections.join("") +
       notes.join("") +
       `<p style="color:#888;font-size:12px">Built from what VTOP showed the last time you opened each page. ` +
-      `Reply-free automated message from the vRevamp extension — turn it off with the 📬 button on the digital assignments page.</p></div>`,
+      `Reply-free automated message from the VTOP Extension extension — turn it off with the 📬 button on the digital assignments page.</p></div>`,
     text: plain.join("\n\n"),
     urgent,
     headline: headline.join(" · "),
@@ -1672,7 +1672,7 @@ async function runDigest() {
   chrome.notifications.create(`vrdigest|${Date.now()}`, {
     type: "basic",
     iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
-    title: digest.urgent ? "vRevamp — needs attention today" : "vRevamp — today's summary",
+    title: digest.urgent ? "VTOP Extension — needs attention today" : "VTOP Extension — today's summary",
     message: digest.headline || "Open VTOP for details",
     priority: digest.urgent ? 2 : 1,
     requireInteraction: !!digest.urgent,
@@ -2006,7 +2006,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     case "send_mail":
       sendMailAsUser({
-        subject: request.subject || "vRevamp",
+        subject: request.subject || "VTOP Extension",
         html: request.html || "",
         text: request.text || "",
         to: request.to || null,
@@ -2148,7 +2148,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         chrome.notifications.create(`vrnow|${Date.now()}`, {
           type: "basic",
           iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
-          title: String(request.title || "vRevamp").slice(0, 150),
+          title: String(request.title || "VTOP Extension").slice(0, 150),
           message: String(request.body || "").slice(0, 500),
           priority: 2,
           requireInteraction: true,

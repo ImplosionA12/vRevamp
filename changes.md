@@ -4266,3 +4266,16 @@ one page, as Chrome does at inject time:
   password is never shown back. 11 tests; live-checked on the real login page
   with dummy values (cleared afterwards).
 - Release held: PR #1 stays open, nothing merged or tagged.
+
+## 4.6.1 - renamed to "VTOP Extension" (2026-10-11)
+- Everything a person reads now says "VTOP Extension": manifest name, popup title
+  and wordmark, home card, banners and status lines, calendar event text, email
+  subjects and notification titles, the iCal product ids, the mail relay's sender
+  name in `tools/mail-relay.gs`. The "forked from" footer is gone from the popup.
+- Deliberately unchanged so nothing saved breaks: storage keys (`vrevamp_*`),
+  element ids and `data-vr-*` attributes, the private calendar marker
+  `extendedProperties.vrevamp`, and the GitHub repo URL. Origin credit stays in
+  README.md and LICENSE (GPL-3.0).
+- The deployed Apps Script relay still sends as "vRevamp" until it is redeployed
+  from the updated `tools/mail-relay.gs`.
+- The toolbar icon files are unchanged.

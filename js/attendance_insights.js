@@ -1505,7 +1505,7 @@
     if (subjects.length === 0) {
       const sample = tableWrap.querySelector("tbody tr");
       showStatus(
-        "vRevamp: couldn't find the attendance detail link in the table rows — bunk calculator skipped.",
+        "VTOP Extension: couldn't find the attendance detail link in the table rows — bunk calculator skipped.",
         sample ? sample.outerHTML : "no rows found"
       );
       return;
@@ -1518,7 +1518,7 @@
         : null;
 
     // Phase 1: fetch per-class histories
-    showStatus("vRevamp: fetching attendance details…", null, false);
+    showStatus("VTOP Extension: fetching attendance details…", null, false);
     const collected = [];
     let lastDetailError = "";
     let persisted = {};
@@ -1568,10 +1568,10 @@
 
     if (collected.length === 0) {
       showStatus(
-        "vRevamp: couldn't fetch attendance details automatically. " +
+        "VTOP Extension: couldn't fetch attendance details automatically. " +
           "FIX: click the eye icon in the Attendance Detail column for any ONE subject " +
           "(let the popup open), close it, then re-open this attendance page — " +
-          "vRevamp learns the request from VTOP itself and it will work from then on. " +
+          "VTOP Extension learns the request from VTOP itself and it will work from then on. " +
           `(${lastDetailError || "responses had no attendance rows"})`,
         lastDetailResponseSample ||
           (subjects[0] ? subjects[0].row.outerHTML : null)
@@ -1580,7 +1580,7 @@
     }
 
     // Phase 2: academic calendar, then the bunk table
-    showStatus("vRevamp: reading the academic calendar…", null, false);
+    showStatus("VTOP Extension: reading the academic calendar…", null, false);
     const calendar = semesterName
       ? await getAcademicCalendar(semesterName)
       : null;
@@ -1835,7 +1835,7 @@
       flag.className = "vrevamp-stale-flag";
       flag.textContent = `⚠ not posted since ${r.staleSince}`;
       flag.title =
-        "vRevamp: this register hasn't been updated — the percentage shown here is outdated";
+        "VTOP Extension: this register hasn't been updated — the percentage shown here is outdated";
       flag.style.cssText =
         "color:#c0392b;font-size:11px;font-weight:bold;margin-top:2px;";
       cell.appendChild(flag);
@@ -1881,7 +1881,7 @@
 
     if (semesterName && !calendar) {
       showStatus(
-        `vRevamp: academic calendar could not be read — bunk columns show "--". (${lastCalendarError})`
+        `VTOP Extension: academic calendar could not be read — bunk columns show "--". (${lastCalendarError})`
       );
     } else {
       clearStatus();

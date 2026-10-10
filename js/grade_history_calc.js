@@ -508,7 +508,7 @@
         "border-left:4px solid rgb(60,141,188);border-radius:4px;";
 
       const title = document.createElement("p");
-      title.textContent = "vRevamp — grade calculator";
+      title.textContent = "VTOP Extension — grade calculator";
       title.style.cssText =
         "font-weight:bold;margin:0 0 4px 0;font-size:15px;color:rgb(60,141,188);";
       panel.appendChild(title);
