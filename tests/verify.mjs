@@ -2939,6 +2939,25 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       String(await bellNote("mail me the list", "CAT1"))
     );
 
+    // SEEN LIVE 2026-10-11: the three secondary buttons rendered as bare text on
+    // the real page, because btn-outline-primary does not exist in the older
+    // Bootstrap the logged-in portal uses. Their outline must not depend on any
+    // framework class, so assert it on the element itself.
+    const looks = await page.evaluate(() =>
+      [...document.querySelectorAll("[data-vr-action]")]
+        .filter((b) => /^exam-(bell|mail|send)$/.test(b.dataset.vrAction))
+        .map((b) => {
+          const c = getComputedStyle(b);
+          return { w: c.borderTopWidth, style: c.borderTopStyle, color: c.color, cls: b.className };
+        })
+    );
+    ok(
+      "the secondary exam buttons carry their own visible border and colour",
+      looks.length >= 3 &&
+        looks.every((l) => l.w === "1px" && l.style === "solid" && l.color !== "rgb(0, 0, 0)" && !/outline-primary/.test(l.cls)),
+      JSON.stringify(looks[0])
+    );
+
     // ✉️ is now mailed by the extension itself — no Google sign-in anywhere.
     // With no saved address the ONLY thing missing is where to write, so it asks.
     await page.evaluate(() => {

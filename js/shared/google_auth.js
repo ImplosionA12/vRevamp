@@ -246,8 +246,8 @@ if (typeof window.vrAskAddress !== "function") {
       const field = document.createElement("input");
       field.type = "email";
       field.placeholder = "where should we mail it?";
-      field.className = "form-control form-control-sm";
-      field.style.cssText = "width:210px;display:inline-block;";
+      field.className = "form-control input-sm form-control-sm";
+      field.style.cssText = "width:210px;display:inline-block;height:30px;padding:2px 8px;font-size:13px;";
 
       const go = document.createElement("button");
       go.type = "button"; // never submit the VTOP form this sits inside

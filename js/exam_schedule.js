@@ -890,8 +890,9 @@ const exam_ask_address = (btn, onSaved) => {
   input.placeholder = "you@example.com";
   input.setAttribute("aria-label", "Email address for VTOP Extension reminders");
   // VTOP's own form control, so it matches the portal's inputs
-  input.className = "form-control form-control-sm";
-  input.style.cssText = "width:220px;display:inline-block;";
+  // both spellings: the portal's logged-in pages use an older Bootstrap
+  input.className = "form-control input-sm form-control-sm";
+  input.style.cssText = "width:220px;display:inline-block;height:30px;padding:2px 8px;font-size:13px;";
 
   // type=button, like every other injected control: these sit inside VTOP's own
   // <form id="examSchedule"> and a default-type button submits it
@@ -1086,7 +1087,7 @@ let exam_schedule_sync = () => {
     const bell = window.vrButton("exam-bell", "Notify me before each exam", {
       vrExamType: exam_type,
     });
-    bell.className = "btn btn-outline-primary btn-sm";
+    window.vrOutline(bell);
     bell.title =
       "Chrome notification 1 day and 2 h before each exam — no sign-in needed";
     head.appendChild(bell);
@@ -1097,7 +1098,7 @@ let exam_schedule_sync = () => {
     const mail = window.vrButton("exam-mail", "Email me 24 h & 2 h before", {
       vrExamType: exam_type,
     });
-    mail.className = "btn btn-outline-primary btn-sm";
+    window.vrOutline(mail);
     mail.title =
       "The extension emails you 24 h and 2 h before each exam, from its own address. " +
       "No Google sign-in. Chrome must be open at those times.";
@@ -1108,7 +1109,7 @@ let exam_schedule_sync = () => {
     const send = window.vrButton("exam-send", "Mail me the list now", {
       vrExamType: exam_type,
     });
-    send.className = "btn btn-outline-primary btn-sm";
+    window.vrOutline(send);
     send.title =
       "Sends the upcoming exams of this group to your own inbox straight away — needs one-time Google consent";
     head.appendChild(send);

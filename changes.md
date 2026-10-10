@@ -4323,3 +4323,14 @@ one page, as Chrome does at inject time:
 - Process note: while checking the mail code I switched the live extension folder
   to `master`, which made Chrome load the pre-redesign popup. Work now happens on
   the branch the folder is on; nothing switches it for a read.
+
+## 4.7.0 follow-up - found on the real portal (2026-10-11)
+- The three secondary exam buttons rendered as BARE TEXT on the logged-in pages:
+  `btn-outline-primary` exists in Bootstrap 4/5, but the logged-in portal uses an
+  older Bootstrap (its primary is #337ab7). It had been previewed only on the
+  Bootstrap 5 login page. They now carry their own border and colour
+  (`window.vrOutline`), and a test asserts the border on the element itself.
+- The address fields use `input-sm form-control-sm`, so they size correctly on
+  either Bootstrap.
+- Lesson: preview injected UI on the page it will live on, not on a page that
+  merely looks similar.
