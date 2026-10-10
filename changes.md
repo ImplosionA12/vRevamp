@@ -4297,3 +4297,29 @@ one page, as Chrome does at inject time:
   (labs divided by their 2-hour session) matches the plain definition over
   14,762 attended/total cases with no mismatch, and matched VTOP's own "can be
   skipped" column on the live page.
+
+## 4.7.0 - reminder emails come from the extension, not Google Calendar (2026-10-11)
+- **"Email me 24 h & 2 h before" (exams) and the assignment ✉** no longer create
+  Google Calendar events or need a Google sign-in. Each reminder is scheduled in
+  the extension (`chrome.alarms`) and mailed through the extension's own mail
+  address (the relay in `config.json`) when it falls due: 24 h and 2 h before an
+  exam, the evening before an assignment is due. Re-pressing replaces the
+  previous run.
+- A reminder carries `until`: if Chrome was closed and the alarm fires after the
+  exam has started, nothing is mailed. A failed send is retried 10 minutes later
+  (up to four tries) and then reported with a notification; "no address saved"
+  says to add one in the popup.
+- The address is asked for in place, once, with the same field as "Mail me the
+  list now" (now in VTOP's own form style).
+- Limit, stated on the buttons: Chrome has to be open when a reminder falls due
+  (a closed one catches up on the next start). Google Calendar's own reminder
+  emails arrived even with Chrome closed; that is the price of needing no sign-in.
+- Old Google Calendar events created by earlier versions are NOT removed
+  (nothing can find them without Google access); delete them in Calendar by
+  searching "exam:" / "DA due:" if you want them gone.
+- The inherited "Upload to Web Store" workflow is now manual-only. It ran on the
+  v4.6.1 tag, tried to publish under the upstream author's extension id and
+  failed only because no credentials exist here.
+- Process note: while checking the mail code I switched the live extension folder
+  to `master`, which made Chrome load the pre-redesign popup. Work now happens on
+  the branch the folder is on; nothing switches it for a read.

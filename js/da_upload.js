@@ -2,44 +2,9 @@ const DA_MONTHS = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
   Jul: "07", Aug: "08", Sep: "09", Sept: "09", Oct: "10", Nov: "11", Dec: "12",
 };
-const DA_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the due
 
 // vrGoogleToken / vrGoogleAuthHint / vrLocalReminders / vrGcalTemplateUrl all
 // live in js/shared/google_auth.js, loaded before this file by the manifest.
-
-// One calendar event per assignment with an email (+popup) reminder — unlike
-// calendar() below this needs no calendar-notification defaults to be set up.
-function create_email_reminder(date_due, course_code, assign_title, course_title, token) {
-  const m = date_due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
-  if (!m || !DA_MONTHS[m[2]]) return Promise.resolve({ ok: false, status: 0 });
-  const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
-  return fetch(
-    "https://www.googleapis.com/calendar/v3/calendars/primary/events?alt=json",
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + token,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        summary: `DA due: ${course_code} — ${assign_title}`,
-        description: `${course_title} (VTOP Extension reminder, email ${DA_REMINDER_LEAD_MIN / 60} h before)`,
-        start: { dateTime: `${iso}T20:00:00+05:30` },
-        end: { dateTime: `${iso}T21:00:00+05:30` },
-        reminders: {
-          useDefault: false,
-          overrides: [
-            { method: "email", minutes: DA_REMINDER_LEAD_MIN },
-            { method: "popup", minutes: DA_REMINDER_LEAD_MIN },
-          ],
-        },
-      }),
-    }
-  )
-    .then((r) => ({ ok: r.status === 200, status: r.status }))
-    .catch(() => ({ ok: false, status: 0 }));
-}
 
 const da_header_index = (row, re) =>
   [...row.cells].findIndex((c) => re.test(c.textContent));
@@ -329,52 +294,65 @@ window.vrDelegate("da-bell", async (btn) => {
   btn.disabled = n > 0;
 });
 
+const da_escape = (v) =>
+  String(v == null ? "" : v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
 window.vrDelegate("da-mail", async (mailBtn) => {
   const info = vr_da_payload(mailBtn);
   if (!info) {
     mailBtn.textContent = "couldn't read this row — refresh";
     return;
   }
-  // fresh token at click time — a stored one expires in ~1 h
-  let token = await window.vrGoogleToken({});
-  if (!token) token = await window.vrGoogleToken({ interactive: true });
-  if (!token) {
-    // never alert(): a modal dialog blocks the page's event loop, and this one
-    // fires on a button the student may be clicking once per course
-    mailBtn.textContent = "sign-in needed";
-    mailBtn.title = window.vrGoogleAuthHint();
-    return;
-  }
+  // One email the evening before each due date (20:00 IST, 24 h before the
+  // end of the due day), sent by the extension's own mail: no Google sign-in.
+  const reminders = [];
+  info.dues.forEach((a) => {
+    const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/u);
+    if (!m || !DA_MONTHS[m[2]]) return;
+    const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
+    const dueEnd = new Date(`${iso}T21:00:00+05:30`).getTime();
+    const title = `DA due: ${info.code} — ${a.title}`;
+    const text = `${title}\n${info.title}\nDue ${a.due} — not uploaded yet.\n\nSent by VTOP Extension.`;
+    reminders.push({
+      when: dueEnd - 25 * 3600 * 1000,
+      until: dueEnd,
+      title: `Tomorrow — ${title}`,
+      body: `${info.title}\nDue ${a.due} — not uploaded yet`,
+      subject: `Tomorrow: ${title}`,
+      text,
+      html:
+        `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px">` +
+        `<h3 style="margin:0 0 8px">Tomorrow: ${da_escape(title)}</h3>` +
+        `<div>${da_escape(info.title)}</div><div>Due ${da_escape(a.due)} — not uploaded yet</div>` +
+        `<p style="color:#666;font-size:12px;margin-top:16px">Sent by VTOP Extension from your VTOP digital assignments page.</p></div>`,
+    });
+  });
   mailBtn.disabled = true;
   mailBtn.textContent = "…";
-  let done = 0;
-  let refreshed = false;
-  for (let i = 0; i < info.dues.length; i++) {
-    const a = info.dues[i];
-    const r = await create_email_reminder(a.due, info.code, a.title, info.title, token);
-    if (r.status === 401 && !refreshed) {
-      // token died mid-flight — invalidate it, mint a fresh one, retry
-      refreshed = true;
-      token = await window.vrGoogleToken({ stale: token });
-      if (token) {
-        i--; // redo this assignment with the fresh token
-        continue;
-      }
-    }
-    if (r.status === 401) {
-      mailBtn.textContent = "sign-in expired — click again";
-      mailBtn.disabled = false;
-      return;
-    }
-    if (r.ok) done++;
-    await sleep(400);
+  const r = await window.vrScheduleMailReminders(
+    mailBtn,
+    `da-mail:${info.key}`,
+    reminders,
+    () => {}
+  );
+  mailBtn.disabled = false;
+  if (r.error === "need_address") {
+    mailBtn.textContent = "✉";
+    return; // the address field is showing next to the button
   }
-  mailBtn.textContent = done > 0 ? `✓ ${done} email(s)` : "failed — retry";
-  mailBtn.disabled = done > 0;
+  mailBtn.textContent = r.ok
+    ? `✓ ${r.n} email(s) to ${r.to}`
+    : r.n === 0 && !r.error
+      ? "already due"
+      : "failed — retry";
+  mailBtn.disabled = r.ok;
 });
 
-// The list, in an inbox, now. Distinct from ✉ above: that schedules Calendar
-// events which mail you later, this one is "just send me the list".
+// The list, in an inbox, now. Distinct from ✉ above: that schedules emails
+// which mail you later, this one is "just send me the list".
 window.vrDelegate("da-mailnow", async (btn) => {
   const info = vr_da_payload(btn);
   if (!info) {
@@ -577,10 +555,10 @@ let da_page_2026 = async () => {
       "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
     strip.appendChild(btn);
 
-    // ✉ optional Google Calendar events with an email 24 h before each due
+    // ✉ an email from the extension the evening before each due
     const mailBtn = window.vrButton("da-mail", "✉", { vrDues: payload });
     mailBtn.className = "vrevamp-da-remind";
-    mailBtn.title = `Email me — a Google Calendar event per upcoming due, mailed ${DA_REMINDER_LEAD_MIN / 60} h before. Needs one-time Google consent.`;
+    mailBtn.title = "Email me the evening before each upcoming due, from the extension's own address. No Google sign-in. Chrome must be open then.";
     mailBtn.style.cssText =
       "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
     strip.appendChild(mailBtn);
@@ -598,7 +576,7 @@ let da_page_2026 = async () => {
      * actual table off the screen.
      *
      * Nothing is lost by showing one. 🔔 already schedules a notification for
-     * every due, ✉ creates a calendar event for every due, and this is the
+     * every due, ✉ schedules an email for every due, and this is the
      * no-sign-in shortcut for the next one — which is the only one a student
      * is acting on today. The rest are named in the tooltip.
      */

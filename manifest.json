@@ -142,7 +142,7 @@
     "scripting"
   ],
 
-  "version": "4.6.1",
+  "version": "4.7.0",
   "web_accessible_resources": [
     {
       "matches": ["*://*.vit.ac.in/*", "*://*.vitap.ac.in/*"],

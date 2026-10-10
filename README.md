@@ -16,7 +16,7 @@ Works on `vtop.vitap.ac.in` (and `web.vitap.ac.in`).
 - **Home card**: days to CAT-1/CAT-2/FAT, the next holiday, and subjects close to debar.
 - **Digital Assignments**: shows what you owe and when, with reminders.
 - **Exam Schedule**: download as `.ics`, get Chrome notifications before each exam,
-  or have Google Calendar email you 24 h and 2 h before.
+  or have the extension email you 24 h and 2 h before (no Google sign-in).
 - **Time Table**: export to `.ics` / Google Calendar, a "next class" card, PNG download.
 - **Grades**: a what-if CGPA calculator on Grade History, and marks needed for the
   next grade using each subject's own cutoffs.

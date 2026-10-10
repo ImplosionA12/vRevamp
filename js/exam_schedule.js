@@ -127,18 +127,10 @@ const build_exam_ics = (exams) => {
 };
 
 /*
- * When Google mails the reminder, in minutes before the exam starts.
- *
- * TWO of them, matching the 🔔 button exactly. A single 24 h mail was the
- * original design and it is the wrong shape: a day out you note it and forget
- * it; two hours out is when you need the venue and the reporting time in front
- * of you. Reported 2026-08-16 — "i asked you to send it when 24 hours before
- * the exam and also 2 hours before".
- *
- * Google caps an event at 5 reminder overrides. Two emails plus one popup on
- * the near one leaves room and does not bury the student in popups.
+ * The reminders mailed by the extension are 24 h and 2 h before each exam,
+ * matching the 🔔 button: a day out you note it, two hours out you need the
+ * venue and reporting time in front of you (asked 2026-08-16).
  */
-const EXAM_REMINDER_LEADS_MIN = [24 * 60, 2 * 60];
 
 const exam_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -161,94 +153,6 @@ const exam_start_ms = (exam) => {
   const start = exam_time_to_24h((exam.time || "").split("-")[0] || "");
   if (!iso || !start) return NaN;
   return new Date(`${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30`).getTime();
-};
-
-// One calendar event per exam, at the exam's own start-end window, with an
-// email (+popup) reminder — the same mechanism as the DA page's 🔔 button.
-const exam_email_reminder = (exam, exam_type, token) => {
-  const iso = exam_date_iso(exam.date);
-  const times = exam.time.split("-");
-  const start = exam_time_to_24h(times[0] || "");
-  const end = exam_time_to_24h(times[1] || "");
-  if (!iso || !start || !end) return Promise.resolve({ ok: false, status: 0 });
-  return fetch(
-    "https://www.googleapis.com/calendar/v3/calendars/primary/events?alt=json",
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + token,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        summary: `${exam_type} exam: ${exam.code} — ${exam.title}`,
-        description:
-          `📚 ${exam.code} — ${exam.title}\n` +
-          `🪑 Slot: ${exam.slot || "-"}   Session: ${exam.session || "-"}\n` +
-          `⏰ Reporting time: ${exam.reporting || "-"} (exam ${exam.time})\n` +
-          `📍 Venue: ${exam.venue || "not published yet"}   Seat: ${exam.seatLoc || "-"} · No. ${exam.seatNo || "-"}\n\n` +
-          `VTOP Extension reminder — email ${EXAM_REMINDER_LEADS_MIN.map((m) => `${m / 60} h`).join(" and ")} before`,
-        // Google's reminder email quotes the event's title and LOCATION, and
-        // nothing else — so the venue has to live here, not only in the
-        // description, or the 2 h mail arrives without the one fact it is for.
-        // VTOP publishes venue/seat late (they read "-" until a few days out),
-        // so re-run ✉️ closer to the exam to refresh them.
-        location: exam.venue || "",
-        // Tagged so a re-run can REPLACE this instead of adding a second copy —
-        // the same mechanism js/timetable_ics.js uses. Without it every extra
-        // click silently doubles the exam events, which is exactly what
-        // happened to the timetable import (66 events in one week, 35 distinct,
-        // most present three times). Re-running ✉️ is normal here: venue and
-        // seat read "-" until VTOP publishes them a few days out.
-        extendedProperties: { private: { vrevamp: "exam" } },
-        start: { dateTime: `${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30` },
-        end: { dateTime: `${iso}T${end.slice(0, 2)}:${end.slice(2)}:00+05:30` },
-        reminders: {
-          useDefault: false,
-          overrides: [
-            ...EXAM_REMINDER_LEADS_MIN.map((minutes) => ({ method: "email", minutes })),
-            // one popup, on the near lead only — a popup a day early is noise
-            { method: "popup", minutes: EXAM_REMINDER_LEADS_MIN[EXAM_REMINDER_LEADS_MIN.length - 1] },
-          ],
-        },
-      }),
-    }
-  )
-    .then((r) => ({ ok: r.status === 200, status: r.status }))
-    .catch(() => ({ ok: false, status: 0 }));
-};
-
-const EXAM_GCAL_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-
-// Drop the events a previous ✉️ run created, so this run replaces them rather
-// than doubling them. Only ever touches events carrying our own
-// `vrevamp=exam` private property — an exam the student added by hand, or the
-// timetable import's `vrevamp=timetable` events, are invisible to this query.
-// Returns how many went, for the status line; failures are non-fatal because a
-// failed cleanup must not stop the reminders from being created.
-const exam_delete_old_reminders = async (token) => {
-  let removed = 0;
-  try {
-    const list = await fetch(
-      `${EXAM_GCAL_API}?privateExtendedProperty=${encodeURIComponent("vrevamp=exam")}&maxResults=250`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!list.ok) return removed;
-    const data = await list.json().catch(() => null);
-    for (const item of (data && data.items) || []) {
-      if (!item || !item.id) continue;
-      const r = await fetch(`${EXAM_GCAL_API}/${encodeURIComponent(item.id)}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      // 410 = already gone, which is the outcome we wanted anyway
-      if (r.ok || r.status === 410) removed++;
-      await exam_sleep(200);
-    }
-  } catch (error) {
-    console.warn("vRevamp exam schedule: cleanup", error);
-  }
-  return removed;
 };
 
 const exam_status = (button, text, good) => {
@@ -468,51 +372,58 @@ window.vrDelegate("exam-mail", async (mail) => {
       exam_status(mail, "no upcoming exams with a published time in this group", false);
       return;
     }
-    let token = await window.vrGoogleToken({});
-    // never consented yet — one interactive consent window, right now
-    if (!token) token = await window.vrGoogleToken({ interactive: true });
-    if (!token) {
-      exam_status(mail, window.vrGoogleAuthHint(), false);
-      return;
-    }
-    mail.disabled = true;
-    // replace, never duplicate: clear anything a previous ✉️ run left behind
-    // before writing this one
-    exam_status(mail, "checking for a previous run…", true);
-    const replaced = await exam_delete_old_reminders(token);
-    let done = 0;
-    let refreshed = false;
-    for (let i = 0; i < upcoming.length; i++) {
-      const r = await exam_email_reminder(upcoming[i], ctx.examType, token);
-      if (r.status === 401 && !refreshed) {
-        // token died mid-flight — invalidate it, mint a fresh one, retry
-        refreshed = true;
-        token = await window.vrGoogleToken({ stale: token });
-        if (token) {
-          i--; // redo this exam with the fresh token
-          continue;
-        }
-      }
-      if (r.status === 401) {
-        exam_status(mail, "Google session expired — click again to re-consent", false);
-        mail.disabled = false;
-        return;
-      }
-      if (r.ok) done++;
-      await exam_sleep(400);
-    }
-    mail.disabled = false;
+    // One email 24 h before and one 2 h before each exam, sent by the
+    // extension's own mail: no Google sign-in, nothing written to a calendar.
+    // Pressing again replaces the previous run (same tag), which is also how
+    // venue and seat get refreshed once VTOP publishes them.
+    const reminders = [];
+    upcoming.forEach((exam) => {
+      const startMs = exam_start_ms(exam);
+      if (!Number.isFinite(startMs)) return;
+      const title = `${ctx.examType} exam: ${exam.code}${exam.title ? ` — ${exam.title}` : ""}`;
+      const lines = [
+        `${exam.date} · ${exam.time}  (report by ${exam.reporting || "-"})`,
+        `Venue: ${exam.venue || "not published yet"}`,
+        `Seat: ${exam.seatLoc || "-"} · No. ${exam.seatNo || "-"}`,
+        `Slot ${exam.slot || "-"} · Session ${exam.session || "-"}`,
+      ];
+      [
+        [24 * 3600 * 1000, "Tomorrow"],
+        [2 * 3600 * 1000, "In 2 hours"],
+      ].forEach(([lead, label]) => {
+        reminders.push({
+          when: startMs - lead,
+          until: startMs,
+          title: `${label} — ${title}`,
+          body: lines.slice(0, 3).join("\n"),
+          subject: `${label}: ${title}`,
+          text: `${title}\n\n${lines.join("\n")}\n\nSent by VTOP Extension.`,
+          html:
+            `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px">` +
+            `<h3 style="margin:0 0 8px">${exam_html_escape(label)}: ${exam_html_escape(title)}</h3>` +
+            lines.map((l) => `<div>${exam_html_escape(l)}</div>`).join("") +
+            `<p style="color:#666;font-size:12px;margin-top:16px">Sent by VTOP Extension from your VTOP exam schedule.</p></div>`,
+        });
+      });
+    });
+    const r = await window.vrScheduleMailReminders(
+      mail,
+      `exam-mail:${ctx.examType}`,
+      reminders,
+      (text, good) => exam_status(mail, text, good)
+    );
+    if (r.error === "need_address") return; // the address field is showing
     exam_status(
       mail,
-      done > 0
-        ? `✓ ${done} exam(s) — Google will email you 24 h and 2 h before each one` +
-          (replaced ? ` (replaced ${replaced} from an earlier run)` : "")
-        : "couldn't create the reminders — try again",
-      done > 0
+      r.ok
+        ? `✓ ${r.n} email(s) scheduled to ${r.to} — 24 h and 2 h before each exam (Chrome must be open then)`
+        : !r.error
+          ? "every exam here is under 2 h away — nothing left to schedule"
+          : "couldn't schedule — reload the extension (chrome://extensions) and retry",
+      r.ok
     );
   } catch (error) {
-    console.warn("vRevamp exam schedule:", error);
-    mail.disabled = false;
+    console.warn("VTOP Extension exam schedule:", error);
     exam_status(mail, "failed — refresh and try again", false);
   }
 });
@@ -1180,16 +1091,16 @@ let exam_schedule_sync = () => {
       "Chrome notification 1 day and 2 h before each exam — no sign-in needed";
     head.appendChild(bell);
 
-    // ✉️ one Google Calendar event per upcoming exam, with email reminders 24 h
-    // AND 2 h before. Sent by Google's servers, so they arrive on a phone with
-    // Chrome closed — and they come from Google Calendar, not from the student.
+    // ✉️ one email 24 h and one 2 h before each upcoming exam, sent by the
+    // extension's own mail address: no Google sign-in. Chrome has to be
+    // running when they fall due (a closed one catches up when it reopens).
     const mail = window.vrButton("exam-mail", "Email me 24 h & 2 h before", {
       vrExamType: exam_type,
     });
     mail.className = "btn btn-outline-primary btn-sm";
     mail.title =
-      "One Google Calendar event per exam; Google emails you 24 h and 2 h before each. " +
-      "Sent by Google's servers, so it arrives even with Chrome closed. Needs one-time Google consent.";
+      "The extension emails you 24 h and 2 h before each exam, from its own address. " +
+      "No Google sign-in. Chrome must be open at those times.";
     head.appendChild(mail);
 
     // 📧 the whole list, mailed now, from the student's own Gmail. The ✉️

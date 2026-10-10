@@ -145,6 +145,12 @@ const initScript = (fixedMs, storageSeed) => `
             );
           return;
         }
+        if (m && m.message === "get_reminder_email") {
+          // what the worker knows: the saved address, and that mail goes
+          // through the extension's own relay (no Google sign-in)
+          if (cb) cb({ address: window.__storage.vrevamp_reminder_email || null, relay: true });
+          return;
+        }
         if (m && m.message === "gcal_template_import") {
           // worker emulation for the one-click TEMPLATE import: records the
           // links; __autoImportSaves seeds how many events "saved"
@@ -195,6 +201,7 @@ const initScript = (fixedMs, storageSeed) => `
 `;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const window_reminders_for = (all, tag) => (all && all[tag] && all[tag].length ? all[tag] : null);
 
 let CTX;
 async function newPage(browser) {
@@ -2932,92 +2939,76 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       String(await bellNote("mail me the list", "CAT1"))
     );
 
-    // ✉️ without a Google sign-in: surface the real identity error, create nothing
+    // ✉️ is now mailed by the extension itself — no Google sign-in anywhere.
+    // With no saved address the ONLY thing missing is where to write, so it asks.
     await page.evaluate(() => {
+      delete window.__storage.vrevamp_reminder_email;
+      window.__sent = [];
       [...document.querySelectorAll("button")]
         .filter((b) => /email me/i.test(b.textContent))[0]
         .click();
     });
-    await delay(300);
+    await delay(400);
+    const askShown = await page.evaluate(() => !!document.querySelector(".vrevamp-mail-ask input"));
     ok(
-      "✉️ without sign-in shows the real Google error, creates nothing",
-      gcalExam.length === 0 && /Google sign-in failed/.test((await bellNote("email me", "FAT")) || ""),
-      `events=${gcalExam.length} note=${await bellNote("email me", "FAT")}`
+      "✉️ with no saved address asks where to send, and schedules nothing yet",
+      askShown && !(window_reminders_for(await page.evaluate(() => window.__reminders || {}), "exam-mail:FAT")),
+      `ask=${askShown}`
     );
-
-    // signed in: only the UPCOMING exam gets an event (past + no-time skipped)
-    await page.evaluate(() => (window.__storage.token = "tok123"));
-    await page.evaluate(() => {
-      [...document.querySelectorAll("button")]
-        .filter((b) => /email me/i.test(b.textContent))[0]
-        .click();
-    });
+    await page.fill(".vrevamp-mail-ask input", "me@vitapstudent.ac.in");
+    await page.press(".vrevamp-mail-ask input", "Enter");
     await delay(900);
+    const scheduled = await page.evaluate(() => (window.__reminders || {})["exam-mail:FAT"] || []);
     ok(
-      "✉️ FAT creates ONE event — only the upcoming exam (past/no-time skipped)",
-      gcalExam.length === 1,
-      `events=${gcalExam.length}`
+      "✉️ FAT schedules TWO emails for the one upcoming exam (24 h and 2 h before)",
+      scheduled.length === 2,
+      `scheduled=${scheduled.length}`
     );
-    const exEv = gcalExam[0] || {};
+    const start = new Date("2026-05-04T10:00:00+05:30").getTime();
+    const whens = scheduled.map((r) => start - r.when).sort((x, y) => y - x);
     ok(
-      "event sits on the exam window, titled and located for the reminder mail",
-      (exEv.start || {}).dateTime === "2026-05-04T10:00:00+05:30" &&
-        (exEv.end || {}).dateTime === "2026-05-04T13:00:00+05:30" &&
-        /FAT exam: ECE2015/.test(exEv.summary || "") &&
-        // Google's reminder mail quotes only summary + location, so the venue
-        // has to be here or the 2 h mail lands without the fact it exists for
-        exEv.location === "CB-324",
-      JSON.stringify({ start: exEv.start, end: exEv.end, summary: exEv.summary, location: exEv.location })
+      "…exactly 24 h and 2 h before it starts, and they stop being useful when it starts",
+      whens[0] === 24 * 3600000 && whens[1] === 2 * 3600000 && scheduled.every((r) => r.until === start),
+      JSON.stringify({ whens, until: scheduled.map((r) => r.until === start) })
     );
-    // TWO emails, not one. A single 24 h mail was the original shape and it is
-    // wrong: a day out you note it and forget it, two hours out is when you
-    // need the venue in front of you. Reported 2026-08-16.
+    const first = scheduled.find((r) => /^Tomorrow/.test((r.mail || {}).subject || "")) || {};
     ok(
-      "Google is asked to email 24 h AND 2 h before, with one popup on the near one",
-      !!exEv.reminders &&
-        exEv.reminders.useDefault === false &&
-        exEv.reminders.overrides.some((o) => o.method === "email" && o.minutes === 1440) &&
-        exEv.reminders.overrides.some((o) => o.method === "email" && o.minutes === 120) &&
-        exEv.reminders.overrides.filter((o) => o.method === "popup").length === 1 &&
-        exEv.reminders.overrides.every((o) => o.method !== "popup" || o.minutes === 120) &&
-        // Google refuses more than 5 overrides outright
-        exEv.reminders.overrides.length <= 5,
-      JSON.stringify(exEv.reminders)
+      "each one is a mail (not a popup) carrying slot, session, reporting time, venue and seat",
+      first.notify === false &&
+        /FAT exam: ECE2015/.test((first.mail || {}).subject || "") &&
+        /Slot A1/.test((first.mail || {}).text || "") &&
+        /Session FN1/.test((first.mail || {}).text || "") &&
+        /09:30 AM/.test((first.mail || {}).text || "") &&
+        /Venue: CB-324/.test((first.mail || {}).text || "") &&
+        /Seat: R3C1 · No\. 5/.test((first.mail || {}).text || ""),
+      JSON.stringify(first.mail || null).slice(0, 220)
     );
     ok(
-      "reminder email carries slot, session, reporting time and seat",
-      /Slot: A1/.test(exEv.description || "") &&
-        /Session: FN1/.test(exEv.description || "") &&
-        /Reporting time: 09:30 AM/.test(exEv.description || "") &&
-        /Seat: R3C1 · No\. 5/.test(exEv.description || ""),
-      JSON.stringify(exEv.description || "")
-    );
-    // The timetable import learned this the hard way: 66 class events in one
-    // week, 35 distinct, most present three times, because a re-run only ever
-    // added. ✉️ re-runs are NORMAL here — venue and seat read "-" until VTOP
-    // publishes them — so it must replace, and say that it did.
-    ok(
-      "✉️ deletes its own previous run before writing, and says so",
-      gcalExamDeletes.length === 1 &&
-        /events\/old-run-1$/.test(gcalExamDeletes[0]) &&
-        /\(replaced 1 from an earlier run\)/.test((await bellNote("email me", "FAT")) || ""),
-      JSON.stringify({ deletes: gcalExamDeletes, note: await bellNote("email me", "FAT") })
+      "no Google token was asked for at any point",
+      !(await page.evaluate(() => (window.__sent || []).some((m) => m && m.message === "get_google_token"))),
+      JSON.stringify(await page.evaluate(() => (window.__sent || []).map((m) => m.message)))
     );
     ok(
-      "the events it writes are tagged so the NEXT run can find them",
-      (exEv.extendedProperties || {}).private &&
-        exEv.extendedProperties.private.vrevamp === "exam",
-      JSON.stringify(exEv.extendedProperties || null)
-    );
-    ok(
-      "✉️ FAT confirms inline, naming both leads and who sends them",
-      /✓ 1 exam\(s\) — Google will email you 24 h and 2 h before each one/.test(
+      "✉️ FAT confirms inline, naming the address and when they arrive",
+      /✓ 2 email\(s\) scheduled to me@vitapstudent\.ac\.in — 24 h and 2 h before each exam/.test(
         (await bellNote("email me", "FAT")) || ""
       ),
       `note=${await bellNote("email me", "FAT")}`
     );
 
-    // a group whose exams are all in the past: say so, create nothing
+    // pressing again REPLACES the run (same tag): still two, not four
+    await page.evaluate(() => {
+      [...document.querySelectorAll("button")]
+        .filter((b) => /email me/i.test(b.textContent))[0]
+        .click();
+    });
+    await delay(500);
+    ok(
+      "pressing ✉️ again replaces the earlier run instead of adding a second set",
+      (await page.evaluate(() => (window.__reminders || {})["exam-mail:FAT"] || [])).length === 2
+    );
+
+    // a group whose exams are all in the past: say so, schedule nothing
     await page.evaluate(() => {
       [...document.querySelectorAll("button")]
         .filter((b) => /email me/i.test(b.textContent))[1]
@@ -3025,9 +3016,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     await delay(300);
     ok(
-      "✉️ CAT1 (all past) reports no upcoming exams, creates nothing",
-      gcalExam.length === 1 && /no upcoming exams/.test((await bellNote("email me", "CAT1")) || ""),
-      `events=${gcalExam.length} note=${await bellNote("email me", "CAT1")}`
+      "✉️ CAT1 (all past) reports no upcoming exams, schedules nothing",
+      !(await page.evaluate(() => (window.__reminders || {})["exam-mail:CAT1"])) &&
+        /no upcoming exams/.test((await bellNote("email me", "CAT1")) || ""),
+      `note=${await bellNote("email me", "CAT1")}`
     );
     await page.close();
   }
@@ -4132,28 +4124,40 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok("🔔 button confirms the schedule", /✓ 2 reminder/.test(btnText), btnText);
 
-    // ✉ optional Google path: one calendar event with the 24 h email
+    // ✉ is mailed by the extension itself: no Google sign-in, no calendar event
+    await page.evaluate(() => {
+      window.__storage.vrevamp_reminder_email = "me@vitapstudent.ac.in";
+      window.__sent = [];
+    });
     await page.evaluate(() =>
       document.querySelectorAll(".vrevamp-da-remind")[1].click()
     );
-    await delay(600);
+    await delay(700);
     const mailText = await page.evaluate(
       () => document.querySelectorAll(".vrevamp-da-remind")[1].textContent
     );
+    const mailRems = await page.evaluate(() => {
+      const all = window.__reminders || {};
+      return Object.keys(all).filter((k) => /^da-mail:/.test(k)).flatMap((k) => all[k]);
+    });
     ok(
-      "✉ creates ONE calendar event (only the un-submitted upcoming DA)",
-      gcal.length === 1,
-      `events=${gcal.length}`
+      "✉ schedules ONE email (only the un-submitted upcoming DA), not a calendar event",
+      mailRems.length === 1 && gcal.length === 0,
+      `emails=${mailRems.length} calendarEvents=${gcal.length}`
     );
-    const ev = gcal[0] || {};
+    const mr = mailRems[0] || {};
     ok(
-      "event has email reminder 24h before, on the due date",
-      !!ev.reminders &&
-        ev.reminders.useDefault === false &&
-        ev.reminders.overrides.some((o) => o.method === "email" && o.minutes === 1440) &&
-        (ev.start || {}).dateTime === "2026-07-10T20:00:00+05:30" &&
-        /MGT1029/.test(ev.summary || ""),
-      JSON.stringify({ start: ev.start, reminders: ev.reminders, summary: ev.summary })
+      "…sent the evening before the due date (20:00 IST) and useless after it",
+      mr.when === new Date("2026-07-09T20:00:00+05:30").getTime() &&
+        mr.until === new Date("2026-07-10T21:00:00+05:30").getTime() &&
+        mr.notify === false &&
+        /MGT1029/.test((mr.mail || {}).subject || "") &&
+        /Due 10-Jul-2026/.test((mr.mail || {}).text || ""),
+      JSON.stringify({ when: mr.when && new Date(mr.when).toISOString(), mail: mr.mail && mr.mail.subject })
+    );
+    ok(
+      "…with no Google token asked for",
+      !(await page.evaluate(() => (window.__sent || []).some((m) => m && m.message === "get_google_token")))
     );
     ok("✉ button confirms the schedule", /✓ 1 email/.test(mailText), mailText);
 
@@ -6985,6 +6989,22 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           removeCachedAuthToken: (o, cb) => cb && cb(),
         }),
       };
+      // alarms and notifications are captured so a test can fire an alarm and
+      // see what the worker did about it
+      const alarmListeners = [];
+      const alarmsLive = {};
+      const notes = [];
+      chromeStub.alarms = nsProxy({
+        create: (name, info) => { alarmsLive[name] = info; return Promise.resolve(); },
+        getAll: () => Promise.resolve(Object.keys(alarmsLive).map((name) => ({ name, ...alarmsLive[name] }))),
+        clear: (name) => { delete alarmsLive[name]; return Promise.resolve(true); },
+        get: (name) => Promise.resolve(alarmsLive[name] ? { name } : undefined),
+        onAlarm: { addListener: (fn) => alarmListeners.push(fn), removeListener: () => {} },
+      });
+      chromeStub.notifications = nsProxy({
+        create: (id, o) => { notes.push({ id, ...o }); return Promise.resolve(id); },
+      });
+      const fireAlarm = async (name) => { for (const fn of alarmListeners) await fn({ name }); };
       for (const p of manifest.permissions || []) if (!chromeStub[p]) chromeStub[p] = nsProxy();
       if (manifest.action) chromeStub.action = nsProxy();
       const ctx = vm.createContext({
@@ -7009,7 +7029,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           for (const fn of listeners) { try { fn(request, sender, done); } catch (e) { done({ error: String(e) }); } }
           setTimeout(() => done({ error: "no response" }), 8000);
         });
-      return { ask, calls, store };
+      return { ask, calls, store, alarmsLive, notes, fireAlarm };
     };
 
     // The shipped build is configured — this is the line that decides whether
@@ -7689,6 +7709,112 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       ok("a blank relay in config.json sends from the student's own Gmail", blank.posts.length === 0 && blank.gmail === 1, JSON.stringify(blank));
       const broken = await run("broken");
       ok("an unreadable config.json falls back to the student's own Gmail", broken.posts.length === 0 && broken.gmail === 1, JSON.stringify(broken));
+    }
+
+    /* ---- scheduled mail reminders: the extension's mail, fired by an alarm ---- */
+    {
+      const RELAY = "https://script.google.com/macros/s/ALARM-test/exec";
+      const boot = (o = {}) => {
+        const posts = [];
+        const b = bootAuth({
+          store: { vrevamp_mail_relay_url: RELAY, vrevamp_reminder_email: "me@vitapstudent.ac.in", ...(o.store || {}) },
+          fetch: (url, init) => {
+            posts.push({ url, body: JSON.parse((init && init.body) || "{}") });
+            return Promise.resolve({
+              ok: true, status: 200,
+              json: () => Promise.resolve(o.fail ? { ok: false, error: "relay busy" } : { ok: true }),
+            });
+          },
+        });
+        return { ...b, posts };
+      };
+      const mailReminder = (extra = {}) => ({
+        when: Date.now() + 3600000,
+        title: "Tomorrow - FAT exam: ECE2015",
+        body: "CB-324",
+        notify: false,
+        until: Date.now() + 7200000,
+        mail: { subject: "Tomorrow: FAT exam: ECE2015", text: "Venue CB-324", html: "<b>Venue CB-324</b>" },
+        ...extra,
+      });
+      const names = (b) => Object.keys(b.alarmsLive).filter((n) => n.startsWith("vrrem|"));
+
+      // get_reminder_email tells the page what is saved and that mail is relayed
+      {
+        const b = boot();
+        const r = await b.ask({ message: "get_reminder_email" });
+        ok("the page can ask what address is saved and whether mail is relayed",
+          r && r.address === "me@vitapstudent.ac.in" && r.relay === true, JSON.stringify(r));
+      }
+
+      // 1. the alarm sends the mail through the relay, once, and no popup
+      {
+        const b = boot();
+        const n = await b.ask({ message: "schedule_local_reminders", tag: "exam-mail:FAT", reminders: [mailReminder()] });
+        const name = names(b)[0];
+        await b.fireAlarm(name);
+        ok(
+          "an alarm sends its mail through the relay to the saved address, and shows no popup",
+          n === 1 && b.posts.length === 1 && /ALARM-test/.test(b.posts[0].url) &&
+            b.posts[0].body.to === "me@vitapstudent.ac.in" &&
+            b.posts[0].body.subject === "Tomorrow: FAT exam: ECE2015" && b.notes.length === 0,
+          JSON.stringify({ n, posts: b.posts.length, notes: b.notes.length })
+        );
+        await b.fireAlarm(name);
+        ok("a second firing of the same alarm sends nothing more", b.posts.length === 1, `posts=${b.posts.length}`);
+      }
+
+      // 2. a reminder that is also a popup still pops up
+      {
+        const b = boot();
+        await b.ask({ message: "schedule_local_reminders", tag: "x", reminders: [mailReminder({ notify: true })] });
+        await b.fireAlarm(names(b)[0]);
+        ok("notify:true keeps the popup as well as the mail", b.notes.length === 1 && b.posts.length === 1,
+          JSON.stringify({ notes: b.notes.length, posts: b.posts.length }));
+      }
+
+      // 3. the moment has passed (Chrome was closed): do not mail yesterday's news
+      {
+        const b = boot();
+        await b.ask({ message: "schedule_local_reminders", tag: "x", reminders: [mailReminder({ until: Date.now() - 1000 })] });
+        await b.fireAlarm(names(b)[0]);
+        ok("a reminder past its useful moment is dropped, not mailed", b.posts.length === 0, `posts=${b.posts.length}`);
+      }
+
+      // 4. failure: retried ten minutes later while still useful, then said out loud
+      {
+        const b = boot({ fail: true });
+        await b.ask({ message: "schedule_local_reminders", tag: "x", reminders: [mailReminder({ until: Date.now() + 6 * 3600000 })] });
+        const name = names(b)[0];
+        await b.fireAlarm(name);
+        const retryAt = b.alarmsLive[name] && b.alarmsLive[name].when;
+        ok(
+          "a failed send is retried in about ten minutes, without a scary popup yet",
+          !!retryAt && retryAt > Date.now() + 9 * 60000 && retryAt < Date.now() + 11 * 60000 && b.notes.length === 0,
+          JSON.stringify({ retryIn: retryAt && Math.round((retryAt - Date.now()) / 60000), notes: b.notes.length })
+        );
+        await b.fireAlarm(name);
+        await b.fireAlarm(name);
+        await b.fireAlarm(name);
+        ok(
+          "after four failures it says so with a notification instead of failing silently",
+          b.posts.length === 4 && b.notes.length === 1 && /email your reminder/.test(b.notes[0].title) &&
+            /relay busy/.test(b.notes[0].message),
+          JSON.stringify({ posts: b.posts.length, notes: b.notes.map((x) => x.title + " | " + x.message) })
+        );
+      }
+
+      // 5. nowhere to send: the failure names the fix
+      {
+        const b = boot({ store: { vrevamp_reminder_email: undefined } });
+        await b.ask({ message: "schedule_local_reminders", tag: "x", reminders: [mailReminder({ until: Date.now() + 30000 })] });
+        await b.fireAlarm(names(b)[0]);
+        ok(
+          "with no saved address the notification says to add one in the popup",
+          b.posts.length === 0 && b.notes.length === 1 && /add one in the popup/.test(b.notes[0].message),
+          JSON.stringify(b.notes)
+        );
+      }
     }
 
     {
