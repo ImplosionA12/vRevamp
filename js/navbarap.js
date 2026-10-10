@@ -18,7 +18,15 @@ const nav_bar_change = () => {
 			time_table = i;
 		} else if (item.includes("Calendar")) {
 			calendar = i;
-		} else if (item.includes("Marks")) {
+		} else if (
+			// by VTOP's own data-url, then by the exact label. A bare
+			// includes("Marks") also matched "Photo & 12th Marksheet Upload",
+			// and since the last match won, the Marks View button opened
+			// "Access Denied — Photo Upload Option not opened for you".
+			marks === undefined &&
+			(/StudentMarkView/i.test(items_list[i].dataset.url || "") ||
+				/^marks(\s*view)?$/i.test(item))
+		) {
 			marks = i;
 		}
     else if (item.includes("My Curriculum")) {

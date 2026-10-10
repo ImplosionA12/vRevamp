@@ -249,6 +249,9 @@
     });
 
   const getLatestCalendar = async () => {
+    const pointer = await chrome.storage.local.get("vrevamp_latest_calendar");
+    if (pointer.vrevamp_latest_calendar) return pointer.vrevamp_latest_calendar;
+    // written by the attendance page; until it has run once, fall back to the scan
     const all = await chrome.storage.local.get(null);
     const calendars = Object.keys(all)
       .filter((k) => k.startsWith(CACHE_PREFIX))

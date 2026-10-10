@@ -533,6 +533,14 @@
   const scheduleBuild = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      // cheap gate: no panel and no "Grade" text anywhere means this is not a
+      // grade page, so skip the table walk below (the observer sees the whole
+      // session, and most VTOP pages have no grades on them)
+      if (
+        !document.getElementById(PANEL_ID) &&
+        !(document.body && (document.body.textContent || "").includes("Grade"))
+      )
+        return;
       const t = findHistoryTable();
       const sig =
         (t ? rowsOf(t).length : 0) +

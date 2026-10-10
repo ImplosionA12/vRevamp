@@ -510,7 +510,11 @@
       const cached = await chrome.storage.local.get(key);
       // version check invalidates caches built before the duplicate-month /
       // duplicate-day dedupe (those could hold multiply-counted class days)
-      if (cached[key] && cached[key].version === 4) return cached[key];
+      if (cached[key] && cached[key].version === 4) {
+        // readers on other pages look here instead of scanning all of storage
+        chrome.storage.local.set({ vrevamp_latest_calendar: cached[key] });
+        return cached[key];
+      }
       const calendar = await fetchCalendar(semesterName);
       // drop caches of other semesters, then store this one
       const all = await chrome.storage.local.get(null);
@@ -518,7 +522,7 @@
         (k) => k.startsWith(CACHE_PREFIX) && k !== key
       );
       if (stale.length) await chrome.storage.local.remove(stale);
-      await chrome.storage.local.set({ [key]: calendar });
+      await chrome.storage.local.set({ [key]: calendar, vrevamp_latest_calendar: calendar });
       return calendar;
     } catch (error) {
       console.warn("vRevamp: academic calendar unavailable", error);
@@ -1463,6 +1467,15 @@
   // after a VTOP re-render repaint instantly instead of refetching
   const historyCache = {};
 
+  // …and keep them ACROSS page loads. Every visit to Attendance used to refetch
+  // one register per subject, one after another, which is the long "fetching
+  // attendance details…" wait. A register only changes when the table's own
+  // attended/total counts change, so those counts are the cache key's
+  // signature: same counts, same register, no request.
+  const PERSIST_KEY = "vrevamp_att_history";
+  const encodeHistory = (h) => h.map((e) => [e.date.getTime(), e.attended ? 1 : 0]);
+  const decodeHistory = (a) => a.map(([t, p]) => ({ date: new Date(t), attended: !!p }));
+
   const doRun = async () => {
     const tableWrap = document.querySelector(".table-responsive");
     if (!tableWrap) return;
@@ -1474,6 +1487,13 @@
     const totalCol = headRow
       ? Array.from(headRow.cells).findIndex((c) => /total/i.test(c.innerText))
       : -1;
+    const attendedCol = headRow
+      ? Array.from(headRow.cells).findIndex((c) => /attended/i.test(c.innerText))
+      : -1;
+    const rowSig = (row) =>
+      [totalCol, attendedCol]
+        .map((i) => (i >= 0 && row.cells && row.cells[i] ? row.cells[i].innerText.trim() : "?"))
+        .join("/");
     const hasClasses = (row) => {
       if (totalCol === -1 || !row.cells || row.cells.length <= totalCol)
         return true; // can't judge — keep the row
@@ -1501,16 +1521,33 @@
     showStatus("vRevamp: fetching attendance details…", null, false);
     const collected = [];
     let lastDetailError = "";
+    let persisted = {};
+    try {
+      persisted = (await chrome.storage.local.get(PERSIST_KEY))[PERSIST_KEY] || {};
+    } catch (e) {
+      /* no storage: just fetch */
+    }
+    let persistedDirty = false;
     for (const s of subjects) {
       try {
         // VTOP swapped the table out mid-run (semester change) — these rows
         // are gone, and a fresh run for the new table is already queued
         if (!s.row.isConnected && !liveRowFor(s)) continue;
         const cacheKey = s.call.args.join("|");
+        const sig = rowSig(s.row);
         let history = historyCache[cacheKey];
+        const saved = persisted[cacheKey];
+        if (!history && saved && saved.sig === sig && Array.isArray(saved.h)) {
+          history = decodeHistory(saved.h);
+          historyCache[cacheKey] = history;
+        }
         if (!history) {
           history = await fetchDetailHistory(s.call);
           historyCache[cacheKey] = history;
+          if (history.length > 0) {
+            persisted[cacheKey] = { sig, h: encodeHistory(history) };
+            persistedDirty = true;
+          }
           await sleepMs(250);
         }
         if (history.length === 0) continue;
@@ -1518,6 +1555,14 @@
       } catch (error) {
         console.warn("vRevamp: subject insight failed", error);
         lastDetailError = String(error && error.message ? error.message : error);
+      }
+    }
+
+    if (persistedDirty) {
+      try {
+        chrome.storage.local.set({ [PERSIST_KEY]: persisted });
+      } catch (e) {
+        /* best effort */
       }
     }
 

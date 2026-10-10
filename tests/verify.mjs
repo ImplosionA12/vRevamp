@@ -3478,6 +3478,35 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.close();
   }
 
+  /* ============ navbar: Marks View must not open Photo Marksheet Upload ============
+   * SEEN LIVE 2026-10-10: the menu also has "Photo & 12th Marksheet Upload",
+   * and includes("Marks") with last-match-wins sent the Marks View button
+   * there ("Access Denied — Photo Upload Option not opened for you"). */
+  console.log("\n=== navbar (AP): Marks View targets StudentMarkView, not Marksheet Upload ===");
+  {
+    const page = await newPage(browser);
+    await page.setContent(`<body>
+      <a data-url="examinations/StudentMarkView" href="#">Marks</a>
+      <a data-url="students/photomarksheetupload" href="#">Photo & 12th Marksheet Upload</a>
+      <a data-url="academics/common/StudentAttendance" href="#">Class Attendance</a>
+      <nav><div class="collapse navbar-collapse"><div>menu</div></div></nav>
+    </body>`);
+    await shim(page, {});
+    await inject(page, ["js/navbarap.js"]);
+    await page.evaluate(() => window.__dispatch("nav_bar_change"));
+    await delay(300);
+    const target = await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("#nav_short")).find(
+        (b) => b.textContent.trim() === "Marks View"
+      );
+      if (!btn) return null;
+      const idx = Number(/\[(\d+)\]\.click/.exec(btn.getAttribute("onclick"))[1]);
+      return Array.from(document.getElementsByTagName("a")).filter((e) => e.dataset.url)[idx].dataset.url;
+    });
+    ok("Marks View button points at examinations/StudentMarkView", target === "examinations/StudentMarkView", String(target));
+    await page.close();
+  }
+
   /* ============ DA page: nothing upcoming, something still owed ============
    *
    * SEEN LIVE 2026-08-17 on this student's own page. Every control in the

@@ -668,6 +668,14 @@
   const scheduleBuild = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      // cheap gate: no panel and no "Grade"/"CGPA" text anywhere means this is not a
+      // grade page, so skip the table walk below (the observer sees the whole
+      // session, and most VTOP pages have no grades on them)
+      if (
+        !document.getElementById(PANEL_ID) &&
+        !(document.body && /Grade|CGPA/.test(document.body.textContent || ""))
+      )
+        return;
       // skip rebuilds when nothing relevant changed (observer can be chatty)
       const gt = findGradeTable();
       const sig =
