@@ -4334,3 +4334,6 @@ one page, as Chrome does at inject time:
   either Bootstrap.
 - Lesson: preview injected UI on the page it will live on, not on a page that
   merely looks similar.
+- DA summary bar: dropped the emoji prefixes (they render as tiny mismatched icons) and
+  made the wording consistent: "Remind me about all of them", "Email me this list now",
+  "Email me a daily digest". Checked on the real page first.

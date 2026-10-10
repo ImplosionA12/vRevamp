@@ -3581,7 +3581,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       (bar && bar.text.slice(0, 200)) || "no bar");
     ok(
       "📧 is offered, and says what it will send",
-      !!bar && bar.buttons.some((b) => /email me what I still owe/.test(b)),
+      !!bar && bar.buttons.some((b) => /email me what I still owe/i.test(b)),
       JSON.stringify(bar && bar.buttons)
     );
     ok(
@@ -3596,7 +3596,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
      */
     ok(
       "🔔 is NOT offered — it could only schedule a reminder for a past date",
-      !!bar && !bar.buttons.some((b) => /remind me/.test(b)),
+      !!bar && !bar.buttons.some((b) => /remind me/i.test(b)),
       JSON.stringify(bar && bar.buttons)
     );
     ok(
@@ -3700,7 +3700,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok(
       "🔔 comes back — there is now something in the future to remind about",
-      seen.buttons.some((b) => /remind me/.test(b)),
+      seen.buttons.some((b) => /remind me/i.test(b)),
       JSON.stringify(seen.buttons)
     );
     ok(

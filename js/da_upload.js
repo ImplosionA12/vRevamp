@@ -407,8 +407,8 @@ window.vrDelegate("da-digest", async (btn) => {
   }
   btn.dataset.vrOn = reply.enabled ? "1" : "0";
   btn.textContent = reply.enabled
-    ? "📬 daily digest is ON — click to stop"
-    : "📬 mail me a daily digest";
+    ? "Daily digest is on - click to stop"
+    : "Email me a daily digest";
   btn.title = reply.enabled
     ? `Sent every day around ${reply.hour}:00 to ${reply.to || "your reminder address"}`
     : "Once a day, VTOP Extension mails you what's still to upload and where your attendance stands";
@@ -732,7 +732,7 @@ const renderDaSummary = (classTable, courses) => {
     // that has already passed can never fire, and offering it would be a
     // button that silently does nothing.
     if (upcoming.length) {
-      const bell = window.vrButton("da-bell", "🔔 remind me about all of them", {
+      const bell = window.vrButton("da-bell", "Remind me about all of them", {
         vrDues: payload,
       });
       bell.title =
@@ -744,7 +744,7 @@ const renderDaSummary = (classTable, courses) => {
     if (listed.length) {
       const mail = window.vrButton(
         "da-mailnow",
-        upcoming.length ? "📧 email me this list" : "📧 email me what I still owe",
+        upcoming.length ? "Email me this list now" : "Email me what I still owe",
         { vrDues: payload }
       );
       mail.title = "Sends the whole list to your reminder address right now";
@@ -752,7 +752,7 @@ const renderDaSummary = (classTable, courses) => {
       controls.appendChild(mail);
     }
 
-    const daily = window.vrButton("da-digest", "📬 mail me a daily digest", {});
+    const daily = window.vrButton("da-digest", "Email me a daily digest", {});
     daily.title =
       "Once a day, VTOP Extension mails you what's still to upload and where your attendance stands";
     daily.style.cssText = "font-size:12px;cursor:pointer;";
@@ -763,7 +763,7 @@ const renderDaSummary = (classTable, courses) => {
       chrome.runtime.sendMessage({ message: "google_status" }, (status) => {
         if (chrome.runtime.lastError || !status || !status.digest) return;
         daily.dataset.vrOn = "1";
-        daily.textContent = "📬 daily digest is ON — click to stop";
+        daily.textContent = "Daily digest is on - click to stop";
         daily.title = `Sent every day around ${status.digestHour}:00`;
       });
     } catch {
