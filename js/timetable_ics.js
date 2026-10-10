@@ -209,7 +209,7 @@
     });
 
     if (blocks.length === 0) return null;
-    return vrIcs.calendar("-//vRevamp//Timetable//EN", blocks);
+    return vrIcs.calendar("-//VTOP Extension//Timetable//EN", blocks);
   };
 
   /* ---- Google Calendar import ------------------------------------------ */
@@ -299,7 +299,7 @@
             (title ? `${c.course} — ${title}` : c.course) +
             (c.slot ? ` (${c.slot})` : ""),
           location: c.venue || undefined,
-          description: "vRevamp timetable import",
+          description: "VTOP Extension timetable import",
           start: { dateTime: `${isoOf(first)}T${hmsColon(c.start)}`, timeZone: "Asia/Kolkata" },
           end: { dateTime: `${isoOf(first)}T${hmsColon(c.end)}`, timeZone: "Asia/Kolkata" },
           recurrence,
@@ -337,7 +337,7 @@
           e.session ? `Session: ${e.session}` : "",
           e.reporting ? `Reporting: ${e.reporting}` : "",
           e.seatLoc || e.seatNo ? `Seat: ${e.seatLoc || "-"} · No. ${e.seatNo || "-"}` : "",
-          "vRevamp timetable import",
+          "VTOP Extension timetable import",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -421,7 +421,7 @@
             `&dates=${day}T${hms(c.start)}/${day}T${hms(c.end)}` +
             "&ctz=Asia/Kolkata" +
             `&recur=${encodeURIComponent(`RRULE:FREQ=WEEKLY;UNTIL=${until}`)}` +
-            `&details=${encodeURIComponent("vRevamp timetable import")}` +
+            `&details=${encodeURIComponent("VTOP Extension timetable import")}` +
             (c.venue ? `&location=${encodeURIComponent(c.venue)}` : ""),
         });
       });
@@ -433,7 +433,7 @@
         e.slot ? `Slot: ${e.slot}` : "",
         e.reporting ? `Reporting: ${e.reporting}` : "",
         e.seatLoc || e.seatNo ? `Seat: ${e.seatLoc || "-"} No. ${e.seatNo || "-"}` : "",
-        "vRevamp timetable import",
+        "VTOP Extension timetable import",
       ]
         .filter(Boolean)
         .join("\n");
@@ -736,7 +736,7 @@
       if (!token) {
         const err = window.vrGoogleAuthError || "";
         console.info(
-          "vRevamp timetable import: Google sign-in failed:",
+          "VTOP Extension timetable import: Google sign-in failed:",
           err || "(no error reported)"
         );
         // sign-in is impossible in this build (the upstream OAuth client id
@@ -807,7 +807,7 @@
       tt_status(
         btn,
         orphaned
-          ? "vRevamp was updated under this page — refresh the page (F5), then click again"
+          ? "VTOP Extension was updated under this page — refresh the page (F5), then click again"
           : "failed — refresh and try again",
         false
       );
@@ -818,7 +818,7 @@
   const download = (ics) => {
     const a = document.createElement("a");
     a.href = "data:text/calendar;charset=utf-8," + encodeURIComponent(ics);
-    a.download = "vRevamp timetable.ics";
+    a.download = "VTOP Extension timetable.ics";
     a.style.display = "none";
     document.body.appendChild(a);
     a.click();

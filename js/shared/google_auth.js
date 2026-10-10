@@ -162,7 +162,7 @@ if (typeof window.vrSendMail !== "function") {
         chrome.runtime.sendMessage(
           {
             message: "send_mail",
-            subject: (mail && mail.subject) || "vRevamp",
+            subject: (mail && mail.subject) || "VTOP Extension",
             html: (mail && mail.html) || "",
             text: (mail && mail.text) || "",
             to: (mail && mail.to) || null,
@@ -204,7 +204,7 @@ if (typeof window.vrSendMail !== "function") {
     if (/daily limit reached|too many mails to this address|daily Gmail quota/i.test(e))
       return e;
     if (/relay unreachable|relay returned|relay busy/i.test(e))
-      return `the vRevamp mail service didn't answer (${e}) — try again in a minute, or use the 📅 one-tap links`;
+      return `the VTOP Extension mail service didn't answer (${e}) — try again in a minute, or use the 📅 one-tap links`;
     if (/gmail_send_scope|invalid_scope/i.test(e))
       return "Gmail sending isn't switched on for this build — in Cloud Console add https://www.googleapis.com/auth/gmail.send under Data Access, then retry";
     if (/not_configured/i.test(e))
