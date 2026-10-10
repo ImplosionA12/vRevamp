@@ -4255,3 +4255,14 @@ one page, as Chrome does at inject time:
 - README rewritten for this repo: what it does, install, update (including the
   reload step), troubleshooting, an accurate note on what leaves the browser.
 - Removed the Web Store `update_url` from the manifest; version 4.5.20 -> 4.6.0.
+
+## 4.6.0 - popup VTOP sign-in (2026-10-11)
+- New "VTOP sign-in" section in the popup: save your ID and password once.
+  `js/login_fill.js` fills them into the VTOP login form and keeps re-applying
+  them for ~6 s so they win over Chrome's / a password manager's autofill (it also
+  sets `autocomplete` off / new-password). It stops the moment you type
+  (`isTrusted` keystroke or paste) and never submits. Stored in
+  `chrome.storage.local`, unencrypted, like the hostel Wi-Fi credentials; the
+  password is never shown back. 11 tests; live-checked on the real login page
+  with dummy values (cleared afterwards).
+- Release held: PR #1 stays open, nothing merged or tagged.

@@ -72,6 +72,17 @@
     },
     {
       "js": [
+        "js/login_fill.js"
+      ],
+      "matches": [
+        "https://vtop.vitap.ac.in/vtop/login*",
+        "https://vtop.vitap.ac.in/vtop/open/page*",
+        "https://web.vitap.ac.in/vtop/login*",
+        "https://vtop.vit.ac.in/vtop/login*"
+      ]
+    },
+    {
+      "js": [
         "js/captcha/refreshTillCaptcha.js"
       ],
       "matches": [

@@ -9232,6 +9232,109 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
    * consider the bare picker "already loaded" (which would make it a no-op
    * forever).
    */
+  /* ============ popup ID + password beat Chrome's autofill on the login page ============ */
+  console.log("\n=== login fill: the popup's credentials win, and typing stops it ===");
+  {
+    const FORM =
+      "<body><form id='vtopLoginForm'><input name='username' type='text'>" +
+      "<input name='password' type='password'></form></body>";
+    const open = async (seed, afterInject) => {
+      const p = await newPage(browser);
+      await p.setContent(FORM);
+      await shim(p, { storage: seed });
+      await inject(p, ["js/login_fill.js"]);
+      if (afterInject) await afterInject(p);
+      return p;
+    };
+    const vals = (p) =>
+      p.evaluate(() => ({
+        u: document.querySelector("[name=username]").value,
+        w: document.querySelector("[name=password]").value,
+        auto: document.querySelector("[name=password]").getAttribute("autocomplete"),
+      }));
+    const creds = { vrevamp_vtop_login: { id: "24TEST0001", pass: "from-popup" } };
+
+    // 1. filled, and Chrome's late autofill is overwritten again
+    let p = await open(creds, async (pg) => {
+      await delay(600);
+      await pg.evaluate(() => {
+        document.querySelector("[name=username]").value = "chrome-saved";
+        document.querySelector("[name=password]").value = "chrome-pass";
+      });
+      await delay(900);
+    });
+    let v = await vals(p);
+    ok("saved ID and password are filled in", v.u === "24TEST0001" && v.w === "from-popup", JSON.stringify(v));
+    ok("Chrome's later autofill does not win", v.u !== "chrome-saved" && v.w !== "chrome-pass");
+    ok("the password field is told not to autofill", v.auto === "new-password", String(v.auto));
+    await p.close();
+
+    // 2. a real keystroke stops it
+    p = await open(creds, async (pg) => {
+      await delay(500);
+      await pg.focus("[name=username]");
+      await pg.keyboard.press("End");
+      await pg.keyboard.type("X");
+      await delay(900);
+    });
+    v = await vals(p);
+    ok("typing hands control back: the person's edit survives", v.u === "24TEST0001X", JSON.stringify(v));
+    await p.close();
+
+    // 3. nothing saved, nothing touched
+    p = await open({}, async () => delay(700));
+    v = await vals(p);
+    ok("with nothing saved the fields are left alone", v.u === "" && v.w === "", JSON.stringify(v));
+    await p.close();
+
+    // 4. the form arriving late is still filled
+    p = await newPage(browser);
+    await p.setContent("<body><div id='slot'></div></body>");
+    await shim(p, { storage: creds });
+    await inject(p, ["js/login_fill.js"]);
+    await delay(700);
+    await p.evaluate((html) => { document.getElementById("slot").innerHTML = html; }, FORM.replace(/<\/?body>/g, ""));
+    await delay(900);
+    v = await vals(p);
+    ok("a login form that appears after load is filled too", v.u === "24TEST0001" && v.w === "from-popup", JSON.stringify(v));
+    await p.close();
+  }
+
+  console.log("\n=== popup: save and clear the VTOP sign-in ===");
+  {
+    const p = await newPage(browser);
+    await p.setContent(
+      "<body><input id='vr-login-id'><input id='vr-login-pass' type='password'>" +
+      "<button id='vr-login-save'></button><button id='vr-login-clear'></button><div id='vr-login-status'></div></body>"
+    );
+    await shim(p, {});
+    await inject(p, ["js/popup_login.js"]);
+    const stored = () => p.evaluate(() => window.__storage.vrevamp_vtop_login || null);
+    await p.fill("#vr-login-id", "24TEST0001");
+    await p.click("#vr-login-save");
+    await delay(150);
+    ok("saving with no password is refused and stores nothing", (await stored()) === null);
+    await p.fill("#vr-login-pass", "s3cret");
+    await p.click("#vr-login-save");
+    await delay(150);
+    const saved = await stored();
+    ok("ID and password are stored", saved && saved.id === "24TEST0001" && saved.pass === "s3cret", JSON.stringify(saved));
+    const shown = await p.evaluate(() => ({
+      pass: document.getElementById("vr-login-pass").value,
+      ph: document.getElementById("vr-login-pass").placeholder,
+    }));
+    ok("the password is never shown back", shown.pass === "" && /saved/.test(shown.ph), JSON.stringify(shown));
+    await p.fill("#vr-login-id", "24TEST0002");
+    await p.click("#vr-login-save");
+    await delay(150);
+    const kept = await stored();
+    ok("changing only the ID keeps the saved password", kept && kept.id === "24TEST0002" && kept.pass === "s3cret", JSON.stringify(kept));
+    await p.click("#vr-login-clear");
+    await delay(150);
+    ok("clear removes both", (await stored()) === null);
+    await p.close();
+  }
+
   /* ============ popup: update check against the GitHub manifest ============ */
   console.log("\n=== popup: says so when GitHub has a newer version ===");
   {

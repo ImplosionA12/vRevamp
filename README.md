@@ -6,6 +6,9 @@ Works on `vtop.vitap.ac.in` (and `web.vitap.ac.in`).
 ## What it does
 
 - **Fills the login captcha** for you, and can fetch the login OTP from your mail.
+- **Signs-in helper**: save your ID and password in the popup and the login page is
+  filled with them instead of Chrome's saved ones (it never presses Sign in for you;
+  stored unencrypted on your computer).
 - **Auto-picks the current semester** on Attendance, Marks, Time Table, DA Upload
   and Exam Schedule, so you stop choosing it every time.
 - **Attendance**: how many classes you can still skip, per subject, before each

@@ -57,6 +57,28 @@
     that only showed itself as a consent window appearing "every time" — with
     nothing to click to find out why or to change it.
   -->
+  <section class="vr-sec" id="vr-login-panel">
+    <h4>VTOP sign-in</h4>
+    <div class="vr-row">
+      <span class="vr-label">ID</span>
+      <input type="text" id="vr-login-id" placeholder="24ABC1234" autocomplete="off" />
+    </div>
+    <div class="vr-row">
+      <span class="vr-label">Password</span>
+      <input type="password" id="vr-login-pass" placeholder="password" autocomplete="new-password" />
+    </div>
+    <div class="vr-row">
+      <button type="button" class="vr-mini" id="vr-login-save">Save</button>
+      <button type="button" class="vr-mini" id="vr-login-clear">Clear</button>
+    </div>
+    <div class="vr-hint">
+      Filled into the VTOP login page instead of Chrome's saved password. It
+      never signs in for you, and it stops the moment you type. Kept on this
+      computer, not encrypted.
+    </div>
+    <div id="vr-login-status" class="vr-hint"></div>
+  </section>
+
   <section class="vr-sec" id="vr-mail-panel">
     <h4>Reminders &amp; mail</h4>
 
@@ -146,6 +168,7 @@
   </footer>
 
   <script src="../js/popup_meta.js"></script>
+  <script src="../js/popup_login.js"></script>
   <script src="../js/wifi/hostel.js"></script>
   <script src="../js/popup.js"></script>
 </body>
