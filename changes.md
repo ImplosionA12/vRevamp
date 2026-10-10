@@ -4215,3 +4215,22 @@ one page, as Chrome does at inject time:
 ![image](images/navbar.png)
 
 \+ auto current semester for class attendance
+## 2026-10-10 - lag and "doesn't work" pass, driven live on a real session
+- **Marks View top-bar button opened "Access Denied".** `navbarap.js` matched
+  `includes("Marks")` with last-match-wins, so "Photo & 12th Marksheet Upload"
+  replaced the real Marks entry. Now matched on `examinations/StudentMarkView`.
+- **Auto-semester gave up on every section-to-section move.** The worker's
+  page-open message beats the new page's DOM, so the picker on screen was the
+  previous page's, already answered. It now looks for a replacement picker for
+  up to 3 s. Verified live: Attendance -> Marks View, Attendance -> DA Upload.
+  `data-vr-auto` on `<html>` records the last stages for diagnosis.
+- **Attendance fetched 8 registers one by one on every visit.** Histories are now
+  persisted (`vrevamp_att_history`), keyed by the row's attended/total counts.
+  Verified live: second visit = 0 detail requests.
+- **Time Table rasterised the whole page to a PNG on every render** (dom-to-image,
+  re-fetching every font, several 404s). Now rendered only when Download is clicked.
+- Calendar lookups on every navigation no longer load all of chrome.storage
+  (`vrevamp_latest_calendar` pointer); grade scripts skip pages with no grades.
+- **Many "feature X does nothing" reports were a stale extension.** The Chrome
+  profile ran code older than the repo; an unpacked extension never updates
+  itself. Reload it at chrome://extensions after every change.
