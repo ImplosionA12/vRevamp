@@ -53,6 +53,13 @@ the first thing to try: Chrome keeps running the old code until you reload.
 - Google sign-in shows an "unverified app" screen: choose **Advanced > Continue**.
 - Report issues at <https://github.com/ImplosionA12/vRevamp/issues>.
 
+## Configuration
+
+`config.json` (next to `manifest.json`) holds the two deployment settings: the
+GitHub `repo` / `branch` the popup checks for updates, and the `mailRelayUrl`
+that "Mail me the list now" sends through. Leave `mailRelayUrl` blank to send
+from your own Gmail instead.
+
 ## Develop
 
 ```
