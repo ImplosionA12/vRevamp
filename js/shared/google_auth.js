@@ -227,17 +227,14 @@ if (typeof window.vrSendMail !== "function") {
  * `note(text, ok)` is the caller's own status line, so this stays agnostic
  * about where the message goes (a button label, a banner, a table cell).
  */
-if (typeof window.vrMailOrAsk !== "function") {
-  window.vrMailOrAsk = async (anchor, mail, note) => {
-    const say = typeof note === "function" ? note : () => {};
-    let result = await window.vrSendMail(mail);
-    if (result.ok) return result;
-    if (result.error !== "need_address") {
-      say(window.vrSendMailHint(result.error), false);
-      return result;
-    }
-
-    const asked = await new Promise((resolve) => {
+/*
+ * Ask where to send, in place next to `anchor`. Resolves the saved address, or
+ * null when there is nowhere to put the field. Shared by "mail me now" and by
+ * the scheduled mail reminders, so the prompt looks and behaves the same.
+ */
+if (typeof window.vrAskAddress !== "function") {
+  window.vrAskAddress = (anchor, say) =>
+    new Promise((resolve) => {
       if (!anchor || !anchor.parentNode) return resolve(null);
       const existing = anchor.parentNode.querySelector(".vrevamp-mail-ask");
       if (existing) existing.remove();
@@ -249,12 +246,14 @@ if (typeof window.vrMailOrAsk !== "function") {
       const field = document.createElement("input");
       field.type = "email";
       field.placeholder = "where should we mail it?";
-      field.style.cssText = "font-size:12px;padding:2px 4px;width:210px;";
+      field.className = "form-control form-control-sm";
+      field.style.cssText = "width:210px;display:inline-block;";
 
       const go = document.createElement("button");
       go.type = "button"; // never submit the VTOP form this sits inside
-      go.textContent = "save";
-      go.style.cssText = "font-size:12px;margin-left:4px;cursor:pointer;";
+      go.textContent = "Save";
+      go.className = "btn btn-sm btn-primary";
+      go.style.cssText = "margin-left:4px;";
 
       const submit = async () => {
         const address = field.value.trim();
@@ -284,6 +283,71 @@ if (typeof window.vrMailOrAsk !== "function") {
       field.focus();
       say("tell me where to send it →", true);
     });
+}
+
+// What the extension already knows: { address, relay }. `relay` is true when
+// mail goes out through the extension's own address (no Google sign-in).
+if (typeof window.vrGetReminderEmail !== "function") {
+  window.vrGetReminderEmail = () =>
+    new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ message: "get_reminder_email" }, (resp) => {
+          if (chrome.runtime.lastError || !resp) return resolve({ address: null, relay: false });
+          resolve(resp);
+        });
+      } catch {
+        resolve({ address: null, relay: false });
+      }
+    });
+}
+
+/*
+ * Reminders that arrive as EMAIL from the extension, at the right time.
+ *
+ * "Email me 24 h & 2 h before" used to create Google Calendar events and let
+ * Google send the mail, which needed the student's own Google sign-in. This
+ * schedules the same reminders in the extension instead (chrome.alarms) and
+ * sends each through the extension's mail when it falls due: nothing is written
+ * to anyone's calendar and no Google account is involved. The trade-off is
+ * honest and stated on the button: Chrome has to be running at that time (one
+ * that was closed catches up the next time it opens).
+ *
+ * `reminders`: [{ when(ms), title, body, subject, html, text, until(ms) }].
+ * Resolves { ok, n, to, error } — `error` is "need_address" only when there is
+ * no anchor to ask next to.
+ */
+if (typeof window.vrScheduleMailReminders !== "function") {
+  window.vrScheduleMailReminders = async (anchor, tag, reminders, say) => {
+    const note = typeof say === "function" ? say : () => {};
+    let { address } = await window.vrGetReminderEmail();
+    if (!address) address = await window.vrAskAddress(anchor, note);
+    if (!address) return { ok: false, n: 0, to: null, error: "need_address" };
+    const n = await window.vrLocalReminders(
+      tag,
+      reminders.map((r) => ({
+        when: r.when,
+        title: r.title,
+        body: r.body,
+        notify: false, // the mail IS the reminder; the 🔔 button is the popup one
+        until: r.until,
+        mail: { subject: r.subject, html: r.html, text: r.text },
+      }))
+    );
+    return { ok: typeof n === "number" && n > 0, n: n === null ? 0 : n, to: address, error: n === null ? "worker unreachable" : null };
+  };
+}
+
+if (typeof window.vrMailOrAsk !== "function") {
+  window.vrMailOrAsk = async (anchor, mail, note) => {
+    const say = typeof note === "function" ? note : () => {};
+    let result = await window.vrSendMail(mail);
+    if (result.ok) return result;
+    if (result.error !== "need_address") {
+      say(window.vrSendMailHint(result.error), false);
+      return result;
+    }
+
+    const asked = await window.vrAskAddress(anchor, say);
 
     if (!asked) return result;
     result = await window.vrSendMail(mail);

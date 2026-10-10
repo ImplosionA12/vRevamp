@@ -1391,6 +1391,21 @@ const scheduleLocalReminders = async (tag, reminders) => {
       title: String(item.title || "VTOP Extension reminder").slice(0, 150),
       body: String(item.body || "").slice(0, 500),
       when: item.when,
+      // A reminder may ALSO be an email, sent by the extension's own mail
+      // (the relay), not by Google Calendar: no Google sign-in, no calendar
+      // event. `notify: false` makes it mail-only. `until` is the moment it
+      // stops being useful (an exam that has started) — a late alarm after
+      // Chrome was closed must not mail yesterday's news.
+      notify: item.notify !== false,
+      until: Number.isFinite(item.until) ? item.until : null,
+      mail:
+        item.mail && typeof item.mail === "object"
+          ? {
+              subject: String(item.mail.subject || "VTOP Extension reminder").slice(0, 200),
+              html: String(item.mail.html || "").slice(0, 20000),
+              text: String(item.mail.text || "").slice(0, 20000),
+            }
+          : null,
     };
     chrome.alarms.create(name, { when: item.when });
   }
@@ -1704,14 +1719,42 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     (await chrome.storage.local.get(REMINDERS_KEY))[REMINDERS_KEY] || {};
   const reminder = store[alarm.name];
   if (!reminder) return;
-  chrome.notifications.create(alarm.name, {
-    type: "basic",
-    iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
-    title: reminder.title,
-    message: reminder.body,
-    priority: 2,
-    requireInteraction: true,
-  });
+  const notify = (title, message) =>
+    chrome.notifications.create(alarm.name, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
+      title,
+      message,
+      priority: 2,
+      requireInteraction: true,
+    });
+  if (reminder.notify !== false) notify(reminder.title, reminder.body);
+
+  if (reminder.mail && !(reminder.until && Date.now() > reminder.until)) {
+    let sent;
+    try {
+      sent = await sendMailAsUser({ ...reminder.mail, interactive: false });
+    } catch (error) {
+      sent = { ok: false, error: String((error && error.message) || error) };
+    }
+    if (!sent.ok) {
+      // Retry a few times, ten minutes apart, while the reminder is still
+      // useful. After that say so out loud: a reminder that silently never
+      // arrives is worse than none, because the student stops checking.
+      const tries = (reminder.tries || 0) + 1;
+      const retryAt = Date.now() + 10 * 60 * 1000;
+      if (tries < 4 && !(reminder.until && retryAt > reminder.until)) {
+        store[alarm.name] = { ...reminder, tries };
+        chrome.alarms.create(alarm.name, { when: retryAt });
+        await chrome.storage.local.set({ [REMINDERS_KEY]: store });
+        return;
+      }
+      notify(
+        "Couldn't email your reminder",
+        `${reminder.title}\n${sent.error === "need_address" ? "No email address saved — add one in the popup." : sent.error || "mail failed"}`
+      );
+    }
+  }
   delete store[alarm.name];
   await chrome.storage.local.set({ [REMINDERS_KEY]: store });
 });
@@ -2004,6 +2047,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       );
       return true;
     }
+    case "get_reminder_email":
+      (async () => {
+        const stored = (await chrome.storage.local.get([REMINDER_EMAIL_KEY]))[REMINDER_EMAIL_KEY];
+        sendResponse({ address: stored || null, relay: !!(await mailRelayUrl()) });
+      })().catch(() => sendResponse({ address: null, relay: false }));
+      return true;
     case "send_mail":
       sendMailAsUser({
         subject: request.subject || "VTOP Extension",
