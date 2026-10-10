@@ -4279,3 +4279,21 @@ one page, as Chrome does at inject time:
 - The deployed Apps Script relay still sends as "vRevamp" until it is redeployed
   from the updated `tools/mail-relay.gs`.
 - The toolbar icon files are unchanged.
+
+## Unreleased - popup redesign, config.json (2026-10-11)
+- **Popup redesigned** to belong to VTOP: the header is the portal's blue banner,
+  one primary action (Open VTOP, VTOP blue), 13-14 px text instead of 11-12,
+  sentence-case section headings instead of tracked all-caps, no cream/sage
+  palette, visible keyboard focus, reduced-motion respected. Every element id
+  the scripts bind to is unchanged.
+- **Nothing deployment-specific is hardcoded any more.** The mail relay URL and
+  the GitHub repo/branch live in `config.json` next to `manifest.json`. The
+  service worker and popup read it at run time; a missing or blank entry means
+  "send from the student's own Gmail" and "no update check". Tests cover a relay
+  from config, a blank one, an unreadable file, and no repo.
+- "Send from a vRevamp address instead" is now "Use a different mail sender
+  (advanced)" - the shipped sender is already on, nobody needs to paste a URL.
+- Attendance maths re-verified, not changed: the skip count floor((4A-3T)/3)
+  (labs divided by their 2-hour session) matches the plain definition over
+  14,762 attended/total cases with no mismatch, and matched VTOP's own "can be
+  skipped" column on the live page.
