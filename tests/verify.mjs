@@ -9232,6 +9232,51 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
    * consider the bare picker "already loaded" (which would make it a no-op
    * forever).
    */
+  /* ============ page-open beats the DOM: the previous page's picker is still there ============
+   * SEEN LIVE 2026-10-10 (Attendance -> Marks View, Attendance -> DA Upload):
+   * the worker's semester_page_open message arrives BEFORE VTOP draws the new
+   * page, so the only picker on screen was the previous page's, already
+   * answered. Auto-semester read that as "somebody answered it" and gave up. */
+  console.log("\n=== auto-semester: a stale answered picker from the page just left ===");
+  {
+    const p = await newPage(browser);
+    await p.setContent("<body><div id='main-section'></div></body>");
+    await shim(p, { fixedMs: new Date("2026-08-20T09:00:00+05:30").getTime() });
+    await inject(p, ["js/utils/chooseCurrentSem.js", "js/shared/auto_semester.js"]);
+    await p.evaluate(() => {
+      window.submits = [];
+      const picker = (answered) =>
+        "<select id='semesterSubId'>" +
+        "<option value=''>-- Choose Semester --</option>" +
+        "<option value='AP1'>Fall Semester 2026-27 Freshers</option>" +
+        "<option value='AP2'" + (answered ? " selected" : "") + ">Fall Semester 2026-27</option>" +
+        "</select>";
+      // the PREVIOUS page, answered
+      document.getElementById("main-section").innerHTML = picker(true);
+      // the new page lands half a second after the message
+      setTimeout(() => {
+        document.getElementById("main-section").innerHTML = picker(false);
+        document
+          .getElementById("semesterSubId")
+          .addEventListener("change", () =>
+            window.submits.push(document.getElementById("semesterSubId").value)
+          );
+      }, 500);
+      window.__started = window.vrAutoSemesterFor("mark_view", { waitMs: 8000 });
+    });
+    await delay(2500);
+    const r = await p.evaluate(() => ({
+      submits: window.submits,
+      sel: document.getElementById("semesterSubId").selectedIndex,
+    }));
+    ok(
+      "the replacement picker is answered once, not skipped as 'already answered'",
+      r.submits.length === 1 && r.sel > 0,
+      JSON.stringify(r)
+    );
+    await p.close();
+  }
+
   console.log("\n=== the page registry: every shape, not just the exam one ===");
   {
     // what VTOP renders for that page once a semester is chosen

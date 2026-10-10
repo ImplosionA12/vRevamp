@@ -150,6 +150,23 @@
 
   const semesterSelect = () => document.getElementById("semesterSubId");
 
+  // How long to look for a DIFFERENT picker once the one in hand looks
+  // answered. Seen live 2026-10-10: the worker's page-open message beats the
+  // new page's DOM, so on a section-to-section move the only picker on screen
+  // was the PREVIOUS page's, already answered — and "an answered picker is
+  // somebody's answer" made auto-semester give up on every page but the first.
+  const STALE_GRACE_MS = 3000;
+
+  const waitForNewSelect = async (old, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const now = semesterSelect();
+      if (now && now !== old) return now;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  };
+
   const waitForSelect = async (timeoutMs) => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -262,26 +279,62 @@
    * `submit()` how THIS page asks VTOP to load (change event, or a button)
    * `waitMs`   how long to wait for the picker to be rendered at all
    */
+  // Where did the last attempt stop? Written to an attribute on <html> so it
+  // can be read from the page without DevTools ("data-vr-auto"), because
+  // "the picker was never answered" has several causes and no log line.
+  const trace = (name, stage) => {
+    try {
+      const el = document.documentElement;
+      const prev = (el.getAttribute("data-vr-auto") || "").split(" > ").slice(-8);
+      prev.push(name + ":" + stage);
+      el.setAttribute("data-vr-auto", prev.join(" > "));
+    } catch (e) {
+      /* diagnostics only */
+    }
+  };
+
   window.vrAutoSemester = async ({ name, loaded, submit, waitMs = 0 }) => {
+    trace(name, "start");
     // `waitMs` is only ever non-zero on the page-open route, where the message
     // legitimately beats the DOM (see the 2026-08-20 note). A direct call with
     // no picker on screen is not a semester-gated page and returns at once.
-    const select = waitMs > 0 ? await waitForSelect(waitMs) : semesterSelect();
-    if (!select) return false; // not a semester-gated page (or never rendered)
+    let select = waitMs > 0 ? await waitForSelect(waitMs) : semesterSelect();
+    if (!select) {
+      trace(name, "no-picker");
+      return false; // not a semester-gated page (or never rendered)
+    }
+
+    // Page-open route only: the picker (or table) in hand may still belong to
+    // the page just left. Look for its replacement before trusting it.
+    if (
+      waitMs > 0 &&
+      (select.selectedIndex > 0 || (typeof loaded === "function" && loaded()))
+    ) {
+      const fresh = await waitForNewSelect(select, STALE_GRACE_MS);
+      if (fresh) {
+        trace(name, "stale-replaced");
+        select = fresh;
+      }
+    }
 
     // THE RULE: an answered picker is somebody's answer — VTOP's, the
     // student's, or ours from a moment ago. Never overwrite one.
     if (select.selectedIndex > 0) {
+      trace(name, "already-answered");
       tried.delete(name); // it was answered — the next visit starts clean
       return false;
     }
     if (typeof loaded === "function" && loaded()) {
+      trace(name, "already-loaded");
       tried.delete(name);
       return false;
     }
 
     // the SAME picker element twice is a re-fired message, not a revisit
-    if (tried.get(name) === select) return false;
+    if (tried.get(name) === select) {
+      trace(name, "same-picker");
+      return false;
+    }
     tried.set(name, select);
 
     // What the student is REGISTERED in beats what the names parse to.
@@ -293,13 +346,17 @@
     }
     // nothing sensible to pick (placeholder still selected): leave the page as
     // it is rather than submitting an empty semester
-    if (!picked || !select.value || select.selectedIndex <= 0) return false;
+    if (!picked || !select.value || select.selectedIndex <= 0) {
+      trace(name, "nothing-to-pick");
+      return false;
+    }
 
     /*
      * One submit, and then it is VTOP's answer to give. If the semester has no
      * data yet — August, marks unpublished — an empty page IS the answer, and
      * the picker is left showing the semester the student is actually in.
      */
+    trace(name, "submit:" + String(select.options[select.selectedIndex].innerText).trim().slice(0, 30));
     try {
       submit();
     } catch (error) {
@@ -387,6 +444,7 @@
    */
   chrome.runtime.onMessage.addListener((request) => {
     if (!request || request.message !== "semester_page_open") return;
+    trace(request.page, "msg");
     window
       .vrAutoSemesterFor(request.page, { waitMs: SELECT_WAIT_MS })
       .catch((error) => console.warn("vRevamp auto-semester:", request.page, error));

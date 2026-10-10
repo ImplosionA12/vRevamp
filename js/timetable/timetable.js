@@ -92,12 +92,30 @@ function insertTable(table_div) {
   parent_div.insertBefore(table_div, timeTableLoader);
 
   const a = create_download_link("download-timetable"); // className = download-timetable
-  domtoimage.toPng(table_div, { quality: 0.99 }).then(
-    (blob) => {
-      a.download = 'timetable.png';
-      a.href = blob;
-    }
-  );
+  // Render the PNG only when the link is clicked. It used to be rendered on
+  // every table render whether or not anyone downloaded it, and dom-to-image
+  // re-fetches every web font (several 404s on VTOP) and rasterises the whole
+  // table each time — seconds of work on every visit to this page.
+  a.href = "#";
+  a.download = "timetable.png";
+  let rendering = false;
+  a.addEventListener("click", (event) => {
+    if (a.dataset.ready === "1") return; // second pass: let the download happen
+    event.preventDefault();
+    if (rendering) return;
+    rendering = true;
+    domtoimage.toPng(table_div, { quality: 0.99 }).then(
+      (dataUrl) => {
+        a.href = dataUrl;
+        a.dataset.ready = "1";
+        rendering = false;
+        a.click();
+      },
+      () => {
+        rendering = false;
+      }
+    );
+  });
   parent_div.insertBefore(a, table_div);
 }
 
