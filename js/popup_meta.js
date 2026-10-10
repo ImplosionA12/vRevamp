@@ -44,9 +44,15 @@
    * `Access-Control-Allow-Origin: *`, so this needs no host permission.
    * At most one request every six hours; any failure is silent.
    */
-  const RAW_MANIFEST =
-    "https://raw.githubusercontent.com/ImplosionA12/vRevamp/master/manifest.json";
-  const RELEASES = "https://github.com/ImplosionA12/vRevamp/releases/latest";
+  // Where "the project" lives comes from /config.json, not from this file.
+  const loadConfig = async () => {
+    try {
+      const res = await fetch(chrome.runtime.getURL("config.json"));
+      return (await res.json()) || {};
+    } catch {
+      return {};
+    }
+  };
   const CHECK_KEY = "vrevamp_update_check";
   const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 
@@ -60,6 +66,7 @@
   };
   window.vrIsNewerVersion = isNewer;
 
+  let RELEASES = "";
   const showUpdate = (remote) => {
     const box = document.getElementById("vr-update");
     if (!box) return;
@@ -81,7 +88,11 @@
     box.append(text, link, how);
   };
 
-  const checkForUpdate = async () => {
+  const checkForUpdate = async (config) => {
+    if (!config.repo) return; // no project configured: nothing to compare with
+    const branch = config.branch || "master";
+    const RAW_MANIFEST = `https://raw.githubusercontent.com/${config.repo}/${branch}/manifest.json`;
+    RELEASES = `https://github.com/${config.repo}/releases/latest`;
     let local;
     try {
       local = chrome.runtime.getManifest().version;
@@ -99,7 +110,24 @@
     }
   };
 
+  // footer links, from the same config
+  const links = (config) => {
+    if (!config.repo) return;
+    const set = (id, href) => {
+      const a = document.getElementById(id);
+      if (a) {
+        a.href = href;
+        a.hidden = false;
+      }
+    };
+    set("vr-link-repo", `https://github.com/${config.repo}`);
+    set("vr-link-issues", `https://github.com/${config.repo}/issues`);
+  };
+
   version();
   openVtop();
-  checkForUpdate();
+  loadConfig().then((config) => {
+    links(config);
+    checkForUpdate(config);
+  });
 })();

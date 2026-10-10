@@ -619,10 +619,22 @@ const REMINDER_EMAIL_KEY = "vrevamp_reminder_email";
  * For a personal or single-campus build that is proportionate; a public Web
  * Store release would want a per-user token issued by something stateful.
  */
-// >>> PASTE THE APPS SCRIPT /exec URL HERE <<<  (blank = send from the student)
-const MAIL_RELAY_URL =
-  "https://script.google.com/macros/s/AKfycbxJSxzfsUM4ezJLE2k8_ncMi5a7nCpd-1f75_7mqFZQ8nYkFgDwk791nhwpEQ1StCBw/exec";
+// The shipped relay URL is NOT in this file. It lives in /config.json next to
+// manifest.json, so changing the sender is an edit to one data file, not to
+// code (blank there = send from the student's own Gmail).
 const MAIL_RELAY_KEY = "vrevamp_mail_relay_url";
+
+let extensionConfigCache = null;
+async function extensionConfig() {
+  if (extensionConfigCache) return extensionConfigCache;
+  try {
+    const res = await fetch(chrome.runtime.getURL("config.json"));
+    extensionConfigCache = (await res.json()) || {};
+  } catch {
+    extensionConfigCache = {}; // unreadable config: behave as "nothing configured"
+  }
+  return extensionConfigCache;
+}
 
 /*
  * WHAT RELAY MODE COSTS THE STUDENT, precisely — asked 2026-08-16, "we do not
@@ -645,7 +657,7 @@ const MAIL_RELAY_KEY = "vrevamp_mail_relay_url";
 /*
  * "off" is a real value, not the absence of one.
  *
- * While MAIL_RELAY_URL was blank, clearing the field could just delete the key
+ * While the shipped relay URL was blank, clearing the field could just delete the key
  * — nothing was left to fall back to. The moment a relay URL shipped in the
  * build (2026-08-22), deleting the key started falling back to THAT, so
  * clearing the box silently did nothing and the popup's own instruction
@@ -661,7 +673,7 @@ async function mailRelayUrl() {
   const stored = (await chrome.storage.local.get([MAIL_RELAY_KEY]))[MAIL_RELAY_KEY];
   if (stored === MAIL_RELAY_OFF) return null; // deliberately declined
   if (stored) return String(stored);
-  return MAIL_RELAY_URL.trim() || null;
+  return String((await extensionConfig()).mailRelayUrl || "").trim() || null;
 }
 
 // btoa() is byte-oriented and throws on anything above U+00FF, which every

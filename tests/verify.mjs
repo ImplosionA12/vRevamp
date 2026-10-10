@@ -6937,6 +6937,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           lastError: null,
           id: "test",
           getManifest: () => manifest,
+          getURL: (p) => "chrome-extension://test/" + p,
           onMessage: { addListener: (fn) => listeners.push(fn), removeListener: () => {} },
         }),
         storage: {
@@ -7647,6 +7648,47 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         seen.gmail === 1 && seen.posts.length === 0,
         JSON.stringify({ gmail: seen.gmail, relayPosts: seen.posts.length })
       );
+    }
+
+    /* ---- the shipped relay comes from config.json, not from code ---- */
+    {
+      const run = async (config) => {
+        const seen = { posts: [], gmail: 0 };
+        const { ask } = bootAuth({
+          store: {
+            vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+            vrevamp_reminder_email: "me@vitapstudent.ac.in",
+          },
+          webAuth: () =>
+            Promise.resolve("https://test-ext-id.chromiumapp.org/#access_token=T&expires_in=3600"),
+          fetch: (url, init) => {
+            if (/config\.json$/.test(url))
+              return config === "broken"
+                ? Promise.reject(new Error("unreadable"))
+                : Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(config) });
+            if (/oauth2\/v3\/userinfo/.test(url))
+              return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ email: "student@vitapstudent.ac.in" }) });
+            if (/gmail\.googleapis\.com/.test(url)) {
+              seen.gmail += 1;
+              return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: "m" }) });
+            }
+            seen.posts.push(url);
+            return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+          },
+        });
+        await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
+        return seen;
+      };
+      const withRelay = await run({ mailRelayUrl: "https://script.google.com/macros/s/CFG-test/exec" });
+      ok(
+        "with a relay in config.json, mail goes through it and not through Gmail",
+        withRelay.posts.length === 1 && /CFG-test/.test(withRelay.posts[0]) && withRelay.gmail === 0,
+        JSON.stringify(withRelay)
+      );
+      const blank = await run({ mailRelayUrl: "" });
+      ok("a blank relay in config.json sends from the student's own Gmail", blank.posts.length === 0 && blank.gmail === 1, JSON.stringify(blank));
+      const broken = await run("broken");
+      ok("an unreadable config.json falls back to the student's own Gmail", broken.posts.length === 0 && broken.gmail === 1, JSON.stringify(broken));
     }
 
     {
@@ -9340,12 +9382,16 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   {
     const run = async (remote) => {
       const p = await newPage(browser);
-      await p.setContent("<body><div id='vr-version'></div><button id='vr-open-vtop'></button><div id='vr-update' hidden></div></body>");
+      await p.setContent("<body><div id='vr-version'></div><button id='vr-open-vtop'></button><div id='vr-update' hidden></div><a id='vr-link-repo' hidden></a><a id='vr-link-issues' hidden></a></body>");
       await shim(p, {});
       await p.evaluate((remoteVersion) => {
         chrome.runtime.getManifest = () => ({ version: "4.6.0" });
         chrome.tabs = { create: () => {} };
-        window.fetch = async () => {
+        window.fetch = async (url) => {
+          // the project location now comes from config.json, not from code
+          if (/config\.json$/.test(String(url)))
+            return { ok: true, json: async () => (remoteVersion === "NOCONFIG" ? {} : { repo: "owner/project", branch: "main" }) };
+          (window.__fetched = window.__fetched || []).push(String(url));
           if (remoteVersion === "FAIL") throw new Error("offline");
           return { ok: true, json: async () => ({ version: remoteVersion }) };
         };
@@ -9353,6 +9399,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await inject(p, ["js/popup_meta.js"]);
       await delay(300);
       const r = await p.evaluate(() => ({
+        fetched: window.__fetched || [],
+        links: ["vr-link-repo", "vr-link-issues"].map((id) => (document.getElementById(id) || {}).href).join("|"),
         shown: !document.getElementById("vr-update").hidden,
         text: document.getElementById("vr-update").textContent,
         newer: [window.vrIsNewerVersion("4.10.0", "4.9.9"), window.vrIsNewerVersion("4.6.0", "4.6.0"), window.vrIsNewerVersion("4.5.20", "4.6.0")],
@@ -9367,6 +9415,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ok("the same version shows nothing", !same.shown, JSON.stringify(same));
     const failed = await run("FAIL");
     ok("an offline check is silent", !failed.shown, JSON.stringify(failed));
+    const none = await run("NOCONFIG");
+    ok("no repo in config.json means no check and no banner", !none.shown && none.fetched.length === 0, JSON.stringify(none));
+    ok("the check reads the repo and branch from config.json", newer.fetched.length === 1 && newer.fetched[0] === "https://raw.githubusercontent.com/owner/project/main/manifest.json", JSON.stringify(newer.fetched));
+    ok("footer links are filled from config.json", newer.links === "https://github.com/owner/project|https://github.com/owner/project/issues", String(newer.links));
   }
 
   /* ============ page-open beats the DOM: the previous page's picker is still there ============
