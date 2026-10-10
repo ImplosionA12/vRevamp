@@ -1,0 +1,351 @@
+/*
+ * The extension popup.
+ *
+ * Rebuilt 2026-08-22. What it replaced was the upstream project's page: a
+ * GitHub corner and a donate button for the original author, his contributors
+ * list, and three Wi-Fi buttons stacked above everything else — so the first
+ * thing this extension showed when you clicked it was somebody else's
+ * identity and its least-used feature.
+ *
+ * RESTYLED the same day, twice. The first attempt was a dark, high-contrast
+ * panel — "so aish — make it smth peaceful and good". The second carried a
+ * summary of attendance, dues and exams, and that came out too: "they are
+ * popup na they will eb small".
+ *
+ * Both notes point the same way. This is a small window that opens on a click
+ * and closes on the next one, so it holds settings and a door, and the numbers
+ * stay on the pages that own them.
+ *
+ * So: paper-white, generous spacing, one soft sage accent, and nothing that
+ * raises its voice — the only strong colour left is the warning on the stored
+ * Wi-Fi password, which has earned it.
+ *
+ * Two rules held throughout:
+ *   1. every element id the working scripts bind to survives untouched
+ *      (js/popup.js, js/wifi/hostel.js) — a reskin, never a rewrite of
+ *      behaviour;
+ *   2. no external requests. The old page fetched a contributor list from the
+ *      GitHub API and a donate-button image from a third party on every single
+ *      open; this one asks the network for nothing.
+ */
+
+:root {
+  --bg: #fbfaf8;
+  --card: #ffffff;
+  --line: #e8e6e1;
+  --line-soft: #f0eeea;
+  --text: #2f3437;
+  --muted: #8a8f94;
+  --accent: #5b8c7e;
+  --accent-soft: #eef4f2;
+  --bad: #b5675f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 344px;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- header ------------------------------------------------------------- */
+
+.vr-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 18px 20px 15px;
+}
+
+.vr-head img {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+.vr-word {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+}
+
+.vr-word span {
+  color: var(--accent);
+}
+
+.vr-sub {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: -1px;
+}
+
+.vr-ver {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- sections ----------------------------------------------------------- */
+
+.vr-sec {
+  padding: 14px 20px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.vr-sec:first-of-type {
+  border-top: none;
+  padding-top: 4px;
+}
+
+.vr-sec > h4 {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+}
+
+/* ---- controls ----------------------------------------------------------- */
+
+.vr-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.vr-label {
+  color: var(--muted);
+  min-width: 84px;
+  font-size: 12px;
+}
+
+.vr-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vr-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="url"],
+input[type="password"] {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+button {
+  padding: 7px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+button:hover {
+  background: #f4f2ee;
+  border-color: #dcd9d3;
+}
+
+button.vr-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.vr-primary:hover {
+  background: #4e7c6f;
+  border-color: #4e7c6f;
+}
+
+button.vr-mini {
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+button.vr-wide {
+  width: 100%;
+}
+
+.vr-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vr-check input {
+  accent-color: var(--accent);
+}
+
+details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 3px 0;
+  list-style: none;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::before {
+  content: "› ";
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details > summary:hover {
+  color: var(--text);
+}
+
+.vr-btnrow {
+  display: flex;
+  gap: 8px;
+}
+
+.vr-btnrow button {
+  flex: 1;
+}
+
+/* ---- Wi-Fi credential dialog -------------------------------------------- */
+
+#modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(47, 52, 55, 0.28);
+}
+
+#modal-content {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  top: 44px;
+  padding: 16px 18px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(47, 52, 55, 0.14);
+}
+
+#modal-form label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+#modal-form input {
+  width: 100%;
+}
+
+#modal .close {
+  float: right;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 19px;
+  line-height: 1;
+}
+
+#modal .close:hover {
+  color: var(--text);
+}
+
+.vr-danger {
+  color: var(--bad);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 12px 0 0;
+}
+
+/* ---- footer ------------------------------------------------------------- */
+
+.vr-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.vr-foot a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.vr-foot a:hover {
+  text-decoration: underline;
+}
+
+.vr-foot .vr-spacer {
+  margin-left: auto;
+}
+
+#status-message:not(:empty) {
+  margin-top: 9px;
+  padding: 7px 10px;
+  background: var(--accent-soft);
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+
+/* "a newer version exists" — shown only when the GitHub manifest is ahead */
+.vr-update {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.vr-update[hidden] {
+  display: none;
+}
+.vr-update a {
+  font-weight: 600;
+}

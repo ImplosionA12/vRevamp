@@ -1,88 +1,11 @@
-let error_code = 0;
-
 const DA_MONTHS = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
   Jul: "07", Aug: "08", Sep: "09", Sept: "09", Oct: "10", Nov: "11", Dec: "12",
 };
 const DA_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the due
 
-// Fresh Google token via the worker at click time (chrome.identity refreshes
-// silently once consent exists). The worker replies { token, error } — the
-// error is kept so the buttons can say WHY no consent window appeared (most
-// often: the Chrome profile itself has no Google account signed in).
-// Shared with exam_schedule.js / timetable_ics.js, hence the window guard.
-if (typeof window.vrGoogleToken !== "function") {
-  window.vrGoogleAuthError = null;
-  window.vrGoogleToken = (opts) =>
-    new Promise((resolve) => {
-      const fallback = () =>
-        chrome.storage.sync.get(["token"], (r) => resolve(r.token || null));
-      try {
-        chrome.runtime.sendMessage(
-          {
-            message: "get_google_token",
-            interactive: !!(opts && opts.interactive),
-            stale: (opts && opts.stale) || null,
-          },
-          (resp) => {
-            if (chrome.runtime.lastError || resp === undefined) return fallback();
-            if (resp && typeof resp === "object") {
-              window.vrGoogleAuthError = resp.error || null;
-              return resolve(resp.token || null);
-            }
-            resolve(resp || null); // worker from before the update: bare token
-          }
-        );
-      } catch {
-        fallback();
-      }
-    });
-  // the sign-in failure, phrased for the button status lines
-  window.vrGoogleAuthHint = () => {
-    const e = window.vrGoogleAuthError || "";
-    if (/bad client id|invalid_client|deleted_client/i.test(e))
-      return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
-    if (/not signed in/i.test(e))
-      return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
-    if (/did not approve|access|denied|closed|cancel/i.test(e))
-      return "the Google consent window was closed — click again and allow access";
-    return e
-      ? `Google sign-in failed: ${e}`
-      : "Google sign-in failed — allow the consent window, then retry";
-  };
-}
-
-// Chrome-native reminders via the worker (chrome.alarms + notifications) —
-// needs no Google account at all. Shared with exam_schedule.js (window guard).
-if (typeof window.vrLocalReminders !== "function") {
-  window.vrLocalReminders = (tag, reminders) =>
-    new Promise((resolve) => {
-      try {
-        chrome.runtime.sendMessage(
-          { message: "schedule_local_reminders", tag, reminders },
-          (n) => {
-            if (chrome.runtime.lastError) return resolve(null);
-            resolve(typeof n === "number" ? n : null);
-          }
-        );
-      } catch {
-        resolve(null);
-      }
-    });
-}
-
-// One-tap "add to Google Calendar" template URL — see exam_schedule.js for
-// the rationale (no OAuth client / consent needed, works for every user).
-// Shared with exam_schedule.js, hence the window guard.
-if (typeof window.vrGcalTemplateUrl !== "function") {
-  window.vrGcalTemplateUrl = (ev) =>
-    "https://calendar.google.com/calendar/render?action=TEMPLATE" +
-    `&text=${encodeURIComponent(ev.title)}` +
-    `&dates=${ev.start}/${ev.end}` +
-    "&ctz=Asia/Kolkata" +
-    `&details=${encodeURIComponent(ev.details || "")}` +
-    (ev.location ? `&location=${encodeURIComponent(ev.location)}` : "");
-}
+// vrGoogleToken / vrGoogleAuthHint / vrLocalReminders / vrGcalTemplateUrl all
+// live in js/shared/google_auth.js, loaded before this file by the manifest.
 
 // One calendar event per assignment with an email (+popup) reminder — unlike
 // calendar() below this needs no calendar-notification defaults to be set up.
@@ -122,6 +45,54 @@ const da_header_index = (row, re) =>
   [...row.cells].findIndex((c) => re.test(c.textContent));
 
 // detail fragment (processDigitalAssignment): course info table + the
+/*
+ * Is this assignment uploaded? Asked of the "Document Details" cell.
+ *
+ * ---------------------------------------------------------------------------
+ * Reported 2026-08-22: "the due date and all of them look off the mark, and i
+ * cant see remainders". Both symptoms, one cause, found by reading the real
+ * table on the live page:
+ *
+ *   | # | Title        | Due         | Document Details      |
+ *   |---|--------------|-------------|-----------------------|
+ *   | 1 | Experiment-1 | 31-Jul-2026 | File Not Uploaded     |
+ *   | 2 | Experiment-2 | 16-Aug-2026 | 16 Aug 2026 02:30 PM  |
+ *   | 3 | Experiment-3 | 05-Sep-2026 | (blank)               |
+ *   | 4 | Experiment-4 | 19-Sep-2026 | (blank)               |
+ *   | 5 | Experiment-5 | 18-Oct-2026 | (blank)               |
+ *   | 6 | Experiment-6 | 08-Nov-2026 | (blank)               |
+ *
+ * The old test was `!/file not uploaded/`. A BLANK cell does not match it, so
+ * `!false` said uploaded — and rows 3 to 6, four assignments nobody has
+ * uploaded, counted as done. The course row therefore reported "1 past due"
+ * and nothing upcoming, which is why the dates on screen did not match the
+ * ones in the page, and why no 🔔 ever appeared: every reminder control lives
+ * behind `upcoming.length`, and upcoming was empty by construction.
+ *
+ * VTOP writes "File Not Uploaded" only once the upload window has opened. For
+ * an assignment posted but not yet open it writes nothing at all — so absence
+ * of evidence was being read as evidence of submission, on exactly the rows a
+ * reminder is FOR.
+ *
+ * Inverted: a row counts as uploaded only on POSITIVE evidence — VTOP's own
+ * upload timestamp, or a download link for the file it holds. Blank is not
+ * uploaded. The failure mode now costs a reminder for something already done,
+ * instead of silence about something still owed.
+ */
+const da_is_uploaded = (cell) => {
+  if (!cell) return false;
+  const text = (cell.textContent || "").replace(/\s+/g, " ").trim();
+  if (/file\s*not\s*uploaded/i.test(text)) return false;
+  if (!text) return false; // posted, not yet uploaded — the case that was lost
+  // a file VTOP will hand back is proof it holds one
+  if (cell.querySelector("a[href], a[onclick]")) return true;
+  // "16 Aug 2026 02:30 PM" / "16-Aug-2026" — VTOP's record of the upload
+  return (
+    /\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}/.test(text) ||
+    /\d{1,2}-[A-Za-z]{3,4}-\d{4}/.test(text)
+  );
+};
+
 // assignment list (Title / Due Date / Document Details), found by header text
 const parse_da_detail = (doc) => {
   const tables = [...doc.querySelectorAll("table")];
@@ -150,14 +121,320 @@ const parse_da_detail = (doc) => {
       items.push({
         title: r.cells[iTitle] ? r.cells[iTitle].textContent.trim() : "",
         due,
-        uploaded: r.cells[iDoc]
-          ? !/file\s*not\s*uploaded/i.test(r.cells[iDoc].textContent)
-          : true,
+        uploaded: da_is_uploaded(r.cells[iDoc]),
       });
     }
   }
   return { course_code, course_title, items };
 };
+
+/*
+ * The mail body: a real table, grouped by subject.
+ *
+ * Asked for 2026-08-22 — "email looks the worst man, like cant u said as table
+ * subejct wise". It was already a <table>, which is why the complaint looked
+ * odd at first, but it had no borders, no header row and no grouping, so
+ * twenty-one rows of "date · CODE — Assignment" read as an undifferentiated
+ * list. Six of those rows were CSE3009 experiments all due 20-Oct, printed one
+ * under another with the code repeated every time.
+ *
+ * Grouped, the same twenty-one rows become six short blocks a student can scan
+ * by subject, and the repetition disappears into the group heading.
+ *
+ * All styling is INLINE and the layout is a table: Gmail strips <style> blocks
+ * and ignores most modern CSS, so anything clever here would arrive as the
+ * flat list it is meant to replace.
+ */
+const vr_da_group_key = (item, info) => {
+  // the all-courses payload writes "SWE3004 — Experiment-3"; the per-course
+  // one writes just "Experiment-3" and carries the code on the envelope
+  const m = /^([A-Z]{2,4}\d{3,4}[A-Z]?)\s*[—-]\s*(.*)$/.exec(String(item.title || ""));
+  return {
+    code: m ? m[1] : info.code || "Course",
+    title: m ? m[2] : String(item.title || ""),
+    // the readable name ("Front End Design and Testing"), asked for 2026-08-22:
+    // a code alone is not what a student calls the subject
+    course: String(item.course || "").trim(),
+  };
+};
+
+const vr_da_mail_body = (info) => {
+  const dueMs = (d) => new Date(String(d).replace(/-/g, " ")).getTime();
+  const today = new Date().setHours(0, 0, 0, 0);
+
+  const groups = new Map();
+  const courseNames = new Map();
+  info.dues
+    .slice()
+    .sort((a, b) => dueMs(a.due) - dueMs(b.due))
+    .forEach((item) => {
+      const { code, title, course } = vr_da_group_key(item, info);
+      if (!groups.has(code)) groups.set(code, []);
+      if (course && !courseNames.has(code)) courseNames.set(code, course);
+      groups.get(code).push({ ...item, title });
+    });
+
+  /*
+   * Styled to match exam_mail_body() in js/exam_schedule.js, by request —
+   * "make a proper tabble as we get exam scedule". Same wrapper, same h2, the
+   * same uppercase thead over a 2px rule, the same 6px/10px cells on a 1px
+   * rule.
+   *
+   * ONE table, not one per subject: the subject is a spanning row inside it,
+   * so it reads as a single table that happens to be grouped rather than as
+   * six little tables stacked up — which is what the previous attempt did, and
+   * why it still did not look like the exam mail.
+   */
+  const esc = (v) =>
+    String(v == null ? "" : v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  /*
+   * A FULLY BORDERED grid, asked for twice: "make a proper tabble as we get
+   * exam scedule", then "send it more in forms of tables okay? Like with
+   * proper borders".
+   *
+   * Two earlier attempts missed it. The first was one table per subject; the
+   * second was one table but with bottom rules only, which still reads as a
+   * list with lines through it. Every cell carries a border here, the header
+   * row is shaded, and the subject is a MERGED first column (rowspan) rather
+   * than a spanning header row — so it is subject-wise and a real grid at the
+   * same time.
+   *
+   * rowspan and inline styles, deliberately: Gmail strips <style> blocks and
+   * ignores most modern CSS, but it has rendered bordered tables since it
+   * existed. Nothing here needs a stylesheet to survive.
+   */
+  const B = "1px solid #b0b0b0";
+  const td = (v, extra) =>
+    `<td style="border:${B};padding:7px 10px;${extra || ""}">${v}</td>`;
+  const head = ["Subject", "Due", "Left", "Assignment"]
+    .map(
+      (h) =>
+        `<th style="border:${B};padding:8px 10px;background:#eef1f5;text-align:left;` +
+        `font-size:12px;text-transform:uppercase;letter-spacing:.04em;">${h}</th>`
+    )
+    .join("");
+
+  const body = [];
+  for (const [code, items] of groups) {
+    items.forEach((a2, i) => {
+      const days = Math.ceil((dueMs(a2.due) - today) / 86400000);
+      const late = days < 0;
+      const subject =
+        i === 0
+          ? `<td rowspan="${items.length}" style="border:${B};padding:7px 10px;` +
+            `background:#f7f9fb;font-weight:700;vertical-align:top;">` +
+            `${esc(code)}` +
+            (courseNames.get(code)
+              ? `<div style="font-weight:400;font-size:12px;">${esc(
+                  courseNames.get(code)
+                )}</div>`
+              : "") +
+            "</td>"
+          : "";
+      body.push(
+        "<tr>" +
+          subject +
+          td(esc(a2.due), "white-space:nowrap;font-weight:600;") +
+          td(
+            late
+              ? `<span style="color:#c0392b;font-weight:700;">${-days} day(s) overdue</span>`
+              : `${days} day(s)`,
+            "white-space:nowrap;" + (late ? "background:#fdecea;" : "")
+          ) +
+          td(esc(a2.title)) +
+          "</tr>"
+      );
+    });
+  }
+
+  // plain-text fallback, grouped the same way — a client showing this part
+  // must not show the flat list this replaces
+  const text = [];
+  for (const [code, items] of groups) {
+    text.push(code);
+    items.forEach((a2) => text.push(`  ${a2.due}  ${a2.title}`));
+    text.push("");
+  }
+
+  return {
+    html:
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111;">` +
+      `<h2 style="margin:0 0 4px;font-size:18px;">Still to upload — ${info.dues.length} assignment(s)</h2>` +
+      `<div style="color:#666;font-size:13px;margin-bottom:12px;">` +
+      `Across ${groups.size} subject(s), soonest first within each.</div>` +
+      `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;` +
+      `border:${B};font-size:14px;">` +
+      `<thead><tr>${head}</tr></thead><tbody>${body.join("")}</tbody></table>` +
+      `<p style="color:#666;font-size:12px;margin-top:16px;">` +
+      `Sent by vRevamp from your VTOP digital assignments page.</p></div>`,
+    text: text.join("\n"),
+  };
+};
+
+/*
+ * The two 2026-layout due buttons, registered once for the life of the page
+ * (js/shared/click.js). They are top-level and stateless on purpose: everything
+ * they need arrives on the clicked button as a data-* attribute.
+ *
+ * These buttons sit in a cell of VTOP's OWN class table — a node VTOP rewrites
+ * wholesale with `$(…).html(response)` on every navigation, and one we
+ * snapshot and restore ourselves for the offline viewer. Both leave a
+ * pixel-perfect clone of the button behind. A per-element handler does not
+ * survive that (properties do not serialise) and neither does a closure over
+ * `upcoming`/`meta`: the clone would either do nothing at all, or worse, report
+ * on the course that happened to be there when it was built. A data attribute
+ * survives precisely as long as the button it is written on, which is the only
+ * lifetime that is ever correct here.
+ */
+const vr_da_payload = (button) => {
+  try {
+    const info = JSON.parse(button.dataset.vrDues || "null");
+    return info && Array.isArray(info.dues) ? info : null;
+  } catch {
+    return null;
+  }
+};
+
+// Two Chrome notifications per un-submitted due: the evening before (6 PM, i.e.
+// the due day's 8 AM anchor less 14 h) and 8 AM on the day itself.
+const vr_da_reminders = (info) => {
+  const reminders = [];
+  info.dues.forEach((a) => {
+    const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/u);
+    if (!m || !DA_MONTHS[m[2]]) return;
+    const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
+    const dueDay = new Date(`${iso}T08:00:00+05:30`).getTime();
+    const title = `DA due: ${info.code} — ${a.title}`;
+    const body = `${info.title}\nDue ${a.due} — not uploaded yet`;
+    reminders.push({ when: dueDay - 14 * 3600 * 1000, title: `Tomorrow — ${title}`, body });
+    reminders.push({ when: dueDay, title: `Today — ${title}`, body });
+  });
+  return reminders;
+};
+
+window.vrDelegate("da-bell", async (btn) => {
+  const info = vr_da_payload(btn);
+  if (!info) {
+    btn.textContent = "couldn't read this row — refresh";
+    return;
+  }
+  btn.disabled = true;
+  const n = await window.vrLocalReminders(`da:${info.key}`, vr_da_reminders(info));
+  btn.textContent =
+    n === null ? "failed — retry" : n === 0 ? "already due" : `✓ ${n} reminder(s)`;
+  btn.disabled = n > 0;
+});
+
+window.vrDelegate("da-mail", async (mailBtn) => {
+  const info = vr_da_payload(mailBtn);
+  if (!info) {
+    mailBtn.textContent = "couldn't read this row — refresh";
+    return;
+  }
+  // fresh token at click time — a stored one expires in ~1 h
+  let token = await window.vrGoogleToken({});
+  if (!token) token = await window.vrGoogleToken({ interactive: true });
+  if (!token) {
+    // never alert(): a modal dialog blocks the page's event loop, and this one
+    // fires on a button the student may be clicking once per course
+    mailBtn.textContent = "sign-in needed";
+    mailBtn.title = window.vrGoogleAuthHint();
+    return;
+  }
+  mailBtn.disabled = true;
+  mailBtn.textContent = "…";
+  let done = 0;
+  let refreshed = false;
+  for (let i = 0; i < info.dues.length; i++) {
+    const a = info.dues[i];
+    const r = await create_email_reminder(a.due, info.code, a.title, info.title, token);
+    if (r.status === 401 && !refreshed) {
+      // token died mid-flight — invalidate it, mint a fresh one, retry
+      refreshed = true;
+      token = await window.vrGoogleToken({ stale: token });
+      if (token) {
+        i--; // redo this assignment with the fresh token
+        continue;
+      }
+    }
+    if (r.status === 401) {
+      mailBtn.textContent = "sign-in expired — click again";
+      mailBtn.disabled = false;
+      return;
+    }
+    if (r.ok) done++;
+    await sleep(400);
+  }
+  mailBtn.textContent = done > 0 ? `✓ ${done} email(s)` : "failed — retry";
+  mailBtn.disabled = done > 0;
+});
+
+// The list, in an inbox, now. Distinct from ✉ above: that schedules Calendar
+// events which mail you later, this one is "just send me the list".
+window.vrDelegate("da-mailnow", async (btn) => {
+  const info = vr_da_payload(btn);
+  if (!info) {
+    btn.textContent = "couldn't read this row — refresh";
+    return;
+  }
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "sending…";
+
+  const mail = vr_da_mail_body(info);
+
+  const result = await window.vrMailOrAsk(
+    btn,
+    {
+      subject: `vRevamp — ${info.dues.length} assignment(s) still to upload`,
+      html: mail.html,
+      text: mail.text,
+    },
+    (text, ok) => {
+      btn.textContent = ok ? text : `✗ ${text}`;
+    }
+  );
+
+  btn.disabled = false;
+  if (result.ok) {
+    btn.textContent = `✓ sent to ${result.to}`;
+    btn.disabled = true;
+  } else if (btn.textContent === "sending…") {
+    btn.textContent = label;
+  }
+});
+
+// Turn the recurring digest on (or off) from the page it is about.
+window.vrDelegate("da-digest", async (btn) => {
+  btn.disabled = true;
+  const on = btn.dataset.vrOn === "1";
+  const reply = await new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ message: "set_daily_digest", enabled: !on }, (r) => {
+        if (chrome.runtime.lastError) return resolve(null);
+        resolve(r);
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+  btn.disabled = false;
+  if (!reply || !reply.ok) {
+    btn.textContent = "couldn't change that — retry";
+    return;
+  }
+  btn.dataset.vrOn = reply.enabled ? "1" : "0";
+  btn.textContent = reply.enabled
+    ? "📬 daily digest is ON — click to stop"
+    : "📬 mail me a daily digest";
+  btn.title = reply.enabled
+    ? `Sent every day around ${reply.hour}:00 to ${reply.to || "your reminder address"}`
+    : "Once a day, vRevamp mails you what's still to upload and where your attendance stands";
+});
 
 // 2026 layout: class table is Sl.No / Class Nbr / Course Code / Course Title /
 // Course Type / Faculty Name / Dashboard. Adds an "Upcoming Dues" column with
@@ -179,40 +456,42 @@ let da_page_2026 = async () => {
   th.style.width = "14%";
   classTable.rows[0].appendChild(th);
 
-  const csrfEl = document.querySelector("input[name=_csrf]");
-  const csrf = csrfEl ? csrfEl.value : "";
-  const regEl =
-    document.querySelector(".navbar-text.text-light.small.fw-bold") ||
-    document.getElementsByClassName("VTopHeaderStyle")[0];
-  const reg = regEl ? regEl.innerText.replace("(STUDENT)", "").trim() : "";
-
-  for (const row of [...classTable.rows].slice(1)) {
+  /*
+   * Every course's detail fragment, three at a time instead of one at a time.
+   *
+   * This loop used to be strictly serial and hand-rolled its own fetch: it
+   * built the body by string concatenation with the FIRST `_csrf` on the page
+   * (sometimes an empty placeholder), read the student id off the navbar with
+   * no fallback, and caught every failure into a "--" cell. With eight courses
+   * that is eight sequential round-trips before the column finishes, and when
+   * the session is stale it is eight consecutive 404s fired at VTOP on every
+   * single page view — the thing that damages the session in the first place.
+   *
+   * js/shared/vtop.js now owns the token, the id, the concurrency and the
+   * circuit breaker; see the comment at the top of that file.
+   */
+  const rows = [...classTable.rows].slice(1).map((row) => {
     const cell = document.createElement("td");
     cell.textContent = "…";
     row.appendChild(cell);
-    const classId = row.cells[iNbr] ? row.cells[iNbr].textContent.trim() : "";
-    if (!/^\w+$/.test(classId)) {
-      cell.textContent = "--";
-      continue;
-    }
-    let meta;
-    try {
-      const res = await fetch(
-        `${window.location.origin}/vtop/examinations/processDigitalAssignment`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          body: `authorizedID=${reg}&x=${new Date().toGMTString()}&classId=${classId}&_csrf=${csrf}`,
-        }
-      );
-      meta = parse_da_detail(
-        new DOMParser().parseFromString(await res.text(), "text/html")
-      );
-    } catch {
-      cell.textContent = "--";
+    return { row, cell, classId: row.cells[iNbr] ? row.cells[iNbr].textContent.trim() : "" };
+  });
+
+  const fetched = await window.vrVtop.pool(rows, 3, async (entry) => {
+    if (!/^\w+$/.test(entry.classId)) return null;
+    const html = await window.vrVtop.post("examinations/processDigitalAssignment", {
+      classId: entry.classId,
+    });
+    return parse_da_detail(window.vrVtop.parse(html));
+  });
+
+  const allDues = []; // snapshot for the daily digest — see service_worker
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const { cell, classId } = rows[idx];
+    const meta = fetched[idx] && !fetched[idx].error ? fetched[idx] : null;
+    if (!meta) {
+      cell.textContent = window.vrVtop.tripped ? "session stale" : "--";
       continue;
     }
     const now = new Date().getTime();
@@ -224,118 +503,126 @@ let da_page_2026 = async () => {
     cell.title = meta.items
       .map((a) => `${a.title}: ${a.due} ${a.uploaded ? "✓ submitted" : "✗ not uploaded"}`)
       .join("\n");
+
+    // Recorded whether or not anything is upcoming, so the digest can also say
+    // "3 past due, never uploaded" — the case a student most needs told.
+    allDues.push({
+      code: meta.course_code || classId,
+      title: meta.course_title,
+      upcoming: upcoming.map((a) => ({ due: a.due, title: a.title })),
+      overdue: meta.items
+        .filter((a) => !a.uploaded && dueMs(a.due) + 86399000 < now)
+        .map((a) => ({ due: a.due, title: a.title })),
+    });
+
     if (upcoming.length === 0) {
       const missed = meta.items.filter((a) => !a.uploaded).length;
       if (meta.items.length === 0) cell.textContent = "No DAs posted";
       else if (missed > 0) {
         cell.textContent = `⚠ ${missed} past due (not uploaded)`;
         cell.style.background = "rgb(238, 75, 43,0.35)";
-      } else cell.textContent = "✅ all submitted";
+      } else cell.textContent = "✅ No dues";
       continue;
     }
     const days = Math.ceil((dueMs(upcoming[0].due) - now) / 86400000);
     cell.style.background =
       days <= 3 ? "rgb(238, 75, 43,0.6)" : "rgb(170, 255, 0,0.6)";
     const span = document.createElement("span");
-    span.textContent = `${upcoming[0].due} (${days} day(s) left)`;
+    // one line, not three: "05-Sep · 14d" instead of "05-Sep-2026 (14 day(s)
+    // left)" wrapped across a 90px column
+    span.style.cssText = "font-size:11px;white-space:nowrap;";
+    span.textContent = `${upcoming[0].due} · ${days}d left`;
+    span.title = `${upcoming[0].title} — due ${upcoming[0].due}`;
     cell.appendChild(span);
+    // Everything both buttons need, written onto the buttons themselves. See
+    // the handlers above for why this is an attribute and not a closure.
+    const payload = JSON.stringify({
+      key: meta.course_code || classId,
+      code: meta.course_code,
+      title: meta.course_title,
+      dues: upcoming.map((a) => ({
+        due: a.due,
+        title: a.title,
+        course: meta.course_title,
+      })),
+    });
+
+    /*
+     * ONE ROW OF ICONS, and the reason is measured rather than aesthetic.
+     *
+     * "those boxes look the ugliest dude dont enlarge them like that at all"
+     * (2026-08-22). This column is about 90px wide. Labelled controls —
+     * "🔔 remind me", "✉ email", "📅 gcal" — each wrapped onto two lines and
+     * stacked, so a single course row grew to several hundred pixels and
+     * pushed VTOP's own table off the screen. The words were never carrying
+     * the meaning anyway: the title attribute says far more than three
+     * squeezed words ever did, and it says it on hover where there is room.
+     *
+     * nowrap on the strip is the part that actually holds the height down —
+     * without it the three icons still wrap one per line in a narrow column.
+     */
+    const strip = document.createElement("div");
+    strip.className = "vrevamp-da-actions";
+    strip.style.cssText =
+      "margin-top:3px;white-space:nowrap;line-height:1;font-size:13px;";
+    cell.appendChild(strip);
+
     // 🔔 Chrome notifications for every upcoming due of this course — 6 PM
     // the evening before and 8 AM on the due day. No Google sign-in.
-    const btn = document.createElement("button");
+    const btn = window.vrButton("da-bell", "🔔", { vrDues: payload });
     btn.className = "vrevamp-da-remind";
-    btn.textContent = "🔔 remind me";
     btn.title =
-      "Chrome notification the evening before (6 PM) and the morning of (8 AM) each due — no sign-in needed";
+      `Remind me — Chrome notification the evening before (6 PM) and the morning of (8 AM) for each of the ${upcoming.length} upcoming due(s). No sign-in needed.`;
     btn.style.cssText =
-      "display:inline-block;margin-top:4px;font-size:11px;cursor:pointer;";
-    cell.appendChild(btn);
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      const reminders = [];
-      upcoming.forEach((a) => {
-        const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
-        if (!m || !DA_MONTHS[m[2]]) return;
-        const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
-        const dueDay = new Date(`${iso}T08:00:00+05:30`).getTime();
-        const title = `DA due: ${meta.course_code} — ${a.title}`;
-        const body = `${meta.course_title}\nDue ${a.due} — not uploaded yet`;
-        reminders.push({ when: dueDay - 14 * 3600 * 1000, title: `Tomorrow — ${title}`, body });
-        reminders.push({ when: dueDay, title: `Today — ${title}`, body });
-      });
-      const n = await window.vrLocalReminders(
-        `da:${meta.course_code || classId}`,
-        reminders
-      );
-      btn.textContent =
-        n === null
-          ? "failed — retry"
-          : n === 0
-            ? "already due"
-            : `✓ ${n} reminder(s)`;
-      btn.disabled = n > 0;
-    });
+      "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
+    strip.appendChild(btn);
 
     // ✉ optional Google Calendar events with an email 24 h before each due
-    const mailBtn = document.createElement("button");
+    const mailBtn = window.vrButton("da-mail", "✉", { vrDues: payload });
     mailBtn.className = "vrevamp-da-remind";
-    mailBtn.textContent = "✉ email";
-    mailBtn.title = `Google Calendar event per upcoming due, email ${DA_REMINDER_LEAD_MIN / 60} h before — needs one-time Google consent`;
+    mailBtn.title = `Email me — a Google Calendar event per upcoming due, mailed ${DA_REMINDER_LEAD_MIN / 60} h before. Needs one-time Google consent.`;
     mailBtn.style.cssText =
-      "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;cursor:pointer;";
-    cell.appendChild(mailBtn);
-    mailBtn.addEventListener("click", async () => {
-      // fresh token at click time — a stored one expires in ~1 h
-      let token = await window.vrGoogleToken({});
-      if (!token) token = await window.vrGoogleToken({ interactive: true });
-      if (!token) {
-        alert("vRevamp: " + window.vrGoogleAuthHint());
-        return;
-      }
-      mailBtn.disabled = true;
-      mailBtn.textContent = "…";
-      let done = 0;
-      let refreshed = false;
-      for (let i = 0; i < upcoming.length; i++) {
-        const a = upcoming[i];
-        const r = await create_email_reminder(
-          a.due, meta.course_code, a.title, meta.course_title, token
-        );
-        if (r.status === 401 && !refreshed) {
-          refreshed = true;
-          token = await window.vrGoogleToken({ stale: token });
-          if (token) {
-            i--; // redo this assignment with the fresh token
-            continue;
-          }
-        }
-        if (r.status === 401) {
-          alert("vRevamp: Google session expired — click again to re-consent.");
-          mailBtn.textContent = "sign-in needed";
-          mailBtn.disabled = false;
-          return;
-        }
-        if (r.ok) done++;
-        await sleep(400);
-      }
-      mailBtn.textContent = done > 0 ? `✓ ${done} email(s)` : "failed — retry";
-      mailBtn.disabled = done > 0;
-    });
+      "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
+    strip.appendChild(mailBtn);
 
-    // 📅 one-tap: prefilled Google Calendar event per upcoming due — opens
-    // in a new tab, the student just presses Save. No sign-in setup at all.
-    upcoming.forEach((a) => {
+    /*
+     * 📅 one-tap: a prefilled Google Calendar event — opens in a new tab, the
+     * student just presses Save. No sign-in setup at all.
+     *
+     * ONE link, for the soonest due. It used to render one per upcoming due,
+     * and once the blank-cell fix (same day) started counting every posted
+     * assignment, that became six dated links stacked in a ~90px column —
+     * "right now it loooks horrible wha is that stretching", 2026-08-22. Each
+     * link wrapped onto two lines and drove the row several hundred pixels
+     * tall, which is a worse failure than a missing shortcut: it pushed the
+     * actual table off the screen.
+     *
+     * Nothing is lost by showing one. 🔔 already schedules a notification for
+     * every due, ✉ creates a calendar event for every due, and this is the
+     * no-sign-in shortcut for the next one — which is the only one a student
+     * is acting on today. The rest are named in the tooltip.
+     */
+    [upcoming[0]].forEach((a) => {
       const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
       if (!m || !DA_MONTHS[m[2]]) return;
       const day = `${m[3]}${DA_MONTHS[m[2]]}${m[1].padStart(2, "0")}`;
       const link = document.createElement("a");
       link.className = "vrevamp-da-gcal";
-      link.textContent = upcoming.length > 1 ? `📅 ${a.due}` : "📅 gcal";
+      link.textContent = "📅";
       link.title =
-        "one tap: opens Google Calendar with this due prefilled — just press Save (no sign-in setup)";
+        `one tap: opens Google Calendar with ${a.title} (${a.due}) prefilled — ` +
+        "just press Save (no sign-in setup)" +
+        (upcoming.length > 1
+          ? `. ${upcoming.length - 1} more upcoming: use 🔔 or ✉ to cover them all — ` +
+            upcoming
+              .slice(1)
+              .map((x) => `${x.title} (${x.due})`)
+              .join(", ")
+          : "");
       link.target = "_blank";
       link.rel = "noopener";
       link.style.cssText =
-        "display:inline-block;margin-top:4px;margin-left:4px;font-size:11px;";
+        "display:inline-block;padding:0 3px;font-size:13px;text-decoration:none;line-height:1;";
       link.href = window.vrGcalTemplateUrl({
         title: `DA due: ${meta.course_code} — ${a.title}`,
         start: `${day}T200000`,
@@ -344,69 +631,177 @@ let da_page_2026 = async () => {
           `${meta.course_title}\nDue ${a.due}\n\n` +
           "Tip: add an Email notification to this event (or set one as your Google Calendar default) to get it mailed to you.",
       });
-      cell.appendChild(link);
+      strip.appendChild(link);
     });
   }
+
+  /*
+   * Hand the whole picture to the worker.
+   *
+   * Until now a due date only ever existed inside this page: the student had
+   * to open the DA page, read eight cells, and press 🔔 on each course to be
+   * told about anything. Nobody does that, which is why "the assignments one
+   * is bad" and "i need mail notifications" are the same complaint. Stored
+   * here, the daily digest in service_worker/background.js can notify and mail
+   * without the page ever being opened again.
+   */
+  try {
+    await chrome.storage.local.set({
+      vrevamp_da_dues: { fetchedAt: Date.now(), courses: allDues },
+    });
+  } catch {
+    /* storage full or unavailable — the on-page column still works */
+  }
+
+  renderDaSummary(classTable, allDues);
 };
 
-function calendar(date, course_code, course_name, token, time, retries = 3) {
-  var map = {
-    Jan: "01",
-    Feb: "02",
-    Mar: "03",
-    Apr: "04",
-    May: "05",
-    Jun: "06",
-    Jul: "07",
-    Aug: "08",
-    Sep: "09",
-    Sept: "09",
-    Oct: "10",
-    Nov: "11",
-    Dec: "12",
-  };
-  var tmp = date.split("-");
-  var dte = `${tmp[2]}-${map[tmp[1]]}-${tmp[0]}`;
+/*
+ * One control bar above the table, instead of only per-row buttons.
+ *
+ * The per-course 🔔 stays — it is the right thing when you care about one
+ * subject — but "remind me about everything" is what is actually wanted, and
+ * pressing it eight times was not a feature.
+ */
+const renderDaSummary = (classTable, courses) => {
+  document.getElementById("vrevamp-da-summary")?.remove();
 
-  fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&sendNotifications=true&alt=json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + token,
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        end: {
-          dateTime: dte + "T23:59:00.000+05:30",
-        },
-        start: {
-          dateTime: dte + time,
-        },
-        eventType: "default",
-        description: course_name,
-        summary: "Digital Assignment- " + course_code,
-      }),
+  /*
+   * `title` on an assignment is the ASSIGNMENT's name ("Digital
+   * Assessment-2"); `title` on a course is the course's ("Basic Law for
+   * Engineers"). Spreading the assignment and then setting `title: c.title`
+   * overwrote the first with the second — so this bar, and the list that gets
+   * emailed by 📧, named the course once per assignment:
+   *
+   *   Past due: MGT1029 — Basic Law for Engineers (24-Jun-2026);
+   *             MGT1029 — Basic Law for Engineers (24-Jun-2026);  …
+   *
+   * Three identical lines where three different assignments should be. The
+   * course name is kept, under a name that does not collide.
+   */
+  const withCourse = (list, c) =>
+    (list || []).map((a) => ({ ...a, code: c.code, course: c.title }));
+
+  const upcoming = courses.flatMap((c) => withCourse(c.upcoming, c));
+  /*
+   * SEEN LIVE 2026-08-17 on this student's own page: nothing upcoming, and
+   * ONE assignment past due and never uploaded. The bar named it and then
+   * offered nothing — every control was inside `if (upcoming.length)`, so the
+   * single state that most deserves attention was the one state with no
+   * buttons at all. Overdue work is still work; it is chased, extended and
+   * submitted late all the time.
+   *
+   * So overdue items are first-class here: listed by name, and carried in the
+   * same payload the buttons read. `📬 daily digest` is lifted out of the
+   * condition entirely — a student with nothing due today is exactly who
+   * wants to be told when that changes.
+   */
+  const overdueItems = courses.flatMap((c) => withCourse(c.overdue, c));
+  const overdue = overdueItems.length;
+
+  const bar = document.createElement("div");
+  bar.id = "vrevamp-da-summary";
+  bar.style.cssText =
+    "margin:10px 0;padding:8px 12px;border-radius:4px;font-size:13px;" +
+    "background:#eef4fb;border:1px solid #c9dcf0;";
+
+  const line = document.createElement("span");
+  line.textContent = upcoming.length
+    ? `${upcoming.length} assignment(s) still to upload` +
+      (overdue ? `, and ${overdue} already past due` : "")
+    : overdue
+      ? `Nothing upcoming — but ${overdue} assignment(s) are past due and never uploaded`
+      : "Nothing due — everything is uploaded.";
+  line.style.fontWeight = "bold";
+  bar.appendChild(line);
+
+  if (upcoming.length) {
+    const soonest = upcoming
+      .slice()
+      .sort((a, b) => new Date(a.due.replace(/-/g, " ")) - new Date(b.due.replace(/-/g, " ")))[0];
+    const next = document.createElement("div");
+    next.textContent = `Next: ${soonest.code} — ${soonest.title} on ${soonest.due}`;
+    next.style.cssText = "margin-top:2px;color:#33506e;";
+    bar.appendChild(next);
+  }
+
+  if (overdue) {
+    const late = document.createElement("div");
+    late.textContent =
+      "Past due: " +
+      overdueItems.map((a) => `${a.code} — ${a.title} (${a.due})`).join("; ");
+    late.style.cssText = "margin-top:2px;color:#8a1c12;";
+    bar.appendChild(late);
+  }
+
+  {
+    const listed = upcoming.length ? upcoming : overdueItems;
+    const payload = JSON.stringify({
+      key: "all",
+      code: "all courses",
+      title: upcoming.length ? "All upcoming assignments" : "Assignments past due",
+      dues: listed.map((a) => ({
+        due: a.due,
+        title: `${a.code} — ${a.title}`,
+        course: a.course,
+      })),
+    });
+
+    const controls = document.createElement("div");
+    controls.style.cssText = "margin-top:6px;";
+
+    // 🔔 only makes sense for a date still ahead — a notification for a due
+    // that has already passed can never fire, and offering it would be a
+    // button that silently does nothing.
+    if (upcoming.length) {
+      const bell = window.vrButton("da-bell", "🔔 remind me about all of them", {
+        vrDues: payload,
+      });
+      bell.title =
+        "Chrome notification the evening before and the morning of every due — no Google sign-in";
+      bell.style.cssText = "font-size:12px;cursor:pointer;margin-right:6px;";
+      controls.appendChild(bell);
     }
-  )
-    .then((res) => {
-      return res.json();
-    })
-    .then((data) => {
-      try {
-        if (data.error.code == 401) {
-          error_code = 401;
-        } else if (data.error.code == 403 && retries > 0) {
-          // Rate-limited: back off before retrying, give up after 3 attempts
-          setTimeout(() => {
-            calendar(date, course_code, course_name, token, time, retries - 1);
-          }, 1000);
-        }
-      } catch { }
-      return true;
-    })
-    .catch(() => { });
-}
+
+    if (listed.length) {
+      const mail = window.vrButton(
+        "da-mailnow",
+        upcoming.length ? "📧 email me this list" : "📧 email me what I still owe",
+        { vrDues: payload }
+      );
+      mail.title = "Sends the whole list to your reminder address right now";
+      mail.style.cssText = "font-size:12px;cursor:pointer;margin-right:6px;";
+      controls.appendChild(mail);
+    }
+
+    const daily = window.vrButton("da-digest", "📬 mail me a daily digest", {});
+    daily.title =
+      "Once a day, vRevamp mails you what's still to upload and where your attendance stands";
+    daily.style.cssText = "font-size:12px;cursor:pointer;";
+    controls.appendChild(daily);
+    // reflect the setting rather than always offering to switch it on — a
+    // toggle that lies about its own state is worse than no toggle
+    try {
+      chrome.runtime.sendMessage({ message: "google_status" }, (status) => {
+        if (chrome.runtime.lastError || !status || !status.digest) return;
+        daily.dataset.vrOn = "1";
+        daily.textContent = "📬 daily digest is ON — click to stop";
+        daily.title = `Sent every day around ${status.digestHour}:00`;
+      });
+    } catch {
+      /* worker asleep — the button still works, it just starts at "off" */
+    }
+
+    bar.appendChild(controls);
+  }
+
+  classTable.insertAdjacentElement("beforebegin", bar);
+};
+
+// REMOVED 2026-08-16 with the legacy sync button above: calendar() posted DA
+// events with the chrome.storage.sync token that button supplied. Nothing
+// writes that key any more. The live equivalents are create_email_reminder()
+// (Calendar API, real token) and the 📅 TEMPLATE links (no sign-in at all).
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -530,71 +925,13 @@ let da_page = async () => {
     sort_text_div.appendChild(sort_text);
     document.getElementsByClassName("customTable")[0].insertAdjacentElement("beforebegin", sort_text_div);
 
-    chrome.storage.sync.get(["token"], (token) => {
-      if (token.token != null) {
-        // console.log(token.token);
-        var btn = document.createElement("button");
-        btn.innerHTML = `
-                      <svg xmlns="http://www.w3.org/2000/svg" data-name="Layer 1" viewBox="0 0 141.7 141.7" width="24" height="24"><path fill="#fff" d="M95.8,45.9H45.9V95.8H95.8Z"/><path fill="#34a853" d="M95.8,95.8H45.9v22.5H95.8Z"/><path fill="#4285f4" d="M95.8,23.4H30.9a7.55462,7.55462,0,0,0-7.5,7.5V95.8H45.9V45.9H95.8Z"/><path fill="#188038" d="M23.4,95.8v15a7.55462,7.55462,0,0,0,7.5,7.5h15V95.8Z"/><path fill="#fbbc04" d="M118.3,45.9H95.8V95.8h22.5Z"/><path fill="#1967d2" d="M118.3,45.9v-15a7.55462,7.55462,0,0,0-7.5-7.5h-15V45.9Z"/><path fill="#ea4335" d="M95.8,118.3l22.5-22.5H95.8Z"/><polygon fill="#2a83f8" points="77.916 66.381 75.53 63.003 84.021 56.868 87.243 56.868 87.243 85.747 82.626 85.747 82.626 62.772 77.916 66.381"/><path fill="#2a83f8" d="M67.29834,70.55785A7.88946,7.88946,0,0,0,70.78,64.12535c0-4.49-4-8.12-8.94-8.12a8.77525,8.77525,0,0,0-8.74548,6.45379l3.96252,1.58258a4.41779,4.41779,0,0,1,4.473-3.51635,4.138,4.138,0,1,1,.06256,8.24426v.00513h-.0559l-.00666.00061-.00964-.00061H59.15v3.87677h2.70642L61.88,72.65a4.70514,4.70514,0,1,1,0,9.37,5.35782,5.35782,0,0,1-3.96588-1.69354,4.59717,4.59717,0,0,1-.80408-1.2442l-.69757-1.69946L52.23005,79c.62,4.33,4.69,7.68,9.61,7.68,5.36,0,9.7-3.96,9.7-8.83A8.63346,8.63346,0,0,0,67.29834,70.55785Z"/></svg><span>Sync assignments with Google Calendar</span>`;
-        btn.style = `display: flex;align-items: center;gap: 1rem;font-family: inherit;justify-content: space-around;color: #535353;font-size: 13px;font-weight: 500;margin: 8px auto;cursor: pointer;background-color: white;border-radius: 32px;transition: all 0.2s ease-in-out;padding: 6px 10px;border: 1px solid rgba(0, 0, 0, 0.25);`;
-        btn.id = "sync_dates_btn";
-        document.getElementsByClassName("box-header with-border")[0].insertAdjacentElement("afterend", btn);
-        let tot_sub;
-        btn.addEventListener("click", async () => {
-          let table = document.getElementsByClassName("customTable")[0].children[0].children;
-
-          btn.disabled = true;
-
-          let sync_btn = document.getElementById("sync_dates_btn");
-          let sync_wait = document.createElement("div");
-          sync_wait.className = "col-md-12";
-          let stmt = document.createElement("h4");
-          stmt.innerText = `Please Wait while the dates get synced!!!`;
-          stmt.style.textAlign = "center";
-          stmt.style.color = "red";
-          sync_wait.appendChild(stmt);
-          sync_wait.id = "sync_wait_txt";
-          sync_btn.insertAdjacentElement("afterend", sync_wait);
-
-          for (let i = 0; i < table.length - 1; i++) {
-
-            tot_sub = due_sync[i].length;
-
-            if (error_code == 401) {
-              alert("Please Re-login with your Google account and refresh the page");
-              chrome.storage.sync.set({ token: null });
-              error_code = 0;
-              break;
-            }
-            for (let j = 0; j < tot_sub; j++) {
-              // console.log(due_sync,course_code,course_name);
-              calendar(due_sync[i][j].date_due, due_sync[i][j].course_code, due_sync[i][j].course_title, token.token, "T22:00:00.000+05:30");
-              calendar(due_sync[i][j].date_due, due_sync[i][j].course_code, due_sync[i][j].course_title, token.token, "T10:00:00.000+05:30");
-              // console.log(due_sync[i][j].date_due,due_sync[i][j].course_code,due_sync[i][j].course_title);
-              if (error_code == 401) {
-                break;
-              }
-              await sleep(550);
-            }
-            if (error_code != 401 && i == table.length - 2) {
-              document.getElementById("sync_wait_txt").hidden = true;
-              alert("Due Dates are successfully synced to your calendar");
-              btn.disabled = false;
-            }
-          }
-        });
-
-      }
-      else {
-        let div = document.createElement("div");
-        div.className = "col-md-12";
-        let stmt = document.createElement("p");
-        stmt.innerText = "**Sign in with Google in extension to sync your due dates with Google Calendar";
-        stmt.style.color = "red";
-        div.appendChild(stmt);
-        document.getElementsByClassName("box-header with-border")[0].insertAdjacentElement("afterend", div);
-      }
-    });
+    // REMOVED 2026-08-16: the legacy "Sync assignments with Google Calendar"
+    // button and its companion red "Sign in with Google in extension" line.
+    // Both read a token from chrome.storage.sync that was only ever written by
+    // a popup sign-in button deleted long ago, against upstream's dead OAuth
+    // client — so the button could never appear and the instruction pointed at
+    // a control that does not exist. The live paths are the per-assignment 📅
+    // one-tap links and the 🔔 / ✉ buttons above.
 
   }
   catch (err) {
@@ -696,6 +1033,12 @@ let sort = () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "da_upload") {
     try {
+      // Second chance only. The call that answers the picker is the one
+      // auto_semester.js makes on "semester_page_open" — this message arrives
+      // for the DATA load, i.e. after a semester has been chosen, so on an
+      // answered page it is a no-op. See js/marks_page.js for the same shape.
+      if (typeof window.vrAutoSemesterFor === "function")
+        window.vrAutoSemesterFor("da_upload");
       const is2026 = [...document.querySelectorAll("table")].some(
         (t) =>
           t.rows[0] &&

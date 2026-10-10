@@ -18,6 +18,8 @@ const sharedNames = [
   "getTimeTable",
   // js/utils
   "chooseCurrentSemester",
+  "parseSemesterStart",
+  "attendanceHasData",
   "semesterFallbackOrder",
   "currentTermStartEstimate",
   "semesterLooksStale",
@@ -32,6 +34,7 @@ const sharedNames = [
   "vrIcs",
   // js/timetable
   "extract_header",
+  "extract_lab_header",
   "extract_tbody_data",
   "extract_tr_data",
   "createTableHead",
@@ -66,6 +69,24 @@ const sharedRules = {
   ],
   // builtinGlobals off so defining a shared symbol in its home file is fine
   "no-redeclare": ["error", { builtinGlobals: false }],
+  // A `const` read above its own declaration in the same block is a
+  // ReferenceError at runtime, and nothing else here catches it: it type
+  // -checks, it lints, and the tests pass, because the throw only happens on
+  // the one branch that reads it early. That is exactly how the OTP panel
+  // came to report "Extension error" whenever no mail tab was open.
+  // functions/classes stay off — hoisted declarations used earlier in a file
+  // are the established style across these scripts.
+  //
+  // "warn", not "error": the rule cannot tell a straight-line read (always a
+  // throw) from a reference inside a callback that only runs later (always
+  // fine), and all twelve pre-existing hits are the latter — mutually
+  // recursive `const` arrows, a removeListener naming its own handler. Those
+  // are not worth rewriting, so failing CI on them would just get the rule
+  // deleted. A warning still puts the next one in front of whoever added it.
+  "no-use-before-define": [
+    "warn",
+    { functions: false, classes: false, variables: true },
+  ],
 };
 
 export default [

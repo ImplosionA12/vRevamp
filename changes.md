@@ -1,4 +1,3036 @@
+## Leave approval tells you, instead of you refreshing (2026-08-23)
+
+*"the idea is geeral leave approval check … when the leave is approved and we
+open the vtop then send us it got approved and the approval file"*.
+
+A leave request is not decided when you file it. It sits with a mentor, then a
+warden, and the only way to find out it moved is to open Hostel → General
+Outing and read a table. So you refresh for days, or miss it entirely and
+travel without the OutPass you are meant to carry at the gate.
+
+### The shape, read live rather than assumed
+
+`hostel/StudentGeneralOuting`, signed in:
+
+| S.No | Place Of Visit | From Date | … | **Status** | **Download OutPass** |
+|---|---|---|---|---|---|
+
+Three statuses, and they are a pipeline rather than a flag:
+
+- `Waiting for Mentor's Approval` — pending
+- `Waiting for Warden's Approval` — pending, one step further
+- `Leave Request Accepted` — approved
+
+Two of those contain the word **Approval** while meaning *not approved*, which
+is the trap a naive `/approv/i` test walks straight into. There is a test named
+for it.
+
+The OutPass link exists **only on accepted rows** — so "it is approved" and
+"your file is ready" are the same event, and are reported together.
+
+### It compares, it does not count
+
+"Approved" is not a number going up. A request can move Mentor → Warden →
+Accepted while an older one is rejected and a newer one is filed; counting
+accepted rows would announce the wrong trip, or say nothing when two things
+change at once. Each row is remembered by identity (S.No + From date, which
+survive re-ordering) and the only thing that fires a notification is a per-row
+transition: **not accepted before, accepted now**.
+
+A row seen for the first time already accepted is recorded **silently**. On a
+fresh install that table is full of trips already taken, and announcing them
+would cry wolf about a holiday from last October.
+
+When two approvals land together the **latest** trip is named and the rest are
+a count — asked for directly: *"only the file of the recent or latest leave
+approval"*. The one you travel on next is the headline.
+
+### Caught after shipping: the DOM is not the whole table
+
+*"there are muktiole entries not just 8 check the site properly"* — and it was
+right. I had read ten rows off the live page and reported them as the list.
+
+VTOP renders this table through **DataTables with client-side paging**. The
+server sends every row — verified by replaying the POST: **28 rows in an 80 KB
+response** — and DataTables then strips all but the current page out of the
+DOM. `.dataTables_info` said it plainly the whole time: *"Showing 1 to 10 of 27
+entries"*. The real state was **25 accepted and 2 pending**, not 8 and 2.
+
+The bug this created was specific and silent, and aimed at the wrong people: the
+background replay was already correct (it parses the raw response), but the
+on-page read believed the ten rows in front of it. So an approval landing on
+page 2 or 3 would never be noticed — and only students with enough history to
+paginate have a page 2. The ones who travel most.
+
+Fixed by asking DataTables for its own count, which is plain text in the DOM and
+needs no access to the page's jQuery. When it says there is more than is
+visible, the page read is abandoned for the network one, which returns the
+complete table. That escalation deliberately bypasses the three-hour rate limit:
+a student sitting on that page is there precisely because they want to know.
+
+### How it checks without you opening the page
+
+The same rule as everything else here: the worker records the student's **own**
+POST to that page, and the watcher replays it through `window.vrVtop` — live
+token, circuit breaker — at most once every three hours. If the page has never
+been opened since install, nothing is recorded and the watcher does nothing at
+all rather than inventing an endpoint. When you *are* on the page it just reads
+the table in front of it and makes no request whatsoever.
+
+`notify_now` is new in the worker: everything that existed scheduled a
+notification for a future time, and an approval is news the moment it is seen.
+Telling a student about a gate pass an hour later is telling them after they
+were supposed to be at the gate.
+
+## Mail sends from the club address now (2026-08-22)
+
+`MAIL_RELAY_URL` is no longer blank. The Apps Script relay is deployed under
+**vtopextention@gmail.com**, the club account, and the `/exec` URL ships in the
+build — so nobody pastes anything. The popup's relay field stays what it always
+was: a per-user override for someone running their own.
+
+Verified before committing, and the *way* it was verified is the point:
+
+```
+$ GET /exec          (unauthenticated, no Google session)
+{"ok":true,"service":"vRevamp mail relay","quotaLeft":100}
+```
+
+Opening that URL in the owner's own browser would have succeeded even if
+"Who has access" were set to *Anyone with a Google account* — the owner is
+signed in, so the misconfiguration is invisible from there. An anonymous fetch
+is the only test that distinguishes them, and the extension is an anonymous
+caller.
+
+What this buys, precisely: the 📧 mail button needs **no Google sign-in and not
+one scope**. The relay owns the sending identity; the only unknown left is the
+recipient, which the student types once. It works for a student with no Google
+account at all.
+
+What it does not buy: the ✉️ Calendar button still needs that student's own
+consent, because writing into someone's calendar requires their permission and
+no relay changes that. The sign-in-free substitute there remains the 📅 one-tap
+TEMPLATE link.
+
+### The relay's off-switch, found by shipping it
+
+Setting `MAIL_RELAY_URL` broke something that had been correct while it was
+blank. Clearing the relay field called `storage.remove(...)` — fine when there
+was nothing to fall back to, and wrong the instant a URL shipped in the build,
+because removal then fell back to *that*. Clearing the box did nothing, and the
+popup's own instruction — *"Leave blank to send from your own Gmail"* — became
+false.
+
+"I declined a relay" and "nobody has configured one" are different states, so
+they store differently now: an explicit `off` sentinel that `mailRelayUrl()`
+reads as null. A student who would rather their reminders came from their own
+address can still say so.
+
+Eight tests went red the moment the constant was filled in, which is the suite
+doing its job: they exist to prove the student's-own-Gmail path and relay mode
+had quietly become the default for all of them. They opt out explicitly now.
+Two more were added for the off-switch itself — that clearing records a refusal,
+and that mail afterwards really does go through Gmail rather than the shipped
+relay.
+
+**The ceiling to watch** is not Gmail's. The script caps itself at 60 sends/day
+(and 12 per recipient) deliberately below the consumer quota of 100, so an
+abuser cannot exhaust the day and silence real reminders. With a hundred
+students on the digest, that 60 binds first — the fixes then are raising the
+cap toward 100, or moving the mailbox to Workspace, where the quota is 1500.
+
+And the trade-off the relay's own header states rather than hides: the `/exec`
+URL ships inside the extension and is therefore public. Anyone who unzips a
+build can POST to it. The caps are the mitigation, not prevention. Proportionate
+for a single-campus unpacked build; a Web Store release would want a per-user
+token from something stateful.
+
 These are the changes made to the project: 
+
+## The popup stops being somebody else's page (2026-08-22)
+
+*"when we click on the extention now i can see the old ui of the old guyyyyy"*.
+
+What opened when you clicked the icon was the upstream project's page: a
+full-height GitHub corner linking to `sanjay7178/vRevamp`, a Buy-Me-A-Coffee
+button for him, his contributors list fetched live from the GitHub API, and —
+above all of it — three hostel Wi-Fi buttons. Somebody else's identity and the
+least-used feature, first.
+
+Restyled the same day. The first attempt was a dark, high-contrast panel and
+the verdict was *"so aish — make it smth peaceful and good"*. Fair: this is a
+thing you open between classes to find out whether you can skip one, not a
+dashboard to stare at. Loud red-on-black made a calm answer ("you're fine")
+feel like an alarm. It is paper-white now, one soft sage accent, generous
+spacing, and status carried by a quiet tint rather than a saturated bar —
+nothing raises its voice unless something is actually wrong, and then only to a
+warm rose.
+
+Rebuilt as a 344px panel: **Open VTOP** at the top, **Reminders & mail**
+unchanged in behaviour and restyled, **Hostel Wi-Fi** folded into a `<details>`
+so it is still there but no longer first, and a footer pointing at *this* repo.
+`js/contributors.js` is deleted.
+
+An "At a glance" summary was built here first — attendance headroom, dues, the
+next exam, all read from the cache — and removed on request the same day: *"do
+not givve his class info or anything on the popup, they are popup na they will
+eb small"*. Right call, and the reason outlives the code. A popup is a few
+hundred pixels that opens on a click and closes on the next one; every figure
+put in it is a figure read in the wrong place, when the bunk table, the dues
+column and the exam schedule already hold the same numbers with the room to
+explain them. It would also have been the stalest copy of them, since the popup
+cannot fetch and could only ever show what an earlier visit had cached.
+
+### Two rules held throughout
+
+**Every id a working script binds to survives untouched.** `js/popup.js` and
+`js/wifi/hostel.js` were not edited at all — the ids they reach for
+(`connect-button`, `vr-digest`, `vr-relay`, `view-offline`, the whole
+credentials modal) are all still there under new styling. A reskin, not a
+rewrite of behaviour.
+
+**Nothing is fetched.** The popup renders from `chrome.storage` only, so it
+opens instantly, works with VTOP closed and works offline. That is also the
+only safe choice: driving VTOP's endpoints from a popup is the replay-with-a-
+scraped-token pattern that ends sessions, and a popup has no VTOP page to
+borrow a live `_csrf` from anyway. The old page made two external requests on
+every open (the GitHub contributor list and a third-party button image); this
+one makes none.
+
+The cost of storage-only is staleness, so **every card says how old it is**
+rather than implying it is live — "updated today", "3 days old". A stale figure
+presented as current is the failure this project keeps hitting, most recently
+the home card showing "0 skippable before CAT-1" long after CAT-1 had passed.
+And when nothing is cached it says which pages to open, rather than an
+unactionable "no data".
+
+Attribution kept, deliberately: the footer still says "forked from vRevamp".
+What went was the donate button and the corner logo that made the popup look
+like his page rather than this one.
+
+## One empty re-parse killed the grade calculator (2026-08-22)
+
+*"the grade changed or not?"* → *"u can see how much it says it diesnt hange at
+all"*. Reproduced live on the real transcript rather than reasoned about:
+focused row 27 (SWE2002), pressed a key, and watched the select move **B → A**,
+the row tint yellow as though it had registered — and the panel replace itself
+with:
+
+> Couldn't read any graded rows on this page.
+
+No projected CGPA. No bar. The change was recorded and then computed against
+nothing.
+
+`buildPanel()` did this:
+
+```js
+courses = ownRows(table).map(...)   // clobber the good state FIRST
+if (!courses.length) return;        // …then bail, leaving it empty
+```
+
+So a single rebuild that parsed nothing left the module holding an empty course
+list **while the panel and all twenty-nine dropdowns stayed on screen**. Every
+grade changed after that computed against `courses = []`. The Grade History
+page carries **twenty tables** and VTOP re-renders them, so an empty rebuild is
+ordinary — it must not be able to poison a working panel.
+
+Now the parse goes into a local and is committed only when it produced
+something. Keeping the last good parse is right rather than merely safer: the
+rows on screen are the rows being edited, and a transient failure to re-read
+them changes nothing about what they mean.
+
+The test blanks the history table's cells without removing it — an empty
+rebuild, exactly as observed — then changes a grade and requires a real
+projection to come back.
+
+### Why yesterday's fixes did not catch it
+
+Two different faults wearing the same symptom, both real, fixed in order:
+
+1. the panel outliving its table (previous entry) — the student was on the home
+   page with a calculator quoting a CGPA;
+2. this one — the right page, the right panel, and an empty `courses`.
+
+The first was found by reading the DOM; the second only by *driving* the
+control and watching what came back. The lesson is the one this project keeps
+relearning: a rendered panel is not a working one.
+
+## The grade calculator outstayed its table (2026-08-22)
+
+*"the grade history is not we did o can't see the change or updated cgpa"*.
+
+Read live, and the reason was not the calculator's arithmetic. The student was
+on the **home page** — zero `<table>` elements in the document — with the panel
+still sitting there reading:
+
+> vRevamp — grade calculator · Current CGPA: 7.73 · *Change any grade in the
+> table above to see what it does to your CGPA*
+
+There was no table above. `data-vrevamp-gh` count: **0**. Nothing to change, so
+of course nothing ever updated.
+
+Neither the bar nor the panel is attached to the table it describes — the bar
+is fixed to the viewport, the panel is inserted near the table but survives
+VTOP replacing it. The bar half was handled from the beginning
+(`dropBarIfOrphaned`); the panel half was not, and the panel is the half the
+student actually looks at. `buildPanel()` returns early when no table is found,
+which leaves whatever was already on screen exactly where it was.
+
+Now both go together, and the check runs on every mutation the observer sees,
+so navigating away clears it within a debounce.
+
+Worth stating plainly: a panel quoting a **real** CGPA on a page with no grades
+is worse than one showing nothing. It looks like a broken calculator rather
+than a stale one, which is precisely how it was reported.
+
+The test destroys the table and asserts both the panel and the bar are gone —
+and it runs on its own page, because the first version of it wrecked the shared
+fixture every later assertion in that section depends on.
+
+## The mail names the course, and stops commenting (2026-08-22)
+
+*"like its perfecct just add the course name and no comments it would be
+perfect man"*.
+
+The subject column carried the code and a grey "6 pending" note under it. A
+code is not what a student calls a subject, and the count was already in the
+header line — repeating it per subject was noise in the one column that had
+just been given something worth reading.
+
+The course name was already being collected. `withCourse()` has attached
+`{ code, course }` to every due since the summary bar was built; it simply
+never reached the payload the mail reads. Both payloads now carry `course`,
+`vr_da_group_key` returns it, and the subject cell shows it under the code:
+
+| before | after |
+|---|---|
+| **SWE3004**<br>*6 pending* | **SWE3004**<br>Front End Design and Testing |
+
+A test holds both halves: the cell must name the course, and the word "pending"
+must not appear anywhere in the mail.
+
+## The dip was being shown as the destination (2026-08-22)
+
+*"idk how i get 0 marhi like i attend all classe again until a month na"* — and
+that is the planner's fault, not a misreading.
+
+"Headroom left: 0" was measured on the **last day of the trip** and the table
+then said nothing about the month of classes that follows. For the real 25–31
+August case it printed **75.0%** and hid the fact that the same student is back
+to **24/28 = 85.7%** by CAT-2 having attended everything after. Both figures
+are true. Showing only the first made a survivable trip look like a debar.
+
+The dip still matters and is still shown, because the days immediately after it
+are the genuinely risky ones — at 12/16 one unplanned absence on 1 Sept is
+12/17 = 70.6%, with nothing to cushion it. But it is labelled **"Lowest it
+gets"**, with **"By the next exam"** beside it:
+
+| Subject | Now | Classes missed | Lowest it gets | By the next exam |
+|---|---|---|---|---|
+| CSE3009 Theory | 93% | 3 class(es) | **75.0%** · 0 spare | **85.7%** · CAT-2, attending the rest |
+
+The summary line changed with it. It used to end "no margin left after this",
+which is the same error in prose; it now says the low point is the low point,
+names where you land, and points at the real risk — the few days right after,
+not the exam.
+
+### Checked against the extension's own arithmetic
+
+Worked out independently while answering: classes from now to CAT-2 for that
+subject are 3 (the trip) + 12 (September) = 15, so the bunk table's
+`floor(12 + 15 − 0.75 × 28)` = **6**, which is exactly what its "Bunkable
+before CAT-2" column already displayed. Two different code paths, one number.
+
+September is 4 of each weekday Tue–Sat and nothing else: every Monday in the
+month is a holiday or a No Instructional Day, and this student has no Monday
+classes anyway.
+
+## "What if I skip these dates" is now a control, not a hand calculation (2026-08-22)
+
+Asked after the 25–31 August question was answered by hand: *"yes build it,
+pick two dates and show that table"*.
+
+The bunk table could not answer it, and the reason is the point. Every column
+it has — *safe to skip now*, *bunkable before CAT-2*, *bunkable before FAT* —
+counts classes from today up to a fixed point. None of them answers "what about
+**these** dates", which is the question a student actually asks before booking
+a train.
+
+Two date pickers under the bunk table, and a bordered table back:
+
+| Subject | Now | Classes missed | After | Headroom left |
+|---|---|---|---|---|
+
+with the "After" cell tinted — red under 75% and the word DEBARRED in the last
+column, amber between 75 and 76 where there is no margin left, green otherwise.
+
+**It counts teaching days, not calendar days**, and doing the 25–31 Aug case by
+hand is what proved that matters:
+
+| date | day | calendar |
+|---|---|---|
+| 25 Aug | Tue | Instructional Day |
+| 26 Aug | Wed | Holiday — Milad-un-Nabi |
+| 27 Aug | Thu | Instructional Day |
+| 28 Aug | Fri | Instructional Day |
+| 29 Aug | Sat | Instructional Day (working Saturday) |
+| 30 Aug | Sun | Holiday |
+| 31 Aug | Mon | No Instructional Day |
+
+Four teaching days out of seven — and that student's timetable has no Monday
+row at all, so the last day of the range cost nothing twice over. A planner
+counting weekdays would have been wrong by three days in one direction and
+right for the wrong reason in the other. Exam-block days drop out too, on the
+same rule as everywhere else in this file.
+
+The test holds exactly that property: in a July with instructional days on the
+5th, 7th, 9th, 12th, 14th, 16th and 18th, a CAT on the 10th and a holiday on
+the 15th, the range 05→15 July must report **5 teaching days** and not the
+eleven a calendar-day count would give.
+
+### And a note on what "bunkable before CAT-2 = 4" means
+
+Asked directly, so it belongs in writing. The formula is
+`floor(A + R − 0.75 × (T + R))`, capped at `R`, derived from
+`(A + R − b) / (T + R) ≥ 75%`. So **it assumes you attend every other class
+between now and CAT-2** — 4 is the most you can skip out of those and still be
+at or above 75% on the exam day, not 4 on top of skipping anything else.
+
+### Caught while writing the test
+
+The assertion went into the file carrying a literal `0x08` byte where `\b` was
+meant — the same mangling `js/timetable/timetable.js` once shipped with. It
+turned the regex into one that could never match, and the test failed loudly
+rather than passing for the wrong reason. Worth remembering that the failure
+mode here is a regex that silently matches nothing.
+
+## The reminder mail, third time: a bordered grid (2026-08-22)
+
+*"email looks the worst man, like cant u said as table subejct wise"* → *"make
+a proper tabble as we get exam scedule"* → *"send it more in forms of tables
+okay? Like with proper borders"* → **"This one is good"**.
+
+Three passes, and the two rejected ones are worth recording because each looked
+finished:
+
+1. **Flat list.** It was already a `<table>`, which is why the first complaint
+   read oddly — but with no borders, no header and no grouping, twenty-one rows
+   of `date · CODE — Assignment` are a list no matter what tag they are in.
+2. **Grouped, one table per subject.** Better to read, still not the exam
+   mail's shape: six small tables stacked is not a table.
+3. **One bordered grid.** Every cell carries a border, the header row is
+   shaded, and the subject is a **merged column** (`rowspan`) rather than a
+   spanning header row — subject-wise and an actual grid at the same time.
+   Overdue cells are tinted, not just coloured text.
+
+The lesson from pass 2: "grouped" and "a table" were two requirements, and
+satisfying the first by emitting one table per group quietly broke the second.
+
+`rowspan` and inline styles throughout, for the reason `exam_mail_body` already
+documents: Gmail strips `<style>` blocks and ignores most modern CSS, but it
+has rendered bordered tables since it existed. Three tests hold the shape — one
+table with one header row, every cell bordered rather than ruled underneath,
+and the subject column actually spanning its rows.
+
+## Skipping 25–31 August, answered from the real calendar
+
+Asked what attendance would remain after skipping Tue 25 to Mon 31 Aug. Read
+live from VTOP's own academic calendar rather than assumed, and the week is not
+what it looks like:
+
+| date | day | calendar |
+|---|---|---|
+| 25 Aug | Tue | Instructional Day |
+| 26 Aug | Wed | **Holiday — Milad-un-Nabi** |
+| 27 Aug | Thu | Instructional Day |
+| 28 Aug | Fri | Instructional Day |
+| 29 Aug | Sat | **Instructional Day** (working Saturday) |
+| 30 Aug | Sun | Holiday |
+| 31 Aug | Mon | **No Instructional Day** |
+
+Four days actually missed, not seven — and the timetable has **no Monday row at
+all**, so 31 Aug costs nothing twice over.
+
+Result: everything stays above 75% except **CSE3009 Theory, which lands on
+exactly 75.0%** (12/16) — the one subject already carrying an absence, and the
+one that meets three times that week. SWE3004 Lab is untouched, because its only
+session is the Wednesday holiday.
+
+Worth noting for the feature: this is the question the bunk calculator cannot
+answer today. Its columns are "safe to skip now" and "bunkable before CAT-2 /
+FAT" — not "what if I skip this specific date range", which needed the
+calendar, the timetable and the attendance table read together by hand.
+
+## The reminder mail becomes a table you can scan (2026-08-22)
+
+*"email looks the worst man, like cant u said as table subejct wise"*.
+
+It already WAS a `<table>`, which is why the complaint looked odd for a moment —
+but with no borders, no header and no grouping, so twenty-one rows of
+`date · CODE — Assignment` arrived as one undifferentiated list. Six of those
+rows were CSE3009 experiments all due 20-Oct, printed one under another with
+the course code repeated on every single line.
+
+Grouped by subject, the same twenty-one rows become six short blocks:
+
+```
+SWE3004 — 3 pending
+  31-Jul-2026   22 day(s) overdue   Experiment-1
+  27-Aug-2026    5 day(s) left      Digital Assessment-1
+  05-Sep-2026   14 day(s) left      Experiment-3
+
+CSE3009 — 6 pending
+  20-Oct-2026   59 day(s) left      Experiment-1
+  …
+```
+
+The course code moves into the heading and comes out of every row, which is
+where most of the noise was. Days-left is now a column of its own, and anything
+already past its date says **overdue** in red rather than reading like the rest.
+
+Two constraints shaped it, both worth keeping written down:
+
+- **All styling is inline and the layout is a real table.** Gmail strips
+  `<style>` blocks and ignores most modern CSS, so anything clever would have
+  arrived as exactly the flat list it replaces. There is a test that fails if a
+  `<style>` block ever creeps in.
+- **The plain-text alternative is grouped too**, rather than falling back to
+  the old flat sort — a mail client showing the text part must not show the
+  version that was complained about.
+
+Also fixed in passing: the dues cell's date carried a `.replace(/-d{4}$/, "")`
+that was silently a no-op — the backslash had been lost, so it looked for four
+literal `d` characters. The year reads better anyway now the row fits on one
+line, so the dead call is simply gone rather than repaired.
+
+## The dues cell stops being three wrapped lines (2026-08-22)
+
+*"those boxes look the ugliest dude dont enlarge them like that at all"*.
+
+The Upcoming Dues column is about 90px wide, and it was being handed labelled
+controls — `🔔 remind me`, `✉ email`, `📅 gcal` — plus `05-Sep-2026 (14 day(s)
+left)`. Every one of them wrapped onto two lines and stacked, so a single
+course row grew to several hundred pixels and pushed VTOP's own table off the
+screen. Today's blank-cell fix made it worse by counting every posted
+assignment, which is what turned one calendar link into six.
+
+The words were never carrying the meaning. A `title` attribute says far more
+than three squeezed words, and says it on hover where there is room:
+
+| before | after |
+|---|---|
+| `05-Sep-2026 (14 day(s) left)` | `05-Sep · 14d left` |
+| `🔔 remind me` `✉ email` `📅 gcal`, stacked, each wrapped | `🔔 ✉ 📅` on one line |
+| one 📅 per due — six of them | one 📅, for the soonest |
+
+`white-space: nowrap` on the icon strip is the part that actually holds the
+height down; without it the three icons still wrap one per line in a column
+that narrow.
+
+Nothing is lost. 🔔 still schedules every upcoming due, ✉ still creates a
+calendar event for every one, and each tooltip now names the count and what the
+control does.
+
+### Also: the QP-attachment idea is dead, and that is a finding not a failure
+
+Asked whether the reminder mail could carry the question paper. Read live: the
+QP column exists on every assignment row and is **empty on all of them** —
+confirmed by the student, "no one uploaded". The extension can technically
+fetch a file VTOP holds and attach it through `gmail.send`, but faculty do not
+put question papers there, so the feature would have built cleanly and then
+done nothing on every row. Not built, deliberately.
+
+One thing confirmed while checking: Google consent is **once, not per feature**.
+The worker requests `calendar.events + gmail.send + userinfo.email` as a single
+combined scope, with narrow per-feature scopes only as a fallback if Google
+rejects the combined request.
+
+## The assignments page answers its own picker, and stops stretching (2026-08-22)
+
+Three things, after the blank-cell fix was live-verified on the real page:
+**21 assignments still to upload** where it had said "1 past due", and seven 🔔
+buttons where there had been none.
+
+**Reminders, verified by pressing them.** Not inferred from the code — clicked
+on the live page: a per-course 🔔 returned `✓ 2 reminder(s)`, and the summary
+bar's *"remind me about all of them"* returned `✓ 42 reminder(s)` — 21 upcoming
+dues across every subject, two each (6 PM the evening before, 8 AM on the day).
+The chain is real end to end: `vrLocalReminders` → the worker's
+`schedule_local_reminders` → `chrome.alarms.create` → `chrome.notifications`,
+with `alarms` and `notifications` both in the manifest, alarms surviving a
+browser restart, and re-scheduling under the same tag replacing rather than
+stacking. That button could only ever have said "already due" before today's
+fix, because `upcoming` was empty by construction.
+
+**The stretching.** *"right now it loooks horrible wha is that stretching"* —
+one 📅 link was rendered per upcoming due, so the moment the blank-cell fix
+started counting every posted assignment, six dated links stacked in a ~90px
+column, each wrapping onto two lines, and drove single rows several hundred
+pixels tall. That is a worse failure than a missing shortcut: it pushed the
+table itself off the screen. Now one link, for the soonest due, labelled
+`📅 gcal`, with the rest named in its tooltip. Nothing is lost — 🔔 already
+schedules every due and ✉ creates a calendar event for every due; 📅 is the
+no-sign-in shortcut for the one being acted on today.
+
+**The picker.** `examinations/StudentDA` joins the registry, so the page opens
+on the current semester instead of an empty dropdown. Read live: the page is
+`examinations/StudentDA` and its data POST is
+`examinations/doDigitalAssignment` — neither is a substring of the other, so
+this one needs no exclusion. Unlike Grades, which was deliberately removed from
+the registry, this page is not "one semester you came to look at": it is the
+list of everything you owe, and answering the picker is what makes the dues
+column and every reminder on it appear at all.
+
+Wording: a course with nothing outstanding now says **"✅ No dues"** rather than
+"all submitted" — asked for, and it is also the more honest of the two on a
+page where "submitted" and "not yet posted" are different states.
+
+## A timetable describes an ordinary week; an exam block is not one (2026-08-22)
+
+*"it says i have a next class on hompage but until the last exam coplete or
+check the calender until the cat exams over there wont be classes, and the bunk
+calculator should calculate for until cat 2 how many are bunkable at max"*.
+
+The next-class card reads the saved timetable and nothing else, so during a CAT
+it cheerfully announced the class that would have run. It now knows about exam
+blocks, and so does the projection behind every bunkable number.
+
+**The block comes from the cached exam schedule, not the calendar's CAT flags.**
+That is the part worth writing down: the academic calendar marks a day "CAT-2"
+only where an exam is actually sat, so a day mid-block with no exam of your own
+would look like an ordinary teaching day — and that is exactly the case being
+asked about. The exam schedule carries dated rows per exam, so first-to-last of
+a type is the block, and every day inside it counts.
+
+Three states, and the middle one is the whole point:
+
+| today | what the card says |
+|---|---|
+| an exam of yours | `📝 CAT-2 today: CSE1005 @ CB-324, report 09:30 AM — no regular classes.` |
+| inside the block, no exam of yours | `📝 CAT-2 block runs to 1 Jul — no regular classes, and no exam of yours today.` |
+| outside any block | unchanged — the timetable is right again |
+
+The stale-timetable warning still outranks the exam line. If the saved
+timetable is last semester's, that is the thing to fix, and a confident exam
+line on top of it would only bury it.
+
+The same block days are now skipped by `countClassesUntil`, which feeds "Left
+this sem" and every bunkable column — classes that will never be held were
+being counted as skippable. The set is empty when nothing is cached, so this
+can only ever remove phantom classes, never invent them.
+
+### While checking, two things turned out to be right already
+
+- **"Bunkable before CAT-2" exists** and reads 6–7 for theory subjects. CAT-1's
+  column is simply gone because CAT-1 has passed — retrospective columns are
+  dropped on purpose.
+- **Labs are counted to the LAB FAT**, and read `3 lab(s)` in that column. The
+  `Only 1 lab(s) can be Skipped` seen on the attendance row is a different
+  number answering a different question: the 75% alert column is instantaneous
+  (classes held so far, no calendar), while the bunk table projects forward.
+  Both are correct; they were being compared to each other.
+
+## A blank cell is not a submission (assignments, 2026-08-22)
+
+*"go to assigments age the due date and all of them look off the mark, an i
+cant see remainders"*. Two symptoms, one cause, found by reading SWE3004's real
+table on the live page:
+
+| # | Title | Due | Document Details |
+|---|---|---|---|
+| 1 | Experiment-1 | 31-Jul-2026 | File Not Uploaded |
+| 2 | Experiment-2 | 16-Aug-2026 | 16 Aug 2026 02:30 PM |
+| 3 | Experiment-3 | 05-Sep-2026 | *(blank)* |
+| 4 | Experiment-4 | 19-Sep-2026 | *(blank)* |
+| 5 | Experiment-5 | 18-Oct-2026 | *(blank)* |
+| 6 | Experiment-6 | 08-Nov-2026 | *(blank)* |
+
+The test was `!/file not uploaded/`. A blank cell does not match it, so `!false`
+answered **uploaded** — and four assignments nobody has uploaded counted as
+done. The course row therefore said "⚠ 1 past due" with nothing upcoming, which
+is why the dates on screen did not match the ones in the page.
+
+And it is the same reason there were no reminders. Every reminder control —
+🔔, the calendar links, the email list — lives behind `upcoming.length`, and
+upcoming was empty by construction. The bell could never appear on precisely
+the rows a bell is for.
+
+VTOP writes "File Not Uploaded" only once the upload window has opened; for an
+assignment posted but not yet open it writes nothing at all. So absence of
+evidence was being read as evidence of submission.
+
+Inverted: a row counts as uploaded only on POSITIVE evidence — VTOP's own
+upload timestamp, or a download link for the file it holds. Blank is not
+uploaded. The failure mode now costs a reminder for something already done,
+instead of silence about something still owed.
+
+Every fixture in the suite happened to fill that cell, which is exactly why the
+tests stayed green while the page was wrong. The new one is the live shape,
+blanks and all.
+
+## "Refresh now" stops navigating and actually refreshes (2026-08-22)
+
+*"remove that comment, see the old extention from git and see how it works and
+all and implement it all"*.
+
+The comment removed said the card could not refresh without opening the
+attendance page, because replaying VTOP's internal endpoints is what returns
+404s and ends the session — ROADMAP rule 4. The rule is real. It was being
+applied to the wrong thing.
+
+What rule 4 warns about is **guessing** an endpoint and firing a burst at it,
+each caller carrying its own scraped `_csrf`. This does neither, and it does
+not have to invent the way out: the repo already solved both halves, and two
+shipped features use the solution.
+
+| the risk | what already existed |
+|---|---|
+| guessing the endpoint | the worker records the student's OWN POST from `webRequest` — it already does this for the exam-schedule search and the attendance-detail request |
+| a scraped, stale token | `window.vrVtop.post` supplies a live `_csrf`/`authorizedID` per call |
+| a burst that kills the session | that module's circuit breaker: three consecutive 401/403/404s and it sends nothing more, with a visible reason instead of a silent dead session |
+
+So the worker learns `processViewStudentAttendance` the same way (auth params
+stripped — a stored token is stale by definition), and the button replays it
+once, through the guarded path. The Detail/Display exclusion matters as much
+here as in the page registry: those fire once per subject, and recording one as
+"the attendance request" would replay a single row's history and parse no table
+at all.
+
+**It still falls back to navigating.** Nothing recorded yet, breaker tripped, or
+a response that will not parse — the old behaviour is the recovery, because a
+page open beats a dead button.
+
+### What a refresh without the page can and cannot know
+
+Rewritten from the response: percentage, debar headroom, below-75, and the
+attend-N-to-recover count — with labs converted back to SESSIONS, since VTOP
+counts a two-hour lab as two classes.
+
+Carried forward, not recomputed badly and not silently dropped: the exam-dated
+columns and `maxPct`/`canRecover`. Those come from the academic calendar and
+the per-subject history, neither of which is in this response. That is the
+honest limit of refreshing without opening the page, and there is now a test
+that holds it: a cached CAT-1 figure survives while the percentage next to it
+changes from 71% to 90%.
+
+## The auto-selector answered two pages, ignored one, and wrecked one (2026-08-21)
+
+*"make it so that the inside applications as auto selctor and stuff work
+properly"*. Driven against `vtop.vitap.ac.in` signed in, one page at a time,
+before a line was changed:
+
+| page | options | it picked | rendered |
+|---|---|---|---|
+| Exam Schedule | 69 | Fall Semester 2026-27 ✓ | yes |
+| Time Table | 8 | Fall Semester 2026-27 ✓ | yes |
+| **Grades** | 69 | **nothing — left on the placeholder** | no |
+| **Marks** | 69 | **Fast Track Fall Semester 2026-27** ✗ | no |
+
+Two failures, two causes, one shared lesson.
+
+**Grades never ran.** Its `loaded()` asked whether `#studentGradeView` exists —
+and that div is on the EMPTY form, before any semester is chosen. So the first
+question the module asks answered *"already showing data, leave it alone"* on a
+page showing nothing, every single time. The file's own rule — "`loaded` is
+asked about CONTENT, never about the existence of a container" — was right;
+this one predicate broke it. The fixtures never caught it because they only
+ever added that div together with the data, so the empty page in the test was
+politer than the empty page on the portal.
+
+**Marks walked off the correct answer onto junk.** The step-down walk rested on
+an assumption that is simply false: *no data means the wrong semester.*
+Measured live — "Fall Semester 2026-27", the right semester, renders ZERO
+tables, because it is August and no marks have been published yet. `loaded()`
+can therefore never become true, so the walk did exactly what it was built to
+do:
+
+    Freshers → Fall Semester 2026-27 → Fall_Win Transport → Fast Track Fall
+
+four POSTs, ending parked on a transport/fast-track semester. Watched live, it
+also **overwrote a semester picked by hand** while it was still in flight.
+
+So the walk is gone. It cannot conjure data that has not been published, its
+failure mode is strictly worse than doing nothing — a wrong semester on screen
+instead of the right one honestly showing nothing yet — and it fights the
+student. One decisive pick, one submit.
+
+### Picking decisively instead of guessing twice
+
+Four options in the 69-entry list parse to the same start date as the real
+semester (Freshers, Fall_Win Transport, Fast Track, CDC PAT), and document
+order handed the tie to whichever came first. Three tiers now, first hit wins:
+the semester vRevamp has already seen the student registered in (cached off a
+registration-scoped dropdown, exact match after the campus tag is stripped);
+then the newest already-started option that is not one of those known
+variants — a denylist on purpose, because Short Summer, Long Summer and Winter
+are real semesters that a cleverer heuristic would eat; then
+`chooseCurrentSemester()`, unchanged.
+
+### One rule replaced three guards
+
+**Only ever answer a picker still on the placeholder.** A picker showing a
+semester has been answered — by VTOP, by the student, or by us a moment ago —
+and none of those are ours to overwrite. That subsumes the load-loop guard (a
+re-fired message finds index > 0 and stops), the "never disturb data on screen"
+rule (a rendered page always has a semester picked), and the race that let a
+re-fired message start a second walk alongside the first.
+
+Three regression tests named for the three live faults, plus a fixture that is
+finally as rude as the portal: the empty Grades page now carries its empty
+`#studentGradeView`, and the option list carries all four decoys. **514 passed,
+0 failed.**
+
+### …and attendance, which had the same bug and none of the fixes
+
+*"even the auto selecter in the attendance modue isnt wokingg"*, with the
+picker sitting on "-- Choose Semester --". This page had the FIRST version of
+this logic and the other four were built from it, which is how it ended up the
+last to be fixed: `js/attendance.js` read `#semesterSubId` the instant
+`view_attendance_page` arrived, and that message rides
+`webRequest.onCompleted` — it fires when the RESPONSE completes, and VTOP's
+jQuery writes the picker into the DOM after that. The select was usually null
+and the page was simply never answered.
+
+Attendance is now a registry entry like the rest (`"attendance"`), answering
+`semester_page_open` with the capped poll that waits for the picker. Its walk
+went too, for the reason measured on Marks: a semester reading 0/0 has usually
+just begun, and stepping down answered that by showing LAST semester's
+attendance under this semester's heading.
+
+The registry needed a third field for it. `StudentAttendance` is a substring of
+`processViewStudentAttendanceDetail` and `…DetailDisplay`, and the insights
+script fetches one of those per row — without an exclusion, opening attendance
+would have announced a freshly opened picker a dozen times over.
+
+`attendanceHasData()` stays in js/attendance.js and is borrowed by the registry
+entry rather than reimplemented: it is the sharper predicate (a just-registered
+semester lists every course at 0/0, which is rows without data), and that page
+is the one that knows.
+
+### The projected CGPA was rendering perfectly, behind VTOP's chat bubble
+
+*"i cant see the changed gpa"*. Measured on the live Grade History page: VTOP's
+support chat widget is a fixed 62x62 div at `right:25px; bottom:25px` with
+**z-index 1000**. The what-if bar was at `right:18px; bottom:18px`, z-index
+999 — the same corner, one layer below. The number was computed and painted
+every time, and covered every time.
+
+Raising the bar above 1000 is the fix that was already rejected once, in the
+comment directly above it: 999 is deliberately BELOW jQuery BlockUI's overlay
+so the bar cannot draw over VTOP's own modals, which is the mistake an earlier
+`z-index:1100` made on the exam buttons. So the bar clears the bubble instead —
+62px of bubble, its 25px inset, and a gap.
+
+### Rendering correctly is not the same as working (captcha, 2026-08-22)
+
+*"the captch should be visible and we need to reload once or twice to get it,
+there is no invisible captcha or google capthca working here okay? without the
+captcha we cant login no matter how many times i click submit"*.
+
+On 2026-08-20 this was read off the live DOM and declared settled: invisible
+reCAPTCHA, `gResponse` present, `.grecaptcha-badge` present, `#captchaBlock`
+absent, `document.images.length` of 1 — the page renders exactly what VTOP
+meant to send, so the code stood down and cleared its reload budget. Re-read
+today, every one of those readings is still true.
+
+**And the conclusion drawn from them was still wrong.** What the page renders
+and what the server will accept are different questions, and only the first one
+is visible in the DOM. On VIT-AP the invisible variant does not authenticate —
+pressing Submit does nothing, however many times. The way through is to reload
+until VTOP serves the IMAGE captcha instead, which it does within a reload or
+two; commit bd32fb8 had already recorded it flipping type twice inside one
+hour.
+
+So the `gResponse` branch reloads now instead of standing down. A stand-down
+that leaves the student on a page they cannot log in from is not a safe
+default — it is the bug wearing the costume of one.
+
+Guards, because this is the file that once reload-looped:
+
+- one shared budget for every action here (captcha hunt, dead-load retry, and
+  the chooser's Student press), so no two branches can ping-pong: a tab gets
+  MAX_RELOADS actions and then stops for good;
+- raised 3 -> 5, because a hunt lands on the chooser often enough that a
+  Student press eats one, and "reload once or twice" has to fit with room;
+- deliberately NOT guarded on the login fields being empty. Chrome's password
+  manager fills this form on arrival, so a "don't clobber what's typed" check
+  would read as filled every time and the reload would never fire for exactly
+  the people who need it. Nothing is lost: run() executes once, at load.
+
+Three tests were inverted rather than deleted, and one fixture had to learn to
+trap `location.reload` — the hidden-#stdForm regression page carries a
+`gResponse`, so it now navigates mid-assertion and took `window.__submitted`
+with it. The half of that test which never changes is the half that was kept: a
+login page is not a chooser, and Student is never pressed on it.
+
+NOT yet live-verified: the extension cannot be reloaded from here, so this is
+unit-verified only until the next live pass.
+
+## The escape hatch was a clock, so it looked dead on every retest (2026-08-20)
+
+*"it didnt reload even ye man, idk whats wrong and how amny times should i tell
+u"*. The feature below was working. The guard on it was not, and its failure
+mode was the worst possible one: **it did nothing precisely when you went back
+to check.**
+
+Reproduced live on the real portal before changing anything:
+
+| visit to `/vtop/open/page` | ended at | advanced? |
+|---|---|---|
+| 1st | `/vtop/login` | yes |
+| 2nd, immediately after | `/vtop/open/page` | **no — stuck on the chooser** |
+
+Both carried the same `vrevamp_role_autopick` timestamp: the two-minute
+cooldown ate the second visit. Anyone testing the feature does exactly this,
+so it worked once and then appeared permanently broken.
+
+**The cooldown was the wrong mechanism.** The question is not *when* somebody
+arrived at the chooser but *how*. There is exactly one situation where they
+must be left alone — they were on the login form and came back deliberately,
+because they want Employee, Parent or Alumni — and both routes to that are
+directly visible:
+
+| route back | signal |
+|---|---|
+| Back / Forward button | `performance` navigation type `"back_forward"` |
+| the login card's "Go to Home Page" link | `document.referrer` is `/vtop/login` |
+
+Everything else — opening VTOP fresh, a bookmark, an external link, signing
+out, or checking twice in a row — is an ordinary arrival and is helped every
+single time. `vrevamp_role_autopick` stays, demoted to a breadcrumb so "did it
+run?" is answerable from the console, and gates nothing.
+
+The test that would have caught this now exists and is named for it: *"a fresh
+arrival right after a previous one is still helped"*. The fixture also had to
+grow a real referrer — it reaches the chooser by clicking a link from the login
+page, because a helper that always arrived out of nowhere could not exercise an
+escape hatch keyed on how you got there.
+
+### LIVE-VERIFIED 2026-08-20, on the real portal after an extension reload
+
+Not fixtures — driven against `vtop.vitap.ac.in` in the student's own browser,
+signed out:
+
+| path taken | ended at | verdict |
+|---|---|---|
+| straight to `/vtop/open/page` | `/vtop/login`, login form on screen | advanced |
+| **again, immediately** | `/vtop/login`, **new** `vrevamp_role_autopick` stamp | advanced — this is the case that was broken |
+| "Go to Home Page" from the login card | `/vtop/open/page`, `#empForm` and `#parentForm` both present | correctly left alone |
+| typing the bare `vtop.vitap.ac.in` | `/vtop/login`, login form on screen | advanced — the entry path students actually use |
+
+The second row is the fix: a *different* timestamp on the second visit is the
+proof the code ran again rather than being suppressed by the old cooldown, which
+had left both visits sharing one stamp.
+
+The third row is the guarantee that matters more: Employee, Parent and Alumni
+are still reachable, by the route a person would actually take to reach them.
+
+`vrevamp_login_reloads` read null on every login-form landing — the budget is
+cleared on arrival, exactly as the reCAPTCHA branch is meant to.
+
+9 assertions in this area, 506 passed, 0 failed.
+
+## The chooser is skipped, so a recovery lands on the login form (2026-08-20)
+
+*"the previous reloaded the homepage not this page"* — correct, and the reason
+the capped reload was reverted on 2026-08-19 rather than fixed. `/vtop/login`
+is **reached by POSTing the chooser**, so re-GETting it can drop the student
+back on Student/Employee/Parent/Alumni. That is the original complaint, not a
+recovery.
+
+**The answer was never a better reload. It was the step missing after it:
+press Student.** Read live off `/vtop/open/page` before writing a line:
+
+| form | action | hidden fields | label |
+|---|---|---|---|
+| `#stdForm` | `/vtop/prelogin/setup` | `_csrf`, `flag=VTOP` | Student |
+| `#empForm` | `/vtop/prelogin/setup` | `_csrf`, `flag=VTOP` | Employee |
+| `#parentForm` | `/vtop/prelogin/setup` | `_csrf`, `flag=parent` | Parent |
+
+Two consequences, both load-bearing:
+
+1. **Nothing is reconstructed.** The page's own `#stdForm` is submitted through
+   its own submit button, carrying its own `_csrf`. This is the sanctioned
+   pattern — the one `js/attendance.js` uses when it clicks VTOP's own menu
+   entry — and not rule 4, which is about replaying *authenticated* endpoints
+   with a scraped token. This runs signed out; there is no session to damage.
+2. **Student and Employee send byte-identical bodies** — same action, same
+   `flag=VTOP`, unnamed submit inputs, no `onsubmit` on either. So it cannot
+   pick the wrong role by accident: the role is not in the request at all.
+
+Guarded three ways. It shares `vrevamp_login_reloads` with the reload cap, so
+the two can never ping-pong. It never fires where a `#vtopLoginForm` exists —
+the login page ships a hidden `#stdForm` of its own, and missing that is what
+put the home page in a loop on 2026-08-07. And `vrevamp_role_autopick` records
+**when** a tab was advanced, not merely that it was: land back on the chooser
+within two minutes and it leaves you alone, because you are going for Employee
+or Parent and must be able to get there; sign out an hour later in the same tab
+and it helps again. A once-per-tab flag serves the first case and fails the
+second.
+
+`manifest.json` now runs `refreshTillCaptcha.js` on `/vtop/open/page` as well —
+without that line none of the above would ever execute, so there is an
+assertion on the manifest itself.
+
+### Verification
+
+9 new assertions. Against the pre-fix code **4 fail and 5 pass**, and the 5 are
+the safety guarantees that must not regress (hidden `#stdForm` ignored, OTP page
+untouched, invisible reCAPTCHA untouched, budget exhausted, escape hatch).
+
+One thing the pre-fix run caught in my own fixture: with no visible labels the
+old code *reloaded* the chooser, because its `rendered` check keys on body
+text. The live chooser has labels beside every form, so a label-less fixture
+would have measured a document VIT-AP does not serve. The fixture now carries
+Student/Employee/Parent/Alumni, and the comparison above is against that.
+
+**Not yet seen live** — the unpacked extension needs reloading first.
+
+9 new assertions, 506 passed, 0 failed.
+
+## The login page has no captcha because there is nothing to solve (2026-08-20)
+
+Reported as "the auto reload or smth isnt workig" with a screenshot of
+`/vtop/login`: username and password filled, Submit, and **empty space where a
+captcha used to be**.
+
+No code changed. The page was read live in the student's browser — the one
+measurement ROADMAP §"a login form with NO captcha of either kind" had been
+blocked on since the day before:
+
+| checked | found |
+|---|---|
+| `#captchaBlock` | absent |
+| `input[name=gResponse]` | **present** (hidden, empty until submit) |
+| `.grecaptcha-badge`, `g-recaptcha-response` | present |
+| `window.grecaptcha` | loaded, one `[data-sitekey]` |
+| `document.images.length` | 1 (the VIT-AP logo) |
+| `sessionStorage.vrevamp_login_reloads` | **null** — never set |
+| navigation type | `"navigate"`, not `"reload"` |
+
+`#vtopLoginForm` carries `_csrf, username, password, basic-addon2,
+g-recaptcha-response, gResponse, submitBtn` — no captcha input of any kind.
+
+**It is invisible reCAPTCHA, and vRevamp is behaving correctly.**
+`refreshTillCaptcha.js` returns at its `gResponse` check before anything else
+and clears the reload counter, which is exactly what the null counter shows on
+the live portal; its reload branch also requires no `#vtopLoginForm` and no
+rendered text, so it cannot fire on this shape. `captchaparser.js` stands down
+on the same selector. The blank space is the intended appearance.
+
+Also confirms the 2026-08-19 revert of the capped login reload was right, for a
+second independent reason: on this shape there is nothing to reload *for*.
+
+Two smaller notes recorded in the ROADMAP rather than acted on: `GET
+/vtop/login` served the username/password form directly this time rather than
+the four-role picker (the tab shared the profile's cookies, so this may be
+cookie state, not a portal change); and the correct first question for any
+future "the login captcha is broken" report is now written down — if
+`gResponse` is present, the report is about something else.
+
+## The auto-picker was never asked to pick, and the venue mail waited on one page (2026-08-20)
+
+*"the auto selecter of semester didnt work"* and *"it waited until i oopen the
+exam schedule to mail me when the venue got updated"*. Two reports, one root
+between them: both features were hung off a message that arrives too late to
+be of use.
+
+### The picker: the message never came
+
+`js/shared/auto_semester.js` was fine. Nothing ever called it.
+
+Each of the four callers listened for the message the service worker sends for
+its page — and every one of those is routed off the page's **data** endpoint,
+which VTOP POSTs only *after* a semester has been chosen by hand. So the hook
+whose entire job is to answer the picker ran only once somebody had answered
+it. Against the data-urls read live on 2026-08-19:
+
+| page opens by POSTing | routed to a message? |
+|---|---|
+| `examinations/StudExamSchedule` | **no branch matched** |
+| `examinations/StudentMarkView` | **no branch matched** |
+| `examinations/examGradeView/StudentGradeView` | **no branch matched** |
+| `academics/common/StudentTimeTable` | yes — collides with the `StudentTimeTable` branch |
+
+One page in four worked, by coincidence, and it was not the page that mattered.
+Exam Schedule is the one whose venue watcher only runs when its table renders.
+
+The worker now sends **`semester_page_open`** for the page itself, naming which
+page it is. It is a *separate* message rather than a widened match on the
+existing branches, deliberately: those branches also re-run the page scripts,
+and widening the marks branch would have re-cached an empty form over a good
+snapshot.
+
+Two more faults fell out of reading it:
+
+- **The message beat the DOM.** `webRequest.onCompleted` fires on the response;
+  VTOP's jQuery writes the markup after that, so `#semesterSubId` was reliably
+  null on the very message announcing it. The picker is now waited for with a
+  capped poll (8 s / 250 ms) — a poll and not an observer on `body`, for the
+  reason the 2026-08-07 freeze established.
+- **A second visit was never helped.** The guard was a Set of page names for
+  the life of the document, and VTOP is a single-page app: opening Marks twice
+  in one session is two page opens against one document. The guard now keys on
+  the picker **element** — VTOP builds a new one per render — with a
+  consecutive-failure cap behind it, so the no-loop property is unchanged.
+
+The four page shapes now live in one registry in `auto_semester.js`
+(`vrAutoSemesterFor`) instead of being copy-pasted into four call sites. Moving
+the timetable's predicate exposed that it carried two literal `0x08` bytes
+where a regex word boundary was meant — a repo-wide scan found no others.
+
+### The venue mail: it now runs from any VTOP page
+
+The old design said so out loud: *"the check runs where the data legitimately
+arrives: every time the exam schedule page renders"*. That is one page too
+narrow. Venues are published overnight in a batch, and a student who opens VTOP
+for attendance and never touches Exam Schedule hears nothing until the day they
+happen to look.
+
+It now asks VTOP the one question the Search button asks, from whatever page
+they did open. **The rule that mattered is intact** — nothing is fetched
+without the student present and signed in. No alarm, no background session, no
+stored cookie: one POST on a page they opened themselves, on their own live
+session. Four guards:
+
+1. **It is their own request, not a guessed one.** The worker records the real
+   search POST — path and parameters, credentials stripped — the first time it
+   is made, exactly as it already learns the attendance-detail endpoint. The
+   named fallback is used only if nothing has been recorded yet, and is marked
+   `probe`, so a 404 from a wrong guess cannot trip the session breaker.
+2. **Through `window.vrVtop.post`**, inheriting the circuit breaker, the
+   first-non-empty `_csrf`, and the "200 carrying a session-expired page" check.
+3. **Once every three hours at most**, with the clock written *before* the
+   request, so a failure costs one POST per window rather than one per page.
+4. **Nothing to ask about, nothing sent.** It needs the opt-in (📧 pressed
+   once), a cached semester id, and at least one exam still ahead. Out of exam
+   season it costs one storage read per page and never touches the network.
+
+Why this and not the attendance auto-refresh, which was declined on 2026-08-19
+as "the same bet": that one had no student-initiated original to copy, no
+recorded request, and would have replayed a POST vRevamp had reconstructed.
+This replays a request the student made, gated on them having asked for the
+mail, at a twentieth of the rate.
+
+It also refreshes `vrevamp_exam_schedule` from what it fetched — so the `.ics`
+export, the Calendar import and the daily digest stop showing `-` for a venue
+VTOP published days ago. The cache now carries `semesterId` as well as the
+name, which is what makes the whole thing possible: a name cannot be POSTed
+back to VTOP.
+
+### Verification
+
+38 new assertions, run against the pre-fix code first: **23 fail there**, and
+the ones that pass are exactly the negative guarantees (*no opt-in, no
+traffic*; *signed out, no request*; *a data load is not a page open*) — which
+is the pair that says this is the missing half rather than a re-labelling of
+what was already sent.
+
+The first 22 were written with the fix; the other 16 came from auditing what
+those 22 never entered, which was worth doing:
+
+| gap | why it mattered |
+|---|---|
+| only page `exam_schedule` was ever dispatched | the three predicates **moved** out of marks/grades/timetable were executed by nothing — and moving code is exactly where the `0x08` bug had come from |
+| a learned search request was always seeded | the named-endpoint fallback — the state **every** student is in until they open the exam page once — was never run |
+| every reply was a 200 | the probe/real distinction was untested in both directions: a wrong guess must not trip the breaker, a recorded request that 404s must |
+| every trigger was a message | the load-time timer, the path for a page whose URL is routed to nothing, never fired |
+| the fixture picker had no `value` | `semesterId` — the single field the whole background check bootstraps from — was never actually written from a live picker |
+
+All five are now covered. One of them immediately caught a bad fixture of my
+own (a cell reading "Collaborate" matches the timetable predicate's unbounded
+`/lab/`), which is the kind of thing the assertion exists for.
+
+Not yet seen live. What to watch for, in order: on Marks/Grades/Exam Schedule
+the page should arrive already showing the ongoing semester; and with 📧
+pressed once, a venue published overnight should mail on the next VTOP visit
+whatever page that is. `[vRevamp exam] venue watcher (background): …` in the
+console names what it decided each time.
+
+38 new assertions, 497 passed, 0 failed.
+
+## Two corrections the same day: the right semester, and a reload that was wrong (2026-08-19)
+
+Both of yesterday's-hour answers were challenged and both deserved it.
+
+### "i am not a fresher so it should select fall semester"
+
+Correct, and the fallback walk shipped an hour earlier was a workaround for a
+question vRevamp had already answered. **The two dropdowns are not the same
+list** — read live, signed in:
+
+| page | options | index 1 |
+|---|---|---|
+| Attendance | **8** — only the student's own registered semesters, tagged `- AMR` | `Fall Semester 2026-27 - AMR` (AP2026272) ✓ |
+| Exam Schedule | **60+** — every semester VIT-AP runs | `Fall Semester 2026-27 Freshers` (AP2026273) ✗ |
+
+That is the whole reason the attendance page "just works" and nothing else
+does: its list is already scoped to the student, so index 1 is right by
+construction. On a global list, `chooseCurrentSemester()` parses
+"…2026-27 Freshers" and "…2026-27" to the same start date and document order
+breaks the tie the wrong way for anyone past first year.
+
+So the pick now starts from what the student is **registered in**:
+`vrevamp_attendance_summary.semester` already records the name off the
+registration-scoped dropdown, and matching it against the options answers the
+question outright. Parsing remains the fallback for a first run with nothing
+cached. **`js/attendance.js` is still untouched** — a value it already writes is
+read, nothing more.
+
+Matching is exact after stripping the campus tag, never fuzzy, precisely so
+that "Fall Semester 2026-27 Freshers" cannot survive it. Verified against the
+live dropdowns: `"Fall Semester 2026-27 - AMR"` → `fall semester 2026-27` →
+matches exactly one option, `AP2026272`, on the first try; Freshers does not
+match.
+
+### The login reload — reverted, and it should not have shipped
+
+*"it didnt work again"*, with the same screenshot. It would not have, and worse,
+it would have reproduced the original complaint. Measured rather than assumed:
+
+- unauthenticated **`GET /vtop/login`** returns **the role picker** — `#stdForm`,
+  four Student/Employee/Parent/Alumni forms, 23 KB, no captcha of any kind
+- the username/password form is what **`POST /vtop/prelogin/setup`**
+  (`_csrf` + `flag=VTOP`) answers with, at that same URL
+
+So a reload from the login form lands the student back on the role picker,
+which is the exact thing this file was written to stop ("you keep doing the
+complete homepage where i have to choose student, parent or smth"). The header
+already said reloading could never be the fix here; the new branch contradicted
+it on the strength of a screenshot. Reverted.
+
+**What is still unknown is the one thing that decides the fix:** whether that
+document carries a hidden `gResponse` — invisible reCAPTCHA, in which case
+nothing is broken and there is nothing to heal — or is a failed render of the
+image variant, in which case the block must be rebuilt, not reloaded. It could
+not be fetched: the POST needs a `_csrf` bound to a session cookie, and
+re-issuing it against a live session is what rule 4 forbids. It needs one
+reading of the real DOM while that page is on screen, and the file now says so
+at the branch.
+
+This is ROADMAP rule 1 twice in one day, in the same session that quoted it.
+
+4 new assertions, 459 passed, 0 failed.
+
+## Semester-gated pages open themselves, and the login page reloads again (2026-08-19)
+
+Two requests and one screenshot, all verified against the live portal on a
+signed-in session rather than reasoned about from fixtures.
+
+### 1. "when i click attendance i dont choose the semester, keep it like tht"
+
+Read off the real pages, signed in, the same day:
+
+| page | data-url | how it loads |
+|---|---|---|
+| Marks View | `examinations/StudentMarkView` | `onchange="doViewExamMark();"` |
+| Grades | `examinations/examGradeView/StudentGradeView` | `onchange="doViewExamGrade();"` |
+| Time Table | `academics/common/StudentTimeTable` | `onchange="processViewTimeTable();"` |
+| **Exam Schedule** | `examinations/StudExamSchedule` | **no onchange — a Search button** |
+
+Only `js/attendance.js` did this before, and it is left untouched: it was read
+as the model, not reused, at the user's explicit instruction. The shared piece
+is new (`js/shared/auto_semester.js`) and the four pages call it.
+
+Exam Schedule is the one that mattered. Its `#semesterSubId` carries **no
+onchange at all**, so a change event renders nothing and the page needs its
+`<button class="btn btn-primary btn-block">Search</button>` pressed. Three
+manual steps stood between opening that page and the venue watcher running —
+which is a large part of why the automatic "your exam room has been published"
+mail so rarely fired.
+
+**The wrong semester is picked first, and that is fine.** `chooseCurrentSemester()`
+parses option names, and "Fall Semester 2026-27 Freshers" parses identically to
+"Fall Semester 2026-27" — a tie that document order wins, so the Freshers list
+is chosen for a student who is not one. Confirmed on the live dropdown. Rather
+than change the shared chooser (attendance uses it, and attendance is not to be
+touched), a pick that renders nothing steps down `semesterFallbackOrder()`.
+Checked live: the Freshers semester answers a clean **"Examination Schedule
+Details Not Found"** — a 200 with a message, no error and no 404 — so the walk
+costs one extra request and nothing else.
+
+**Verified end-to-end on the real portal:** a fresh Exam Schedule page with an
+empty picker auto-selected, searched, stepped past Freshers, and rendered the
+student's actual CAT-1 table.
+
+#### The property a live check cannot safely show: it cannot loop
+
+These hooks fire on a message that arrives after *every* VTOP AJAX render. A
+semester that legitimately has no rows would re-trigger on its own response,
+forever, POSTing as fast as VTOP answers — the repeated-failure state
+`session_repair` was built for two days ago. The guard is a module-scoped
+`Set`: it survives VTOP's innerHTML re-renders because a content script's world
+does, and resets only on a real navigation. A `dataset` flag would NOT do —
+VTOP replaces the `<select>` along with everything else and takes the flag with
+it, the same durability trap `js/shared/click.js` documents. The test fires the
+hook eight times against a page that never renders and asserts at most four
+submits; it records three.
+
+### 2. The login page stopped reloading itself
+
+Screenshot: `/vtop/login`, username and password filled, Submit there, and no
+captcha of either kind — *"the normal original extension reloads this page
+until the captcha appears and u cant do it for some reason"*.
+
+True, and the branch that let it through is exact: `refreshTillCaptcha.js`
+reloaded only for a document with **no form and no text**. Here the page is
+fully rendered and the form is right there, so `rendered` was true and `run()`
+returned having done nothing. The in-place heal could not help either —
+`fetchNewCaptcha()` injects *into* `#captchaBlock`, and on this shape there is
+no block to inject into.
+
+So the capped reload is back, last in the chain rather than first. The file's
+argument against reloading still holds and is why it is last: it applies to
+`/vtop/login` reached by POSTing the role picker, where a reload re-issues that
+navigation and lands on Student/Employee/Parent/Alumni. This branch is reached
+only with a login form present, no block to heal, and neither captcha variant
+on the page. The role picker has `#stdForm`, not `#vtopLoginForm`, so it is
+excluded; the OTP step was already excluded above it. `MAX_RELOADS` still caps
+it at three.
+
+### Also, while the session was open
+
+The home card's stale-attendance line was reported missing. It was not: the
+card renders, and the line simply was not due — the summary was under a day
+old. Read off the live card, not inferred.
+
+11 new assertions. 457 passed, 0 failed. Lint unchanged at 0 errors.
+
+## The stale-attendance line now does the chore instead of naming it (2026-08-19)
+
+`(attendance data is 2 day(s) old — open the Attendance page to refresh)` —
+*"this one it should be auto na"*. Fair: the card knows the data is stale, it
+knows where fresh data comes from, and it was asking someone else to go get it.
+
+### It stops one step short of automatic, deliberately
+
+The only way to refresh without the page is to replay VTOP's own attendance
+POST from the home page. That is ROADMAP rule 4 — replaying VTOP endpoints
+with a scraped `_csrf` is what returns 404s and ends the session — and the
+state it produces is the exact one `session_repair` had to be built for
+yesterday. A once-a-day replay of a *captured real* request is a narrower bet
+than the one that caused the damage, but it is the same bet, and losing it
+costs a working VTOP session mid-semester. Offered as an option and declined in
+favour of the safe route.
+
+The sanctioned route is to drive the real control, and one already exists:
+VTOP's menu anchors carry `data-url`, and `js/navbarap.js` has navigated by
+clicking them since the beginning. So the nag becomes the click it was asking
+for — one button, the same page, no endpoint touched, no session at risk.
+
+`attendance_insights.js` then runs exactly as it always does and re-saves
+`vrevamp_attendance_summary` on its own. Nothing new parses anything.
+
+### Two things the button had to get right
+
+**It is not offered when it cannot work.** Not every role has a Class
+Attendance entry (`navbarap.js` learned this the hard way — it used to emit a
+button for a missing menu index and clicking it threw `[undefined].click()`).
+With no entry found, the line reverts to the instruction, which is still true.
+
+**It is a `vrButton`/`vrDelegate` pair**, not an `onclick`: this card is
+re-rendered and round-tripped through `innerHTML` like everything else on this
+page, and a property handler does not survive that (see `js/shared/click.js`).
+
+### What the tests do and do not prove
+
+Four assertions: the line drops the chore text, the button appears, clicking it
+clicks VTOP's own menu entry, and a menu without the entry gets the instruction
+and no dead button. Against the old code the first two fail; the third cannot
+run at all (it is guarded on the button existing), and the fourth is a
+regression guard that passes either way and is kept as one.
+
+What they cannot cover is the world boundary — in the fixture the click and the
+listener are in the same world. That direction is settled elsewhere and not by
+guesswork: `js/attendance.js` drives `#semesterSubId` with a `change` event
+dispatched from the isolated world, and ROADMAP rule 4 names that as the route
+that works. (Rule 2 — "a synthetic click never reaches an isolated-world
+handler" — is about the opposite direction: clicks arriving at *our* handlers.)
+
+## The account chooser came back — because the OTP scan is a different question (2026-08-19)
+
+Reported with a screenshot: Google's "Choose an account to continue to VEramp"
+on top of the VTOP OTP page. The 2026-08-17 work was supposed to end this, and
+for the flow it covered it did. This was a different flow.
+
+### Two accounts, one memory slot
+
+`prompt=none` cannot pick between the accounts signed into a profile, so the
+silent pre-flight only works when the request names one. The worker learns that
+name once and reuses it — but it learns it **only from a grant carrying
+`userinfo.email`**, and the OTP scanner's grant is `gmail.readonly` alone.
+Widening a RESTRICTED scope just to read back an address is a bad trade, so
+that flow could never learn anything. Its token lives an hour and a student
+signs in maybe weekly, so the cache was always cold: silent attempt with no
+hint, fail, window. **Every time.**
+
+The obvious repair — let it use the account the calendar/mail grant already
+remembered — is worse, and it is worth being explicit about why. That grant
+runs under the personal account; VTOP mails the OTP to the student address.
+Handing the mailbox flow the app account means the scan reads the wrong inbox
+and reports "no OTP found" forever. Same screen, worse ending, harder to
+diagnose.
+
+So the account is remembered **per flow**, keyed by the token's own storage
+key, and the mailbox flow inherits nothing. It reads its own address back out
+of Gmail (`users/me/profile`, already inside `gmail.readonly`) after the
+student picks, and names it from the next scan on.
+
+### The chooser stays — once
+
+`granted` (the flag meaning "some Google grant exists") suppresses the account
+chooser, which is right for the app flow: re-asking someone who has already
+picked is the whole complaint. It is wrong here. A calendar grant says nothing
+about which inbox holds the OTP, and with the chooser suppressed and no hint to
+go on, the student is sent silently at whichever account Google prefers with no
+way to say otherwise. So `granted` no longer suppresses the chooser on the
+mailbox flow while that mailbox is unknown — which is what
+`vrevamp_gmail_signin` already documented as its intent, unenforced.
+
+Expected from here: **one more chooser on the next "Fill OTP from mail" — pick
+the inbox VTOP actually writes to — then silence.**
+
+Sign-out drops the per-flow accounts along with everything else, or the next
+student to use the browser walks straight past the chooser into the previous
+one's inbox. The "switch account" path drops the app flows' copies too, since
+that is the same stale name by another route.
+
+7 new assertions, checked to fail against the old code before being kept.
+447 passed, 0 failed.
+
+## The session state nothing could see: shell healthy, content POSTs 404 (2026-08-18)
+
+ROADMAP had this open as *"`session_repair` misses the state users actually
+hit"*. It is the state heavy use produces, and until now vRevamp was silent
+through it — which reads, from the student's side, as the extension being
+broken along with the portal.
+
+### Why the existing heal could never find it
+
+`js/session_repair.js` judges the **document**, and in this state the document
+is fine. `/vtop/content` answers 200, the top bar still shows the student's
+name, and no Tomcat 404 page renders anywhere. What is actually happening is
+one layer down: every menu click POSTs, gets a **404**, and the content area
+goes blank. The two signatures the script does heal — a rendered Tomcat page,
+and the poisoned cookie (404 with cookies, 200 without) — are both absent.
+
+So the evidence exists only in the network layer, and a content script cannot
+reach it either: VTOP's menu clicks are jQuery AJAX in the page's **MAIN**
+world, and our scripts run isolated. There is nothing to intercept from there.
+
+**The service worker can see all of it.** `chrome.webRequest` reports every
+request regardless of world and carries the status code, and the `webRequest`
+permission was already granted for the routing listener that has been running
+since the beginning. The detector is ~30 lines added to an event we were
+already receiving — no new permission, no new listener, no page instrumentation.
+
+### Detection, never repair
+
+It counts and then tells the student. It does not retry and does not replay an
+endpoint, because repeating failed POSTs is what damages the session in the
+first place (ROADMAP rule 4). The response to "VTOP is refusing everything" has
+to be to stop and hand it back.
+
+Three guards against crying wolf, each of them a 404 that happens on a
+perfectly healthy session:
+
+| guard | the false positive it prevents |
+|---|---|
+| **consecutive**, reset by any success | `attendance_insights.js` probes a list of endpoints on purpose and most of them 404 every time; a healthy session answers *something* in between |
+| **windowed** (2 min) | three 404s an hour apart are three unrelated events, not a broken session |
+| **login paths excluded** | a 404 on the login POST is a failed sign-in — the one moment when "try signing in again" is both obvious and useless |
+
+The run is reset by the tab's next `main_frame` request. That is read off the
+webRequest event we already get rather than from `chrome.tabs.onUpdated`,
+deliberately: an unfiltered `onUpdated` listener wakes the worker for every tab
+load **anywhere in the browser**, which is the same "one wake-up per event,
+whether or not it concerns us" budget that produced the 2026-08-07 Page
+Unresponsive freeze. VTOP's menu clicks are AJAX and never change the tab's
+document, so a run correctly survives the clicks that build it and ends only at
+a genuine reload or sign-in.
+
+The counter lives in worker memory, so MV3 eviction loses a part-built run.
+That is the safe direction to fail: a lost run costs one missed warning and the
+next three clicks re-detect it, whereas persisting it would let yesterday's
+session warn about today's.
+
+### One banner, and the advice is now clickable
+
+`js/shared/vtop.js` already drew a red "the session has gone stale" bar when
+its own circuit breaker tripped. Two things can now reach that conclusion — the
+breaker, from the requests **vRevamp** sends, and this detector, from the 404s
+**VTOP's own menu clicks** get. They describe the same broken session, so
+`showBanner` is exported as `vrVtop.banner` and keyed on its existing id: the
+second one to notice reuses the bar instead of stacking a second red block.
+
+The banner also gained an optional action button, because the old text said
+*"sign out of VTOP and sign in again"* and then left the student to find their
+own way there — which is a dead end exactly when it matters. `/vtop/login`
+answers **404 while a session cookie is in the jar**, so "just go to the login
+page" can fail for the same reason everything else is failing. The button
+therefore clears this site's cookies first (the same worker route the
+poisoned-cookie heal already uses) and only then navigates.
+
+Deliberately **not** automatic. Clearing cookies under someone mid-page throws
+away whatever form they were filling in, and this detector *infers* a dead
+session from three refusals rather than knowing it. A button lets the student
+decide and costs nothing when the inference is wrong.
+
+### Tests
+
+14 new assertions, **checked to fail against the old code before being kept** —
+the three detection assertions fail and the harness then dies on the reset
+check, i.e. the banner half never even runs, because none of it existed. Both
+halves are covered: a detector that fires into a page with no listener is no
+better than no detector.
+
+Suite is **440 passed, 0 failed**; lint unchanged at 0 errors / 24 warnings.
+
+**Still unverified live** — this fires on a state that takes heavy use to
+reach, and it has not been seen on a real session yet. The failure mode to
+watch for is the opposite of the old one: a banner appearing on a session that
+is actually fine.
+
+## The OAuth prompt, round two — and the home card now names debarment (2026-08-17, later)
+
+Reported after reloading the build below: *"the oauth should presist thats what
+i asked you"*, and *"on homepage instead of showing how many skippable classes
+before cat1 u can say how many debarred"*.
+
+### The consent screen was still appearing, for two reasons neither round one touched
+
+Round one (further down this file) fixed three real parameters and the screen
+still came back roughly hourly. Two structural causes were left, both in
+`webAuthToken`:
+
+- **The interactive path never tried the silent one first.** A cache miss with
+  `interactive: true` went straight to
+  `launchWebAuthFlow({interactive: true})`. Whether Google then had anything to
+  ask is beside the point — *the window is what the student sees*, and it opened
+  unconditionally once the cached hour ran out. The silent flow only ever ran
+  for callers that asked for it explicitly, i.e. background polling, never a
+  button. A click now attempts `prompt=none` first and opens a window only if
+  that genuinely fails.
+- **The silent flow was being killed before it could finish.**
+  `chrome.identity.launchWebAuthFlow` defaults `abortOnLoadForNonInteractive`
+  to **true**: in non-interactive mode Chrome tears the flow down as soon as the
+  first navigation finishes loading. `accounts.google.com` does not answer
+  `prompt=none` in one hop — it loads, then redirects — so the abort fired on a
+  flow that was about to succeed, and the abort is indistinguishable from
+  "never consented". Every silent refresh this extension has ever attempted was
+  losing that race. Both knobs are passed now
+  (`abortOnLoadForNonInteractive: false`, `timeoutMsForNonInteractive`), with a
+  fallback for Chrome versions that reject them by name.
+
+Two smaller ones alongside:
+
+- A new `vrevamp_google_granted` flag records that a grant has existed, so
+  `prompt=select_account` is used **only on a genuine first run**. Re-showing
+  the account chooser to someone who already picked is the exact complaint.
+- `googleSelfEmail` now falls back to `/oauth2/v3/tokeninfo` when `/userinfo`
+  fails. That address *is* the `login_hint`, so failing to learn it costs a
+  consent screen an hour forever — one endpoint was too thin a thread.
+
+The first-run case deliberately skips the silent pre-flight (nothing granted,
+no account known → `prompt=none` cannot succeed), so a new user does not sit
+through a 15 s timeout before the window they have to see anyway.
+
+**What cannot be fixed in code:** the implicit flow returns ~1 h tokens with no
+refresh token, and the app is in Testing, where Google expires the grant every
+7 days (ROADMAP §3). So the honest promise is: one screen on first use, one
+more per week until the app is verified, and nothing in between.
+
+The popup was lying about this too. `google_status.signedIn` meant "there is an
+unexpired access token", which is false for most of any day, so a perfectly
+healthy grant read as **"(needs re-approval)"**. It now reports the grant, not
+the token.
+
+### The home card leads with debarment
+
+The old headline was *"only N class(es) skippable before CAT-1"*. Two things
+wrong with it, only one of them wording:
+
+1. It is a fact with an expiry date and nothing on the card could see it pass.
+   Seen live the same morning: **"only 0 class(es) skippable"** for a subject
+   the attendance page gave three in hand. Neither number was miscomputed — the
+   0 had been measured against CAT-1 days earlier, CAT-1 arrived, and a figure
+   counted up to a date in the past carried on rendering as news.
+2. Missing an exam-window class costs nothing by itself. Falling under 75%
+   costs the exam hall.
+
+So the card now says how close each subject is to **debarment**, which is
+measured against the whole semester and therefore cannot silently expire:
+
+| state | line |
+|---|---|
+| under 75%, recoverable | `🚫 …: below 75% (68%) — debarred unless you attend the next 4 class(es) in a row.` |
+| under 75%, not recoverable | `🚫 …: attending every remaining class still only reaches 71%. Debarment is decided by the faculty from here; ask now.` |
+| no headroom | `⚠️ …: no room left — miss one more and you are under 75%` |
+| everyone else | `🎯 Can still miss before debar: CSE2005 2 · CSE2005L (lab) 4` |
+| all clear | `✅ Nothing is close to the 75% line.` |
+
+The exam figure is not deleted, only demoted to a parenthetical — and dropped
+entirely once its exam is in the past, because an alarming number nobody can
+date is worse than no number. `attendance_insights.js` now carries `below75`,
+`recover`, `canRecover`, `maxPct` and `debarNote` into the cached snapshot so
+the card can speak to the student who is *already* under the line, who needs
+"attend the next N", not "you may skip 0".
+
+### Three more bugs, found by writing the tests that were missing
+
+- **The DA summary bar named the course where it meant the assignment.**
+  `{...assignment, code: c.code, title: c.title}` — the spread carries the
+  assignment's own `title` ("Digital Assessment-2") and the next key overwrote
+  it with the course's ("Basic Law for Engineers"). So the bar, and the list
+  📧 emails, read `MGT1029 — Basic Law for Engineers` once per assignment:
+  three identical lines where three different assignments should be. The course
+  name is kept under `course`, which does not collide.
+- **The daily digest had no tests at all** and repeated the home card's
+  mistake, telling a student already under 75% how many classes they may skip.
+  It now says what to attend, or — when even perfect attendance no longer
+  reaches 75% — says that instead of offering impossible arithmetic.
+- **The digest would mail every morning saying only "your attendance figures
+  are 40 days old."** That note was pushed into `sections`, and
+  `sections.length` is the test for "is there anything worth mailing". It is a
+  footnote now: it rides along on a digest with real news and otherwise says
+  nothing. A digest that cries wolf gets muted, and takes the one that mattered
+  with it.
+
+### Tests for the two things standing between the student and a dead session
+
+`js/shared/vtop.js` — the circuit breaker written to answer *"make sure the
+vtop doesnt get logged out"* — shipped with **no direct test**, only indirect
+exercise through the pages that use it. Eight now: the first non-empty `_csrf`
+is the one used; three refusals stop it and the other three are never sent; a
+success in between resets the count; eleven failed endpoint probes do **not**
+trip it but twelve with nothing ever having worked does; one success anywhere
+makes probe failures meaningless for good; a 200 carrying VTOP's own
+session-expired page counts as the refusal it is; the concurrency pool stops
+early instead of queueing work behind a tripped breaker; and a page with no
+`_csrf` sends nothing at all. One real defect fell out of writing them — the
+banner said "refused 3 requests in a row" even when it was twelve probes that
+did it, which is a number nobody could check against the network tab.
+
+The DA bar's overdue-only state — the one seen live — is covered too: 📧 and
+📬 are offered, 🔔 is **not** (a notification for a date that has passed can
+never fire, and a button that silently does nothing is worse than no button),
+and the payload names each assignment.
+
+### Walked the live portal signed out, and found two dead scripts
+
+The extension could not be reloaded from here, so the OAuth and home-card work
+above is still unproven live. But plenty *can* be read off the portal without
+one, and doing so paid for itself.
+
+**VIT-AP has flipped back to invisible reCAPTCHA** (checked 2026-08-17 on the
+real login form): no `#captchaBlock`, a hidden `input[name=gResponse]`, a
+`.grecaptcha-badge`, and exactly one image on the page — the university logo.
+The stand-down check in `refreshTillCaptcha.js` matches that markup exactly, and
+**the reload loop is confirmed dead**: `vrevamp_login_reloads` was never set and
+the navigation type was `"navigate"`, not `"reload"`, on the page shape that
+used to loop five times.
+
+Then the real find. `/vtop/login` serves **two different documents depending on
+state**: signed out it can be the four-role landing page, and pressing
+**Student swaps the login form in at the same URL, with no navigation**.
+
+Both `refreshTillCaptcha.js` and `captchaparser.js` attached their
+MutationObserver to `#captchaBlock` *once*, at load, and returned quietly when
+it was not there yet. On that path it never is. So on the image-captcha variant
+**the healing and the solver were both dead on arrival** — the box stays blank,
+the field stays empty, and from the outside it is indistinguishable from a
+solver that simply does not work. That is very likely part of what "i asked you
+to reload this part till you get a captcha" was describing all along.
+
+Each now waits for the block with a **capped poll** — 20 ticks at 400 ms, and it
+stops early the moment it sees the reCAPTCHA shape, because there no block is
+ever coming. Deliberately *not* an observer on `body`: the 2026-08-07 "Page
+Unresponsive" freeze was an observer storm, and a wedged main thread on the
+login page means nobody can sign in at all.
+
+Both fixes have tests, and **both tests were checked to fail against the old
+code before being kept** — `git stash` the fix, run, watch it go red, restore.
+Green tests have proved nothing on this project before (299 passed with three
+live button bugs); a test that has never been seen to fail is not evidence.
+
+**And then it flipped back inside the hour.** Same tab, checked again a little
+later: `#captchaBlock` present, `gResponse` gone, a `data:image/` captcha —
+**and `#captchaStr` already held `96QVLW`, which is exactly what the image
+reads.** Six characters, correct, filled unaided, no reload, counter never set.
+
+That is worth more than either observation alone. The captcha question has been
+"settled" twice in this file already, in opposite directions, and both notes
+were snapshots. It changed **twice in one hour**. Check
+`input[name=gResponse]` at the time and branch; both paths have to work, and
+`weights.json` stays.
+
+Worth noting where the fix came from: `js/vtop_otp.js` already used exactly this
+capped-poll pattern, for exactly this reason, with a comment saying *"the login
+page is server-rendered but swaps in the OTP step without a reload… an observer
+on this page was what froze the timetable page"*. The same-document swap was
+already known and already solved once — the two captcha scripts were simply
+never given the same treatment.
+
+### And one more, from the same audit
+
+`home_notices.js` retried for the container **10 × 700 ms = seven seconds**.
+ROADMAP records VTOP intermittently stalling its own static assets for **thirty
+seconds or more**, which is longer than the entire retry budget — so on one of
+those loads the heads-up card never appeared, silently, with nothing in the
+console. Raised to ~31 s. The work per tick is a few `querySelector`s against a
+shell that has not rendered, so the extra ticks cost nothing, and it still ends:
+an unbounded retry on VTOP's SPA is how the "Page Unresponsive" freeze happened.
+
+Its test takes ten seconds on purpose — the container is added at 8 s, past the
+old cap and inside the new one. There is no quick way to assert this that would
+still have caught the bug. It was watched to fail against the old code too.
+
+426 tests pass, 0 lint errors. The captcha findings are verified on the live
+portal; the OAuth and home-card work is **not** — it needs an extension reload,
+which cannot be done from here.
+
+## Four complaints, four causes, none of them mysterious (2026-08-17)
+
+Reported, verbatim: the extension *"ask me oauth evrytime when i click mail
+me"*; *"the bunkable classes is bad too adn the assignemnts one is"*; *"i need
+mail notifications and alll"*; *"i asked you to to reload this part till you get
+a captha ut u keep doing the complete homepage where i have to cjjooose stuent,
+parent or smth"*; and *"make sure the vtop doesmt get logged out"*.
+
+Each was diagnosed against the live page or the live worker, not from the
+screenshots.
+
+### 1. The consent screen every time: three separate parameters
+
+Read off `webAuthToken` in `service_worker/background.js`. Any one of these
+alone was enough to produce a screen on every click:
+
+- The interactive flow asked for **`prompt=consent select_account`**. `consent`
+  instructs Google to re-render the consent screen *even when the grant already
+  exists* — it is for apps that need a fresh refresh token, and it is exactly
+  wrong for a cached implicit token.
+- The silent flow (`prompt=none`) carried **no `login_hint`**. This profile has
+  three Google accounts signed in, and `prompt=none` must not choose between
+  them, so it failed *by design*, once an hour, forever — and every failure fell
+  through to the interactive flow above.
+- Calendar, `gmail.send` and `gmail.readonly` were **three tokens with three
+  consents**. An hour after signing in, all three expired together.
+
+Fixed in that order: never send `consent`; remember the account that consented
+(`vrevamp_google_account`) and send it as `login_hint`; and request
+`calendar.events` + `gmail.send` + `userinfo.email` as **one grant**
+(`googleToken`), with `include_granted_scopes=true` so an older narrower grant
+is not invalidated. One screen the first time, then silence.
+
+A hint naming an account that has since been signed out is detected and cleared
+automatically, so "switch Google account" needs no button — though there is now
+one anyway, in the popup, along with the account it is actually using.
+
+### 2. The captcha: it never reloaded, and reloading was the wrong tool
+
+Both halves of the complaint were true and they had different causes. Read off
+`https://vtop.vitap.ac.in/vtop/login` on the day:
+
+- The old rule was "reload when a **visible `#stdForm`** has no captcha".
+  `#stdForm` **is not on that page**. It lives on `/vtop/open/page` — the role
+  picker — beside `empForm`, `parentForm` and `alumniForm`, all POSTing to
+  `/vtop/prelogin/setup`. The condition could never be true, so a captcha-less
+  login form sat there broken.
+- And a reload could never have been right: `/vtop/login` is *reached by*
+  POSTing that role picker, so re-navigating it is precisely what drops the
+  student back on the Student/Parent chooser.
+
+VTOP already solves this itself. Its green ⟳ button calls `loadCaptcha()`:
+
+```
+GET /vtop/get/new/captcha   ->   innerHTML of #captchaBlock
+```
+
+Verified live: 200, ~5 KB, an `<img>` with a fresh base64 JPEG. No `_csrf`, no
+POST, no navigation. `refreshTillCaptcha.js` now swaps that block instead of
+the page, retrying a few times and giving up quietly. The only reload left is
+for a genuinely empty document, where there is nothing to swap.
+
+`captchaparser.js` had a matching gap: it solved **once**, on `load`. Every
+route that replaces the captcha afterwards — VTOP's own refresh button, a
+failed submit, the healing above — left the box blank. It now re-solves on both
+the mutation and the swap, waits for the image to decode first, and caches
+`weights.json` (600 KB of the 790 KB package) instead of refetching it per
+solve.
+
+### 3. Assignments, and why nothing ever reached the student
+
+The DA column fetched each course's detail **serially**, hand-rolling its own
+`fetch` with the *first* `_csrf` on the page (sometimes an empty placeholder)
+and no fallback for the student id, catching every failure into a `--` cell.
+Eight courses meant eight sequential round-trips; a stale session meant eight
+consecutive 404s fired at VTOP on every page view.
+
+Worse: a due date only ever existed *inside that page*. The only way to be told
+about one was to open the page, read the cell, and press 🔔 per course — which
+is the job a reminder was supposed to do.
+
+Now: three at a time through the shared layer below, one summary bar above the
+table ("2 still to upload, next MGT1029 on 21-Aug"), a single **remind me about
+all of them**, an **email me this list**, and the whole picture written to
+`vrevamp_da_dues` so it can be used without the page.
+
+### 4. Mail notifications: a daily digest
+
+`runDigest()` in the worker reads the three snapshots the pages leave behind —
+assignments, attendance, exam schedule — and sends one message a day: what is
+due, what is overdue, which subjects are near 75 %, which exams are close. It
+raises the Chrome notification **first and unconditionally** (no account, no
+scope, no network) so a failed mail never costs the reminder, and it never
+opens a consent window: a Google screen appearing by itself at 7 am with no
+click behind it is indistinguishable from malware.
+
+Stated plainly in the mail itself: those snapshots are only as fresh as the
+last visit to each page, and the digest says how old its data is rather than
+reporting last month's attendance as today's. VTOP cannot be scraped in the
+background — that needs the session in a real tab, and driving it from the
+worker is what breaks sessions.
+
+The alarm is re-armed on `onStartup` **and** `onInstalled`: `chrome.alarms`
+survive a browser restart but not an extension reload, and this build is loaded
+unpacked. Without that the digest would silently stop the first time the
+extension was reloaded, while still looking enabled.
+
+### 5. The logouts: a circuit breaker, `js/shared/vtop.js`
+
+Two features replay VTOP's internal POSTs and both swallowed their own
+failures. When the session is stale every request 404s, every cell reads `--`,
+and the extension fires eight more on the next page view. Repeated failed POSTs
+are what damages a session, so the response to failure has to be **to stop**.
+
+One token source (the first *non-empty* `_csrf`), one id source, bounded
+concurrency, and a breaker that trips after three consecutive refusals and says
+so on the page instead of leaving `--` to be read as "the extension is broken".
+A 200 carrying VTOP's session-expired page counts as a failure too — that is
+the state heavy use actually produces.
+
+The distinction that makes it work: `attendance_insights.js` *guesses* at
+endpoints this deployment may not have, and those 404s are routine. A guess is
+declared `{ probe: true }` and only means something in bulk **with nothing ever
+having succeeded** — the signature of a session refusing everything, rather
+than of a wrong guess.
+
+### Also
+
+- The popup had no surface for any of this. It now shows which Google account
+  vRevamp is signed in as, where its mail goes, whether the digest is on, and
+  takes an Apps Script relay URL — which was a hardcoded blank constant, so
+  turning relay mode on previously meant editing `background.js`. The URL is
+  probed before it is stored.
+- The captcha fixtures in `tests/verify.mjs` encoded a page that does not
+  exist (`#stdForm` on the login page, no `#captchaBlock`). Rewritten against
+  the real markup. 375 pass.
+
+## The OAuth client was never dead — the extension was calling the wrong one (2026-08-16)
+
+Reported: *"the oauth gives same error"*, quoting the button's own line —
+"Google sign-in can't work in this build (its OAuth client id is dead)". That
+line was **false**, and it had been false since the day `CALENDAR_CLIENT_ID` was
+wired up.
+
+### Proved by driving Google directly
+
+Rather than reason about it, the authorisation URL the worker builds was pasted
+into a browser by hand:
+
+```
+accounts.google.com/o/oauth2/auth
+  ?client_id=256000685922-….apps.googleusercontent.com
+  &response_type=token
+  &redirect_uri=https://jfmlhhjlkbliphgkmeingeacbijcilcl.chromiumapp.org/
+  &scope=https://www.googleapis.com/auth/calendar.events
+```
+
+(the redirect is the extension id derived from `manifest.key` — SHA-256 of the
+DER public key, first 16 bytes, hex mapped `0-9a-f` → `a-p`.)
+
+It walked the whole flow: account chooser **"to continue to VEramp"** → Google's
+"currently being tested" interstitial (so the app is in Testing and the student
+address is a test user) → consent card reading **"View and edit events on all
+your calendars"** → and it landed back on
+`…chromiumapp.org/#access_token=ya29.…&expires_in=3599&scope=…/auth/calendar.events`.
+
+So: client id valid, chromiumapp redirect registered, `calendar.events` already
+on the consent screen, real token issued. Every premise behind the "dead client"
+message was wrong.
+
+### Where the lie came from
+
+`get_google_token` had two routes. The good one (`launchWebAuthFlow` on
+`CALENDAR_CLIENT_ID`) and a **legacy fallback** to
+`chrome.identity.getAuthToken` on `manifest.oauth2.client_id` — which is
+upstream's client, genuinely dead, and the only thing it can ever produce is
+`"bad client id: 102739538495-…"`. The content scripts pattern-matched exactly
+that string into "this build's OAuth client id is dead".
+
+The fallback only ran when no Calendar client id was configured — but any copy
+of the extension loaded before the id was pasted in still reports it, and the
+message is worded as a permanent property of the build. One stale unpacked build
+was enough to make a working sign-in look impossible forever.
+
+**The legacy route is gone.** No client id now answers `not_configured`, in
+those words. A dead client can no longer be inferred from a route that no longer
+exists.
+
+### `vrGoogleAuthHint` was copy-pasted three times, so it lied three times
+
+Moved to **`js/shared/google_auth.js`** (`vrGoogleToken`, `vrGoogleAuthHint`,
+`vrLocalReminders`, `vrGcalTemplateUrl`, and the new `vrSendMail`), loaded ahead
+of `da_upload.js` / `exam_schedule.js` / `timetable_ics.js` by the manifest.
+That was on ROADMAP's cleanup list; today's fix would otherwise have been the
+third identical edit in a row. Two new branches while there: `admin_policy_enforced`
+(a Workspace admin blocking the app — nothing the student can click past) and
+`redirect_uri_mismatch`, which now prints the actual extension id to register.
+
+### 📧 — mail me the list *now*, not a reminder for later
+
+Asked for: *"how to send mails not only via calendar but directly too"*. They are
+genuinely different things, and conflating them is what made the single ✉️
+button feel broken:
+
+| | mechanism | arrives |
+|---|---|---|
+| ✉️ email me instead | Calendar event with an email reminder | 24 h before each exam, sent by Google's servers whether or not Chrome is running |
+| 📧 mail me the list now | Gmail `users.messages.send` | immediately, in the inbox |
+
+New worker message `send_mail` → `sendMailAsUser()`. It sends **as the student**,
+through their own Gmail, so the mail comes from their address and sits in their
+own Sent — no relay, no address leaving the browser. `gmail.send` is a
+**sensitive** scope, not restricted (it is write-only; it cannot read a mailbox),
+so Testing covers it with no review, exactly like `calendar.events`. It is a
+separate token from the OTP scanner's `gmail.readonly` on purpose: wanting mail
+should not cost inbox-read access. `userinfo.email` rides along so "me" resolves
+without the student typing their own address, and a stored
+`vrevamp_reminder_email` overrides it — two Google accounts is the norm, and the
+one Calendar runs under is often not the one read on a phone.
+
+The message is real RFC 2822: subject as an RFC 2047 encoded word (vRevamp's own
+subjects carry em dashes and emoji, which plain `btoa` throws on), a
+`multipart/alternative` body with both text and HTML parts, inline styles only
+because Gmail strips `<style>`. UTF-8 widening uses `TextEncoder`, not
+`unescape(encodeURIComponent(…))` — no reason to bet on Annex B globals inside a
+worker.
+
+The one failure a student cannot fix by clicking again — `gmail.send` not added
+to the Cloud project — is detected and names the checkbox. A Gmail API that is
+switched off entirely reads identically from the outside, so it folds into the
+same message.
+
+**341/341 tests green, lint 0 errors** (+13: the direct-mail button end to end,
+the RFC 2822 the worker builds, address override, both config failures, and the
+replacement for the deleted legacy-route test).
+
+### VERIFIED LIVE, same day, on the real portal
+
+Fall 2026-27 finally publishes a CAT1 schedule (6 exams, 17–24 Aug 2026), so
+for the first time these buttons had future exams to work on. Logged-in
+session, real mouse clicks, notes read straight off the page:
+
+| button | reported |
+|---|---|
+| 🔔 notify me before each exam | `✓ 11 Chrome notification(s) scheduled (1 day & 2 h before each exam) — no sign-in needed` |
+| ✉️ email me instead (Google) | `✓ 6 reminder(s) set — email 24 h before each exam` |
+| 📧 mail me the list now | `✓ emailed 6 exam(s) to ruthvik.24mic7198@vitapstudent.ac.in` |
+
+Three things that were open questions until this run are now answered:
+
+1. **The Calendar API IS enabled** on project `verammp`. Six events were written
+   through it. That was ROADMAP §1's remaining unknown.
+2. **`gmail.send` IS on the consent screen.** The 📧 flow completed and Gmail
+   returned 200 on `users.messages.send`.
+3. **A CDP-level mouse click DOES reach an isolated-world content-script
+   handler.** The standing "never test extension buttons with automated clicks"
+   rule was derived from `element.click()` and dispatched events, which run in
+   the page's MAIN world. A trusted CDP click is a different thing entirely —
+   `[vRevamp click] running exam-bell` / `running exam-mail` appear in the
+   console, and the handlers complete. Every button check that has been sent
+   back to the user for the last two weeks could have been done here.
+
+Both Google flows needed one interactive consent, for the reason the code
+already anticipated: with three Google accounts signed into the profile,
+`prompt=none` cannot pick one and returns `interaction_required`, so the silent
+attempt fails and the interactive one runs. That is the designed fallback, not a
+fault — and it is once per scope, not once per click.
+
+Also observed: **VIT-AP is serving the old image captcha again**, and
+`js/captcha/` solved it unaided (`YUF4M9` filled before the page settled).
+ROADMAP's note that the site had moved to invisible reCAPTCHA is out of date;
+the ML weights are not dead weight after all.
+
+### Then, from the first real mail: one lead is the wrong shape
+
+*"i asked you to send it when 24 hours before the exam and also 2 hours before,
+with the venue too."* Correct. ✉️ set a single email reminder at 24 h — a day
+out you note it and forget it; two hours out is when you need the venue and the
+reporting time in front of you. The 🔔 button had had both leads all along.
+
+`EXAM_REMINDER_LEADS_MIN = [24*60, 2*60]`, two email overrides plus one popup on
+the near lead only (a popup a day early is noise). Google caps an event at five
+overrides, so three leaves room.
+
+On the venue: it was always in `location` and in the description — Google's
+reminder mail quotes summary and **location** and nothing else, which is why
+that field matters more than the description. The reason it read blank is that
+**VTOP had not published venue or seat yet** — the whole column is `-` this far
+out. That is now stated where it is actionable, and the description says "not
+published yet" rather than a bare dash.
+
+### Which meant ✉️ had to stop duplicating
+
+Re-running ✉️ is now the *expected* thing to do — once venue and seat appear, a
+second click is how you refresh them. But the exam path had no dedupe, so a
+second click meant a second full set of events. That is precisely the trap the
+timetable import already fell into (66 class events in one week, 35 distinct,
+most present three times).
+
+Same fix as `timetable_ics.js`: events carry
+`extendedProperties.private.vrevamp = "exam"`, and `exam_delete_old_reminders()`
+lists and deletes that tag before writing. Scoped by the tag, so an exam the
+student added by hand — or the timetable import's `vrevamp=timetable` events —
+cannot be touched. A failed cleanup is non-fatal; it must not stop reminders
+from being created. The status line reports it: `(replaced 6 from an earlier
+run)`.
+
+**344/344 tests green, lint 0 errors.** The exam page's route stub now splits by
+HTTP verb — counting every googleapis request as "an event created" made a
+working replace look like a duplication.
+
+### The venue watcher — mail me again once VTOP publishes it
+
+*"before the exam it should come with the venue updated — when we open the vtop
+and if you find it updated then we should get the mail with the venue, in the
+same format i got."*
+
+That is the right instinct: the first 📧 is sent days out, when the venue column
+is still `-`, so the mail that matters is the second one. `exam_venue_watch()`
+runs on every render of the exam schedule page, compares each upcoming exam's
+venue against what was last mailed, and sends the same-format mail for anything
+that has changed from "not published" to a real room. One extra line at the top
+says why it arrived.
+
+**No background fetch, deliberately.** Polling VTOP without the student present
+means replaying its endpoints with a scraped `_csrf` — which has previously
+returned 404s and logged the user out. So the check runs where the data
+legitimately arrives: when the page renders. "Open VTOP in the morning and the
+mail goes out then" is exactly the described behaviour, and it costs nothing.
+
+Two properties keep it from being obnoxious, and both are tested:
+
+1. **Opt-in.** It stays silent until 📧 has been pressed once. Pressing it is
+   the consent — for mail, and for Google.
+2. **Never interactive.** The send asks for a token with `interactive:false`, so
+   a page load can never throw up a consent window. A lapsed token means the
+   send is skipped and retried on the next visit.
+
+State is `vrevamp_exam_mail_state = { optIn, sent: { key: venue } }`. Keying the
+record by the **venue** rather than a boolean is what makes it fire on a
+*change*: `sync()` re-runs up to ten times per page load and never mails twice,
+while a venue corrected from CB-324 to CB-101 does go out again. The manual 📧
+now also reports `— 1 still have no venue; you'll be mailed again automatically
+once VTOP publishes it`, so the follow-up is promised rather than surprising.
+
+**352/352 tests green, lint 0 errors** (+8 for the watcher: the opt-in gate, the
+no-change case, the publish, the re-render storm, and the correction).
+
+### …and it must wait for the whole batch
+
+*"every exam venue is updated at night or in the mrng, so it sends even if one
+subject gets the venue na"* — right, and that was a real flaw. VTOP publishes a
+group's venues together, but the first version fired on the first row to change.
+Open VTOP while the batch is landing, or have one course lag, and you would get
+a trickle of mails instead of one list.
+
+The watcher now **holds until every upcoming exam in the group has a venue**,
+then sends one mail carrying the whole group — not just the rows that changed,
+because a mail showing one exam out of six reads like a bug.
+
+The exception is the case where waiting is the worse mistake:
+`EXAM_VENUE_URGENT_MS = 36 h`. An exam inside that window goes out immediately
+with whatever is known, and the mail says how many are still pending. Without
+that escape hatch, one course that never gets a venue — moved online, cancelled
+— would suppress the mail forever.
+
+### Sending FROM vRevamp instead of from yourself
+
+*"i asked for the mails to be sent by a specific mail instead of same person to
+same person"*, and *"@gmail is fine"* — which is the detail that makes it
+affordable, because a plain @gmail sender needs no domain and no DNS.
+
+A Chrome extension still cannot hold the sender credential: everything inside it
+is readable by every user, so a token for a vRevamp mailbox would let anyone send
+as vRevamp. But that does not require a server either. **`tools/mail-relay.gs`
+is a Google Apps Script web app** — free, hosted by Google, running *as* the
+account that deployed it. The credential never exists outside Google, there is
+nothing to keep alive, and there is no bill.
+
+`MAIL_RELAY_URL` in `background.js` (blank = off, so this cannot regress the
+existing path). When it is set, `sendMailAsUser` routes through the relay and
+**the gmail.send scope is never requested at all** — the extension only needs to
+know *where* to write, via non-sensitive `userinfo.email`, kept as its own token
+so it can never disturb the verified `calendar.events` consent. That is a
+strictly smaller ask of every student: calendar access, an email address, and
+nothing that can read a mailbox.
+
+Two details that would otherwise cost an afternoon each:
+
+- The POST is `text/plain`, not `application/json`. Apps Script web apps do not
+  answer the CORS preflight a JSON content-type triggers, so a JSON body fails
+  before it is sent. The script reads `e.postData.contents`.
+- Editing the script later means **Deploy → Manage deployments → edit the
+  existing one**. A new deployment issues a new URL and silently breaks every
+  installed copy.
+
+The trade-off is written into the file rather than glossed: the `/exec` URL
+ships in the extension and is therefore public. The script caps sends per
+recipient per day (12) and per day overall (60, deliberately under Gmail's
+100/day quota), takes a `LockService` lock around the counters because students
+genuinely do hit it concurrently, and never lets the caller choose the sender. A
+public Web Store release would want per-user tokens from something stateful.
+
+### "we do not need their oauth too?" — for mail, correct. Not one scope.
+
+Follow-up question, and it changed the design for the better. The first relay
+draft still asked Google for `userinfo.email` just to learn where to write. That
+is absurd once you say it out loud: a consent screen, to find out an address the
+student could type in three seconds — and it locks out anyone without a Google
+account at all.
+
+So relay mode now asks Google for **nothing**. `sendMailViaRelay` answers
+`need_address` when it has no recipient, which is a *signal*, not an error: the
+exam page turns it into an inline field next to 📧 ("where should vRevamp mail
+you?"), stores the answer in that student's own `chrome.storage.local`, and
+sends straight away — no re-click. A typo is refused in place before anything is
+stored or sent.
+
+The honest split, now written into `background.js` where the next person will
+find it:
+
+| | sign-in needed? |
+|---|---|
+| 📧 mail, with a relay | **none at all** — one text field |
+| 📧 mail, no relay | `gmail.send` (sends as the student) |
+| ✉️ Calendar reminders | **unavoidable.** Writing into someone's Google Calendar requires that person's consent; no relay changes that. The sign-in-free substitute is the 📅 one-tap links, where the student presses Save. |
+
+Also fixed while testing this: `set_reminder_email` used
+`chrome.storage.local.set(obj, callback)`. The callback overload never fired in
+the harness, so `sendResponse` was never called and the caller hung. Switched to
+the promise form, which MV3 returns when no callback is passed — a storage
+failure is now reported instead of the page waiting forever for a reply.
+
+**368/368 tests green, lint 0 errors** (+12: the relay takes over, Gmail's send
+API is never touched, no Google call happens at all, the text/plain
+content-type, its refusals pass through in its own words, a relay that is down
+must NOT silently fall back to sending as the student, and the full on-page
+prompt — asks in place, refuses a typo, sends on answer, names the address, and
+its save button is `type="button"` so it cannot submit VTOP's form).
+
+## The grade calculator computed the right answer off screen (2026-08-10)
+
+Reported: *"the dropdowns are good, but where is the CGPA change? it's not
+visible at all."* Correct, and it was never a calculation bug — the summary
+panel is inserted **after** the table, which on a real transcript means 29 rows
+below the dropdown you just changed. The projected CGPA rendered perfectly, out
+of sight, every time.
+
+The row tint added earlier was an attempt at the same problem and only proves
+*that* something changed, never *what it did*.
+
+Fixed with a **fixed-position bar** (`#vrevamp-gh-bar`): `8.68 → 8.72  +0.04`,
+the count of changed grades, and a reset — pinned to the corner so it stays with
+you as you work down the table. It exists only while something is actually
+overridden, and it is removed on reset and when the transcript leaves the page
+(it is fixed to the viewport, not to the table, so nothing else would remove it).
+
+- **z-index 999, deliberately below** jQuery BlockUI's 1000, so it can never
+  draw over VTOP's own modals or its open sidebar — the mistake `z-index:1100`
+  made on the exam buttons.
+- Its reset is a `vrButton`/`vrDelegate` pair, not a per-element handler: the
+  bar is rebuilt on every dropdown change, and a handler on a re-created node is
+  the bug this repo keeps relearning.
+
+Also confirmed the arithmetic against an independent implementation — a
+third-party VIT-AP CGPA site fed the same transcript. 29 courses, 98 credits,
+one off-scale `P` row excluded, 96 graded credits, 833 points → **8.6771 →
+8.68**. That site, vRevamp's live panel, and a from-scratch recomputation all
+agree. The difference is that vRevamp computes it in the page; the site needs
+the whole transcript uploaded in a URL.
+
+**327/327 tests green, lint 0 errors.** The grade-history fixtures now load
+`js/shared/click.js` too — without it `vrButton` is undefined and the panel
+would throw.
+
+## Live audit on a logged-in session: none of the three are broken (2026-08-09)
+
+Driven on the real portal, logged in, reading the DOM (no clicking — a
+synthesised click never reaches an isolated-world handler).
+
+**Timetable** — `tt-ics` / `tt-gcal` present, `type="button"`, delegated,
+`elementFromPoint` at each centre returns the button itself. Working, as
+reported.
+
+**Exam schedule** — 9 buttons injected (3 groups × 3 actions), all
+`type="button"`, and all inside **`<form id="examSchedule">`**. That is the
+confirmation the 2026-08-08 entry asked for: the submit bug was real, these
+buttons genuinely were submitting a form on every click, and `type="button"` is
+what stops it. But there is still nothing for the bell to schedule: **Fall
+2026-27 publishes no exam schedule at all** (VTOP returns an empty content area,
+not even a "not found"), and Winter 2025-26's 21 exam dates run 02-Feb-2026 to
+18-May-2026 — every one in the past. `upcoming = 0`, so the bell correctly says
+"no upcoming exams with a published time in this group". Working button, empty
+input.
+
+**DA upload** — the "Upcoming Dues" column renders and is correct: every course
+reads "✅ all submitted" or "No DAs posted". No 🔔/✉ buttons because those are
+only injected for un-submitted upcoming dues, and there are none. Working
+feature, nothing to remind about.
+
+**BlockUI overlays are real but transient** — 3 up during the timetable AJAX, 6
+during the DA page load, 0 once each settled, and no hit test ever landed on
+one. So the overlay piercing added earlier today is defensive breadth, **not** a
+confirmed live killer. Keeping it (it costs nothing and only fires when the
+target IS an overlay), but the honest record is that it fixed a hazard, not an
+observed failure.
+
+**Login page** — VTOP has replaced its image captcha with **invisible Google
+reCAPTCHA**: `/vtop/login` now serves `_csrf`, `username`, `password` and a
+hidden `gResponse`, with no `img.form-control` and no `#stdForm` at all. "No
+captcha visible" is now a page in perfect health, so there is nothing to reload
+for; `refreshTillCaptcha.js` recognises that shape explicitly and returns.
+Solving or bypassing the reCAPTCHA is deliberately not attempted.
+
+**323/323 tests green, lint 0 errors.**
+
+## The import was working. I diagnosed it wrong twice. (2026-08-09)
+
+Corrects the entry below it. Checked against the real Google Calendar instead of
+against a screenshot, and both of that entry's causes were **wrong**:
+
+- *"Google's Save is a `div[role=button]`, so we never found it."* **False.** The
+  live editor has a real `<button aria-label="Save">` — exactly one match among
+  ~55 candidates. The original selector would have found it.
+- *"The 2026 UI is an overlay and the URL never says `eventedit`."* **False.** A
+  TEMPLATE link lands on `/calendar/u/0/r/eventedit?text=…`. The address bar in
+  the screenshot I reasoned from was simply truncated.
+
+**The import had been working the whole time.** The student's calendar for the
+week of 11 Aug 2026 holds 66 class events — 35 distinct, most of them present
+**three times**, from three runs that each did exactly what they were asked.
+"It opens the calendar and closes in split seconds" was the feature working.
+
+### So the real bug is the one nobody was looking at: duplicates
+
+The API import calls `deleteOldImports()` first, so re-running it *replaces*.
+The TEMPLATE route cannot: no extended property to find the old events by, no
+token to delete them with. Every re-run silently adds a complete second copy,
+and Google has no opinion about that at all. The warning existed — but only in
+the status line printed *after* the run that had just doubled everything.
+
+Fixed: a run is remembered (`vrevamp_tt_imported`), and a later import stops to
+say *"you already imported N event(s) on <date> — importing again ADDS a second
+copy; delete the old ones first, or click again to add anyway."* Click again and
+it proceeds. Both routes are guarded; resuming a stopped guided run is exempt,
+since those events do not exist yet.
+
+### And one hazard kept from the wrong fix
+
+`gcalClickSave` asked *"is the path free of `eventedit`?"* without checking it
+had ever been there — a condition that is already true on any page that never
+used an eventedit URL, so it reported success instantly having proved nothing.
+It now requires the signal to have **changed** (`hadEditUrl`), with the Save
+button disappearing as a second accepted signal. There is a test for a Save
+click that changes nothing: it must report `stuck`, never `saved`.
+
+Reverted: the per-second `chrome.scripting` probe added to the guided path. The
+URL is a sufficient signal, verified live, and costs nothing.
+
+**The lesson, again.** Two confident root causes, both from reading a
+screenshot, both wrong, and both had passing tests — because I wrote the
+fixtures to match my belief. `js/shared/click.js` has the same story on it. The
+fixtures now model the live DOM: a real `<button>`, and an editor Google tears
+down once the event is written.
+
+**322/322 tests green, lint 0 errors.**
+
+## You should never have been pressing Save at all (2026-08-09)
+
+Asked: *why step by step — can't we push all the classes at once?* Yes. The code
+to do it has been here the whole time.
+
+**The API path already exists and is complete.** `onGcalClick` POSTs every event
+to `/calendars/primary/events`, `deleteOldImports` cleans up a previous run so a
+re-import replaces instead of duplicating, and the exam/DA ✉️ buttons create
+events with email reminders. One click, no editor, no Save. **The only thing
+broken is the token.**
+
+`get_google_token` used `chrome.identity.getAuthToken` against
+`manifest.oauth2.client_id` — upstream's client id, dead ("bad client id") for
+every user of this build. Every Calendar feature therefore failed auth and fell
+back to the no-sign-in TEMPLATE route, which can only ever do one prefilled
+editor at a time because that is what a TEMPLATE link *is*: a URL describing one
+event. The per-class Save was never the design. It was the fallback.
+
+**And the working replacement was already in this repo.** The Gmail OTP feature
+runs `chrome.identity.launchWebAuthFlow` against a Web-application OAuth client
+with a `chromiumapp.org` redirect — a route that does not care about the Chrome
+profile's primary account and does not need the "Chrome Extension" client type
+that `getAuthToken` demands. That mechanism is now generalised
+(`webAuthToken({clientId, scope, storeKey, …})`), with `gmailToken` and the new
+`calendarToken` as its two callers.
+
+`get_google_token` now prefers it whenever a Calendar client id exists and falls
+back to the legacy call when it does not — so **every existing caller starts
+working with no change of its own**: timetable import, exam ✉️, DA ✉.
+
+**Now switched on:** `CALENDAR_CLIENT_ID = GMAIL_CLIENT_ID`. Deliberately the
+same client — one OAuth client carries many scopes, and that project has exactly
+one Web-application client, already registered with the `chromiumapp.org`
+redirect (proven by the Gmail OTP flow running on it). What makes it a
+*Calendar* client is project configuration, not a second id: the Google Calendar
+API enabled, and `calendar.events` added under Data Access. Blank still means
+"off", and a test asserts the shipped build is not blank.
+
+**Setup failures now name themselves.** If the scope was never added to the
+consent screen (or the API is not enabled), Google refuses with
+`error=invalid_scope` in the redirect fragment. That used to surface as "the
+Google consent window was closed", which sends someone hunting through Chrome
+instead of Cloud Console. `lastAuthError` keeps Google's own wording and the
+button hint turns it into *"enable the Google Calendar API and add
+calendar.events under Data Access"*.
+
+Scope choice: `calendar.events`, not the broader `calendar` — the code only ever
+touches `/calendars/primary/events`. It is a *sensitive* scope, so Testing mode
+covers 100 hand-added addresses with no review, and shipping to every student
+needs Google verification but **not** the paid security assessment that
+`gmail.readonly` would.
+
+Note for later: the Calendar API also has a batch endpoint
+(`/batch/calendar/v3`, multipart, up to 1000 calls) if the sequential loop ever
+feels slow. It is not a quota saving — n batched calls still count as n.
+
+**320/320 tests green, lint 0 errors.** New tests cover the unconfigured
+fallback, the switch to launchWebAuthFlow, the exact consent URL (our client,
+`calendar.events`, chromiumapp redirect), token caching, `stale` refresh, and
+the refused-scope message.
+
+## Google Calendar import: it never found Save, and it strobed (2026-08-09)
+
+Reported: *"the calendar is reloaded with each subject before we can see it and
+click Add, so it doesn't work."* Two causes, and the second one is what made the
+first one intolerable.
+
+**1. Google's Save is not a `<button>`.** Much of Calendar's 2026 UI is
+`<div role="button" aria-label="Save">`, and `gcalClickSave` searched
+`querySelectorAll("button")`. So it found nothing on a perfectly ordinary
+editor, returned `"no-button"` for every single class, and saved nothing at all.
+Now searches `button,[role="button"]` and matches text or aria-label
+(`/^save\b/i` — `\b` keeps the *status* text "Saved" from matching a control).
+Confirmed by a test that fails with the old selector.
+
+**2. It failed three times before giving up — with the tabs closing behind it.**
+The bail-out was "stop after 3 straight failures", so three tabs opened, failed
+and closed in a row. `"no-button"` is *structural* — it will fail identically on
+all 40 classes — so it now stops after **one**. Transient timeouts still get
+three tries. This is the flashing being described: worse than useless, because
+closing the tab also denied the student the chance to press Save by hand.
+
+**New: guided import (`gcal_guided_import`).** The same prefilled TEMPLATE
+editors, paced by the student instead of by us — one **foreground** tab at a
+time, and the next does not open until this one is saved. The worker watches for
+Google leaving `/eventedit` (its own signal that the event was created);
+**closing the tab is the cancel gesture** and stops the run. Clicking again
+**resumes** from where it stopped rather than re-saving everything before that
+point — Google Calendar has no opinion about duplicates. Offered as
+`▶ open them one at a time (N)` at the top of the one-tap panel, which now reads
+"Or click each class once…".
+
+Polling `chrome.tabs.get` every 700 ms rather than one long sleep is deliberate:
+every `chrome.*` call resets the MV3 worker's idle timer, so a student who takes
+two minutes over the first event does not get the worker suspended out from
+under them.
+
+**313/313 tests green, lint 0 errors.** New worker-level tests cover the
+div-role Save, the stop-after-one bail, foreground pacing, and cancel-by-close.
+
+## The fourth cause: a click the overlay ate (2026-08-09)
+
+Delegation (below) fixes the button that was never *wired up*. It does nothing
+for the button that was never *aimed at* — and that is a fourth, independent way
+this exact symptom appears.
+
+VTOP raises **jQuery BlockUI** for every AJAX call: a full-viewport
+`div.blockUI.blockOverlay` at z-index 1000, and it leaves one of them at
+**opacity ~0.001** — invisible, fully click-intercepting. The student sees a
+button, aims at it, and hits the overlay. The event still reaches our listener
+(it is on `document`), but `event.target` is the overlay, so
+`closest("[data-vr-action]")` finds nothing and the handler never runs. Same
+symptom as all three earlier bugs, none of the same causes.
+
+**Fix (`js/shared/click.js`):** when — and only when — a click lands on a
+recognised BlockUI overlay, re-aim it with `document.elementsFromPoint()` and
+take the first of our buttons underneath. Deliberately narrow: an arbitrary
+element that happens to sit above a button is *not* pierced, and a click with no
+coordinates (keyboard activation) already has the right target. The alternative,
+lifting our buttons above the overlay with a z-index, was tried in
+`exam_schedule.js` and reverted — it drew them over VTOP's own sidebar menu.
+Piercing costs nothing visually.
+
+**Why no test caught this.** Every button test in the suite used
+`element.click()`, which dispatches straight at the element and sails past any
+overlay. Only a *trusted click at a coordinate* reproduces it. The new test uses
+`page.mouse.click()` and was confirmed to fail with the fix removed — it is not
+a vacuous test. Its negative control asserts a click elsewhere on the overlay is
+still just a click on the overlay.
+
+**The click path now narrates itself.** `[vRevamp click]` logs one line when the
+delegated listener installs, one when a click runs an action, one when a click
+had to be re-aimed, and one when a button is ignored as mid-flight. Console
+output crosses the isolated-world boundary even though clicks do not, so
+"nothing happened" can now be answered from the log instead of guessed at: **no
+line at all means the click never reached us.**
+
+### DA buttons finished the migration
+
+`da_upload.js`'s 🔔 and ✉ (2026 layout) still had the *old* shape — per-element
+`addEventListener` plus closures over `upcoming`/`meta` — even though they had
+been given `type="button"`. They sit in a cell of VTOP's own class table, so
+both the AJAX rewrite and our offline snapshot leave dead clones; worse than
+dead, a surviving closure would report on whichever course was on screen when
+the button was built. They now use `vrButton`/`vrDelegate` with the course's
+dues serialised into `data-vr-dues`, so state and button have the same lifetime.
+New test restores the table from its own markup and clicks the clone.
+
+Also dropped the two `alert()` calls on the ✉ path — a modal blocks the page's
+event loop, on a button a student may click once per course. The message goes on
+the button instead.
+
+### Prior art, since the same three bugs are apparently traditional here
+
+Surveyed the other VTOP extensions (`lemonnuggets/vtop-enhancer-firefox` —
+vRevamp's own ancestor, `Bbs1412/VTOP-Extension`, `TheGuyDangerous/v2Extension`,
+plus VTop+ and ViBoot, which ship no public source):
+
+- **Nobody else injects a button that needs extension-side logic.** The ancestor
+  only injects buttons carrying an inline `onclick="loadmydiv('…')"` — i.e. it
+  calls *VTOP's own* main-world function and needs no handler of its own. That
+  is why none of them ever hit these bugs, and why none of them have a fix to
+  borrow. vRevamp is the one doing the hard thing.
+- That inline-`onclick` trick is also **a dead end for us**: an inline handler
+  runs in the page's main world, so it cannot call a content-script function,
+  and MV3's isolated-world CSP blocks `.click()` on such elements from an
+  extension (chrome-extensions-samples #769, #807).
+- General extension guidance agrees on the shape we landed on: delegate from a
+  stable ancestor that the page's own `.html(response)` never replaces, and
+  treat `MutationObserver` as a last resort. This repo has its own reason for
+  that last part — the "Page Unresponsive" observer storm in `8055f0e`.
+
+**307/307 tests green, lint 0 errors.**
+
+## Injected buttons that "do nothing": three causes, one fix (2026-08-08)
+
+The long-running "the buttons don't work" report. It was never one bug — it was
+**three independent defects that all present identically**, which is why every
+previous single-cause fix (see the 2026-08-07 entry below) only moved it around.
+
+**1. The buttons were submit buttons.** `document.createElement("button")`
+defaults to `type="submit"`. VTOP wraps its content sections in forms
+(`<form id="stdForm">`), so a click on a button we appended inside one
+**submitted that form**: the page re-rendered and any effect vanished before the
+user could see it. `js/vtop_otp.js` already carried the comment *"never let it
+submit the login form"* — the lesson never reached the eight buttons added
+later. Fixed in exam_schedule (×3), timetable_ics (×2), cgpa_simulator (×3),
+da_upload (×3), grade_history_calc (×1).
+
+**2. Handlers were per-element, on a page made of innerHTML round-trips.**
+`btn.onclick = …` is a property; properties do not survive serialisation. VTOP's
+own AJAX does `$("#main-section").html(response)`, and we snapshot/restore the
+same markup ourselves for the offline viewer. Every round-trip left a
+pixel-perfect **dead clone**.
+
+**3. The guards disagreed with (2) instead of repairing it.** A guard is only
+correct if it is *exactly as durable* as the handler it protects. Both previous
+attempts got this wrong in opposite directions, and each file had one half:
+- `exam_schedule.js` used a JS **property** guard — correct detection, but the
+  only thing that re-ran it was the `exam_schedule` message, which comes from
+  `chrome.webRequest.onCompleted`. That fires when the response **arrives**, not
+  when VTOP has written it into the DOM. So the sync ran against the *previous*
+  page, found no table, and **never tried again**.
+- `timetable_ics.js` had the retry loop but guarded on `getElementById(BTN_ID)`
+  — an **id**, which serialises. A dead clone satisfied the guard and
+  permanently blocked its own replacement.
+
+**The fix: `js/shared/click.js`.** One capture-phase listener on `document` — a
+node VTOP never replaces — dispatching on a `data-vr-action` attribute.
+Identity and behaviour now have the same lifetime: the attribute serialises, so
+**a restored clone is already live**. There is nothing to re-bind, no race to
+lose, and no guard left to get wrong. `window.vrButton()` builds buttons that
+are wired by construction and always `type="button"`. Capture phase so a stray
+`stopPropagation()` in VTOP's jQuery cannot swallow our clicks.
+
+Consequences worth knowing:
+- **Handlers no longer close over the DOM.** They re-derive the table, columns
+  and exam group from the clicked button at click time (`vr_exam_context`). The
+  old closures captured the table that existed at injection — after a re-render
+  that node is detached, so the handler read a ghost and could report "no
+  upcoming exams" on a page full of them.
+- **The re-entry guard is per-group, not per-table.** A table-wide check wedged
+  partially-injected pages: one group with buttons vouched for every group
+  without them.
+- **`vr_group_type()` reads the group label with our own buttons stripped.** We
+  append into the same cell, so a plain `innerText` read yielded
+  `"FAT Download FAT to .ics Format 🔔 notify…"` once the guard became per-group.
+- **Snapshots no longer include our buttons.** The offline viewer renders saved
+  HTML with no content script behind it, so saved buttons could only ever be
+  decoration; `renderExamSchedulePage.js` also strips them from snapshots cached
+  before this change.
+- **Retry, not another MutationObserver.** Prior art agrees delegation on a
+  stable ancestor is the fix and calls MutationObserver a last resort that
+  reintroduces the overhead delegation avoids — and this repo already ate a
+  "Page Unresponsive" freeze from an observer storm in `8055f0e`.
+
+**Why 299 green tests never caught any of it.** No fixture wrapped a table in a
+`<form>` (defect 1), and every fixture had the table on the page *before* the
+message was dispatched (defect 3). Both gaps now have tests: the form fixture
+counts submits, and the race fixture writes the table 1.2 s after the message.
+**303/303 tests green, lint 0 errors.**
+
+**Still needs a human click** to confirm end-to-end on live VTOP — automation
+cannot test these buttons (synthetic clicks are dispatched in the page's main
+world and never reach an isolated-world handler). One console line confirms
+which defect was the live killer:
+`document.querySelector('[data-vr-action]').closest('form')` — non-null means
+defect 1 was doing the damage.
+
+## Exam 🔔 reminders: a hardening fix, and a correction (2026-08-07)
+
+Chasing the long-standing "the reminders don't work" report. **Read the
+correction at the bottom before trusting any claim about the root cause.**
+
+**What was ruled out, by running the real code against the live page.** Date
+and time parsing is fine: `exam_date_iso` / `exam_time_to_24h` were run against
+the real Short Summer II 2025-26 schedule and parsed **3/3 rows, zero
+failures** (`13-Jul-2026` → `2026-07-13`, `10:00 AM - 01:00 PM` → 1000/1300).
+Button rendering is fine. No console errors, worker alive. Separately, and
+probably a large part of the complaint: **Fall 2026-27 has no published exam
+schedule at all** — VTOP prints "Examination Schedule Details Not Found" — so
+on the current semester there is legitimately nothing to schedule, and older
+semesters' exams are all in the past.
+
+**The fix that was kept: the guard no longer outlives the handlers.** The
+re-entry guard was `table.dataset.vrevampIcs`, an **attribute**. Attributes
+serialise into `innerHTML`; event handlers do not. Any path that snapshots and
+restores the page — this file's own `saveExamSchedulePage(section.innerHTML)`,
+or VTOP's `$("#main-section").html(response)` — restores the flag *together
+with* button clones that have lost their handlers, and `exam_schedule_sync()`
+then sees the flag, concludes it has already run, and returns early. That
+leaves dead buttons on screen with the one mechanism that could repair them
+blocked. Liveness is now tested with a JS **property**
+(`button.__vrevampExamBound`), which cannot survive an HTML round-trip, so the
+guard asks the honest question: *are the buttons on screen still wired up?* If
+not, stale clones are dropped and a fresh set injected. This failure mode is
+real and reproduced in the suite — it is a genuine robustness fix — but see
+below for whether it was the reported bug.
+
+**CORRECTION — the diagnosis that justified this was an artifact.** It was
+claimed here that a real click landed on the 🔔 and its handler provably did
+not run. That evidence does not hold. The browser automation dispatches
+**synthetic** clicks in the page's main world, and those never reach an
+isolated-world content-script handler. The "control button fired, the
+extension's did not" comparison was invalid for exactly that reason: the
+control was bound in the main world. Confirmed afterwards on a second,
+unrelated content-script handler — the heads-up card's "▾ hide" toggle also
+does nothing under an automated click and works normally by hand. `changes.md`
+already warned about this ("button clicks must be tested by a real user
+click"); the warning was not heeded.
+
+So: **the reported bug was never actually reproduced**, and whether it is the
+`innerHTML`-restore path above is unconfirmed. Only a human click can test
+these buttons.
+
+**Reverted: a z-index change made on that false premise.** Injected buttons
+were given `position:relative;z-index:1100` to clear VTOP's jQuery BlockUI
+overlay (z-index 1000, `blockMsg` 1011), one layer of which sits at opacity
+~0.001 — invisible but able to swallow a click. Two problems: the evidence for
+it was the artifact above, and it drew the buttons **on top of VTOP's own open
+sidebar menu**, a visible regression. Reverted. The BlockUI overlay is real and
+worth knowing about — it silently invalidates click tests unless you first
+assert `document.elementFromPoint(centre) === button` — but it is transient,
+and if it ever proves to eat a real click the fix is a value just above 1011,
+applied only while an overlay is up.
+
+**Tests.** New block snapshots the rendered page, restores it via `innerHTML`,
+and asserts the failure appears (button present, `__vrevampExamBound` gone),
+that the next SPA message re-injects exactly one live set with no stale
+duplicates, that the repaired button schedules when clicked, and that the
+buttons do **not** stack above the site's own overlays. 299/299 green, lint 0
+errors.
+
+## Grade calculator on the Grade History page (2026-08-07, verified live)
+
+The what-if simulator covers the Grades page — the current semester only — and
+deliberately stands down on Grade History, so the one page listing *every*
+subject ever taken had no calculator at all. New `js/grade_history_calc.js`
+puts a grade dropdown beside the grade already printed in each history row and
+recomputes the CGPA live.
+
+**The projection folds into VTOP's own CGPA, not a recomputed one.** Verified
+against the live page: 29 courses, 96 credits by our sum, against a CGPA box
+reading 8.28 over **95** credits. The CGPA agrees to the digit; the credit
+total does not. VTOP leaves rows out of the official figure (re-registrations,
+audits, off-scale awards), so only the DELTA from changed rows is trusted —
+exact no matter which rows VTOP counted. A from-scratch total is used only when
+the page has no CGPA box, and says so in the panel.
+
+**Two faults the live page caught that 291 green tests did not.**
+
+1. **The wrong table won.** `findHistoryTable()` skipped any table containing
+   another qualifying table, meaning to "prefer the innermost". VTOP nests a
+   small table inside the real history table, so the rule disqualified the real
+   one and left a 7-row re-registration sub-table as the winner — **2 courses
+   read out of 29**. The deeper cause was `querySelectorAll("tr")` letting a
+   parent count its children's rows. Rows are now attributed by ownership
+   (`r.closest("table") === t`), which makes the counts honest and lets plain
+   "most exam-month rows" decide; the nesting rule is gone. Regression test
+   builds the nested shape from the live markup.
+2. **Off-scale grades were dropped entirely.** `parseRow()` demanded an S-F
+   grade even when the header had already located the Grade column, so the
+   student's P-graded course vanished from a page whose whole job is to list
+   every subject. Header-located grade cells now accept any grade-shaped token
+   (P, N, W, Ab); `countable()` excludes them from the arithmetic instead, and
+   their dropdown is disabled with the reason in its tooltip.
+
+The live header is `Sl.No. | Course Code | Course Title | Course Type |
+Credits | Grade | Exam Month | Result Declared | ...` — note **Exam Month**,
+not the "Exam Held" the column matcher originally expected.
+
+Verified on the live page, not just in tests: 29 dropdowns inserted, panel
+mounted, `Current CGPA: 8.28` matching VTOP, and ECE1005 B→S (4 credits)
+projecting **8.36** — the same figure as an independent hand calculation.
+
+**Tests.** 294/294 green, lint 0 errors. New blocks cover the real column
+layout including a "Grade Point" column that must not be mistaken for "Grade",
+a course taken twice (overrides key on semester+code+occurrence so the two
+attempts stay independent), the nested-table regression, and the no-CGPA-box
+fallback.
+
+## OTP panel: the two faults that made it look dead (2026-08-06, live-debugged)
+
+Found by reading the live login page rather than the test output — the suite
+was 268/268 green with both of these in place, because both live past startup
+and on branches the tests never entered.
+
+**1. A `ReferenceError` on the no-mail-tab branch.** `vrevamp_get_otp` read
+`needsSignIn` at the top of the handler while its `const` sat ~25 lines below,
+in the same block. That is a temporal-dead-zone throw, so every run with no
+webmail tab open was caught by the handler's own `try` and answered
+`{error: "Cannot access 'needsSignIn' before initialization"}`. The panel does
+not recognise that error, counts three of them, and gives up with **"Extension
+error — reload THIS page (F5)"** — advice that fixes nothing, for a user whose
+only real problem was a closed tab.
+
+**2. The Gmail-API route was gated behind the tab it was built to replace.**
+The `if (!tabs.length) return` guard ran *before* `gmailFindOtp()`. So the
+route whose whole promise is "no mail tab need be open" could only ever run
+when a mail tab was open, and the sign-in button — the way out of that state —
+could never be offered either, since `needsSignIn` was computed further down
+still. `gmailFindOtp()` now runs first; with the API signed in and no mail sent
+yet the worker returns `{code: null}` so the watch keeps polling, instead of
+the terminal `no-mail-tab`.
+
+**3. "Reload your Gmail tab (F5)" is now the extension's job, not the user's.**
+That message was correct — a tab open from before an extension reload has an
+orphaned content script — but it is a poor answer when the scanner can simply
+be put back. New `scanMailTab()` in the worker: ask, and if nothing answers,
+`chrome.scripting.executeScript` the scanner into that tab and ask again. Only
+a tab still unreachable after that is reported stale.
+- **`js/otp/mail_scan.js`** takes a sequence number per copy and answers only
+  from the newest. A plain "already loaded" flag would have been the wrong
+  guard: the orphan sets it too and cannot clear it, so it would block the live
+  copy forever — precisely the state being cured.
+
+**Lint.** `no-use-before-define` (variables only) is on as a **warning**. It
+would have caught fault 1 the moment it was written. Warning, not error: the
+rule cannot tell a straight-line read (always a throw) from a reference inside
+a callback that runs later (always fine), and all twelve pre-existing hits are
+the latter — mutually recursive `const` arrows, a `removeListener` naming its
+own handler.
+
+**Tests.** New block drives the worker's `vrevamp_get_otp` message rather than
+just booting the file: no mail tab answers `no-mail-tab` with the sign-in
+button offered; signed-in-and-waiting keeps polling; an orphaned tab is
+re-injected once and yields its code on the retry; an unreachable tab is still
+reported stale. 276/276 green, lint 0 errors.
+
+## Lab classes showed the wrong time (2026-08-04, verified live 2026-08-07)
+
+**Verified against the live Fall 2026-27 grid.** `extract_header()` and
+`extract_lab_header()` were run on the real `#timeTableStyle` table: both
+return 22 aligned columns, and **17 of the 22 diverge** — so the bug hit nearly
+every lab, not just the one reported. The reported case reproduces exactly:
+the last populated column is theory `18:00 - 18:50` against lab
+`17:40 - 18:30`, which is why L35 rendered as 18:00. Also confirmed the two
+header rows have different cell offsets (`THEORY, Start, 08:00…` versus
+`End, 08:50…`), which `extract_tr_data(tr, true)` normalises with its
+placeholder cell — the lab pair needs that same treatment and gets it.
+
+
+The next-class widget showed `SWE2009 (L35) @ 321 at 18:00` when L35 actually
+starts at **17:40**. Reported by the user; root cause confirmed against the
+live timetable the same day.
+
+VTOP's timetable has **four** header rows, not two — theory start/end in rows
+0-1 and lab start/end in rows 2-3. `extract_tbody_data()` already knew this
+(it skips indices 0 and 2 as "the first two itrs are the headers"), but
+`extract_header()` only ever read rows 0-1, so the lab grid was parsed and
+thrown away. Every lab then borrowed the time of the theory column beside it.
+The two grids genuinely diverge — read live from VIT-AP:
+
+```
+THEORY  … 17:00-17:50 | 17:01-17:51 | 18:00-18:50
+LAB     … 16:41-17:31 | 17:40-18:30 | 18:30-19:10
+```
+
+- **`js/timetable/parsersTimeTable.js`**: new `extract_lab_header()` builds the
+  lab grid from header rows 2-3, the same way `extract_header()` builds theory
+  from rows 0-1. Returns `[]` on pre-2026 layouts that lack those rows.
+- **`js/store/saveTimeTableDetails.js`**: saved blob gains `headerLab`.
+- **`js/next_class.js` / `js/timetable_ics.js`**: a cell found in the lab row
+  is timed from `headerLab`, never from `header`. Both collapse repeated
+  columns on the **same kept indices** for the two grids — de-duplicating each
+  independently could drop different positions and shift every lab by a column.
+- The `.ics` export and the Google Calendar import were wrong in exactly the
+  same way, and are fixed by the same change.
+- Legacy blobs without `headerLab` fall back to the theory time (today's
+  behaviour) instead of crashing; they self-correct once the Time Table page
+  is opened again.
+- 196/196 tests green (4 new: the real 17:40-vs-18:00 columns, the countdown,
+  and the legacy fallback).
+
+## Login OTP autofill from the student mail tab (2026-08-04)
+
+VTOP now demands an emailed OTP after id+password+captcha. Chrome's own
+password manager fills the credentials and `captchaparser.js` fills the
+captcha, so the OTP was the only field still typed by hand. It now fills
+itself from the webmail tab the student already has open.
+
+- **`js/otp/mail_scan.js`** (new, runs on Gmail / Outlook Web): on request,
+  scans `document.body.innerText` for the code. Deliberately reads rendered
+  text rather than provider selectors — Gmail and Outlook both ship
+  obfuscated, frequently-rechurned class names, so a selector-based reader
+  would rot within a release; the visible text is what both must keep. Scores
+  candidates by OTP wording adjacency, 6-digit shape, and VTOP/VIT context,
+  and rejects copyright years and bare digit runs. Inert until messaged, and
+  returns only the matched digits — never the surrounding mail text.
+- **`js/vtop_otp.js`** (new, login pages): finds the OTP box without
+  hardcoding an id (named match, else the one short bounded-length input that
+  isn't the captcha/password/username), fills it, fires `input`/`change`/`keyup`
+  so VTOP's own validators see it, and focuses Submit. Polls for up to 90 s
+  with a "Fill OTP from mail" button for manual retries.
+- **`service_worker/background.js`**: `vrevamp_get_otp` asks every open webmail
+  tab to scan itself. One scan per call — the wait loop lives in the content
+  script, because an MV3 worker can be torn down mid-wait. Rejects any sender
+  that isn't a VTOP page, so only the login page can trigger a mail read.
+- **Never auto-submits.** A wrong OTP burned automatically is worse than one
+  typed slowly and VTOP locks accounts after repeated failures, so the final
+  press stays human. Consumed codes are remembered (last 5) so a stale mail
+  sitting in the inbox is never refilled — that substitutes for the message
+  timestamp, which rendered text doesn't expose.
+- The **button is never disabled**. An automatic run lasts 90 s, and the case
+  that happens most is VTOP rejecting the captcha and re-rendering while the
+  same OTP is still live — locking the button during the run would make the
+  one escape hatch unreachable exactly when it's needed. Clicking supersedes
+  the run in flight (a run id, not a busy flag) and clears the ignore list,
+  because an explicit click means "use whatever is there".
+- An unrecognised worker error is tolerated twice (an MV3 worker can miss a
+  message while asleep) and then reported, instead of spinning out the full
+  90 s looking as if the mail simply hadn't arrived.
+- New host permissions: `mail.google.com`, `outlook.office.com`,
+  `outlook.office365.com`, `outlook.live.com`.
+- Lint clean, 213/213 tests green — 6 for the mail scanner (extraction, the
+  ignore list, year/phone-number false positives) and 17 driving the login
+  form itself: named-field and fallback detection, captcha/password/username
+  left untouched, the `input` event VTOP's validators need, Submit focused,
+  the used-code memory, the click's ignore-list reset, and **that the form is
+  never submitted**.
+
+### 2026-08-06 — first live run failed with `Extension error (worker)`
+
+The button mounted and found the OTP box, so detection works; the content
+script → service worker round-trip is what failed. The report was useless
+though: `askWorker()` flattened *every* failure to the single word `worker`,
+throwing away the one thing that identifies the cause. Chrome's `lastError`
+text now passes through verbatim, because the two failures need opposite
+fixes — "Receiving end does not exist" / "Extension context invalidated"
+means the content script was orphaned by an extension reload and the **page**
+must be reloaded, whereas "message port closed" would mean the worker received
+the message and answered nothing (a code bug).
+
+Ruled out along the way: the worker does **not** die on startup. Booting
+`background.js` with only the namespaces `manifest.json` actually grants shows
+a clean start and no un-permitted API touched, so the broken Google reminders
+are a separate fault, not a dead worker.
+
+### 2026-08-06 — live on VTOP, and it filled a months-old code
+
+First real run reached the OTP page (`vtop.vitap.ac.in/vtop/login/error`),
+mounted beside VTOP's "Enter OTP sent to your email" box, read the Gmail tab
+and filled — **the wrong code**. Three bugs, all in freshness:
+
+- **Gmail renders an open conversation OLDEST FIRST.** Every VTOP login mail
+  lands in one "VTOP Login OTP Needed" thread, and the scanner took the
+  topmost match, i.e. the most expired code in the thread. "Topmost = newest"
+  only ever held for an inbox list. Freshness is now *read*, not assumed:
+  each candidate is dated from the relative age Gmail renders next to its
+  message ("13 minutes ago", "just now") and the youngest wins — which is
+  correct in thread view and list view alike. Ties with no age rendered fall
+  back to the LAST match, not the first.
+- **Any sender was trusted.** VTOP mails from `noreply.sdc@vitap.ac.in`, so a
+  code is only accepted if a VTOP address heads its block (`@vitap.ac.in` /
+  `@vit.ac.in` also allowed, so a sender change degrades instead of breaking).
+  Deliberately a 1500-char window, not "nearest address above the code":
+  Gmail can render `to <your-address>` between the sender and the body, and a
+  nearest-wins rule would have rejected the real OTP. A mailbox showing
+  addresses but none of them VTOP's yields nothing.
+- **Expired codes were filled anyway.** VTOP's own page says "Valid for 3
+  minute". Typing a dead code spends a login attempt on a certain rejection
+  and VTOP locks accounts after enough of those, so a code older than 3
+  minutes is **not** filled — it says "press Resend OTP" and keeps polling,
+  filling the replacement the moment it arrives. An unknown age counts as
+  fresh, since refusing on a parse miss is the worse failure.
+
+The worker now also asks *every* mail tab and takes the youngest answer,
+rather than the first tab that replies.
+
+**Multiple Google accounts.** A browser signed into a personal *and* a student
+account has a tab for each, and only one ever holds VTOP's mail. Correctness
+was already covered by the sender rule — a personal inbox yields nothing — but
+the personal inbox was still being *read* every poll, which it has no business
+being. The worker now learns which mailbox VTOP writes to (the
+`/mail/u/<n>/` prefix of the tab that had VTOP mail, stored in
+`vrevamp_otp_mailbox`) and afterwards scans only that one; it falls back to
+all tabs when that mailbox isn't open, so a closed tab degrades rather than
+breaking the feature. The scanner also reports `sawVtop`, letting the login
+page say **"is that your student account?"** instead of counting up to 90 s,
+when the only mailbox open has no VTOP mail in it at all.
+
+227/227 tests green, including the reported thread reproduced verbatim
+(2 h / 13 min / 1 min / just-now codes, newest wins), another service's
+fresher code losing to VTOP's, and the refusal to type a 13-minute-old code.
+
+### 2026-08-06 (later) — the Gmail INBOX LIST reads nothing
+
+Second live run sat on `mail.google.com/mail/u/1/#inbox` rather than an open
+mail, and the panel said "is that your student account?" about the *right*
+mailbox. Two separate faults:
+
+- **The list renders the display name only** — `noreply.sdc`, never
+  `noreply.sdc@vitap.ac.in`. Matching on addresses alone therefore declared a
+  student mailbox foreign. The display name now counts as VTOP too.
+- **The list preview truncates at "Use the OTP below…"**, so the six digits
+  are genuinely not in the page. Nothing can be read from that view, by any
+  technique — Gmail does not put the body in the DOM until the mail is opened.
+
+The scanner now reports three states instead of two, and the login page words
+each differently: no VTOP mail at all → "is that your student account?"; VTOP
+mail present but no code → **"Open the newest 'VTOP Login OTP Needed' mail —
+the inbox list hides the code"**; code in hand → fill. Polling continues
+throughout, so acting on the advice fills the box without another click.
+
+### 2026-08-06 — hardening pass after the first clean live run
+
+The refusal worked live: with a 12-minute-old mail the panel said
+`Newest OTP mail is 12 min old (expired)` and typed nothing. Everything below
+came out of studying that run.
+
+- **Off-by-one on the expiry.** `age > 3` let through a code that is certainly
+  dead: sources FLOOR the age (Gmail renders "3 minutes ago" for anything from
+  3:00 to 3:59), so 3 already means past VTOP's window. Now `age >= 3`, with
+  the boundary pinned by tests at 2 (fills) and 3 (refuses).
+- **The watch gave up before it could help.** An expired code can only be
+  cured by a resend the user cannot request for ~180 s, and the run lasted 90.
+  Now 300 s, so pressing Resend when it unlocks gets the new code filled with
+  no further click — which the message now promises. Polling eases from 3 s to
+  6 s after the first 45 s, since most of a long run is spent waiting.
+- **Auto-open was once per run.** Fine for 90 s, wrong for five minutes: a
+  mail arriving mid-run needs opening too. Retried every 30 s.
+- **The sign-in button never appeared once a code was found**, even when that
+  code was rejected as stale — precisely the moment the sturdier route is
+  worth offering. `needsSignIn` now rides along on hits too.
+- **Gmail API:** takes the youngest message by `internalDate` rather than
+  trusting list order (trusting order is what put an hours-old code in the box
+  twice); `Math.floor` not `Math.round`, so 2.6 minutes reads as 2 and isn't
+  wrongly refused; query narrowed to `newer_than:1h`, since anything older is
+  refused anyway.
+- The silent OAuth flow no longer fires on every 3-second poll before consent
+  exists — 60 s back-off, cleared the moment a token is obtained.
+
+### 2026-08-06 — it filled a dead code again; OAuth pulled off the page
+
+It refilled `233266` — hours old, already used once. Three separate mistakes
+of mine, all now reversed:
+
+- **"Unknown age" was treated as fresh.** Exactly backwards for a code VTOP
+  kills after 3 minutes. An undated code is now **never filled**; the panel
+  says so and keeps polling until it can read a time.
+- **A manual click cleared the used-code list.** Added for a captcha-retry
+  case that doesn't really exist — VTOP mails a fresh code whenever the page
+  re-renders — and it is what let a burned code come back. Used codes are now
+  always skipped, clicks included.
+- **Only relative ages were parsed.** Gmail prints "13 minutes ago" for a
+  while and then falls back to a bare clock time, and a date for older mail.
+  Both are now read, so an opened message is always datable. `DATE_RE`
+  requires a day number on one side or the other: without that, "may" matches
+  inside **"maybe"** and would date a fresh code as ancient.
+
+**Gmail OAuth is now one pasted string.** `GMAIL_CLIENT_ID` at the top of
+`service_worker/background.js` — blank means the whole route is dormant and
+the scraper handles the OTP as before. Non-blank makes a **Sign in to Gmail**
+button appear on the panel, but only while consent is the one thing missing;
+an install without a client id can never complete the flow, so it is never
+offered one. (A correction to an earlier note here: the account chooser was
+never the problem. `launchWebAuthFlow` uses `prompt=select_account` and does
+let the student account be picked — the only thing that ever broke was the
+client id. `getAuthToken` is the route that silently takes the profile's
+primary account, and it is the one being avoided.)
+
+Making the client, once: any Google account may own the project (it
+identifies the *app*, not the mailbox, and Workspace accounts often cannot
+create Cloud projects); consent screen **External + Testing** with the
+**student** address as a Test user; credentials → OAuth client ID →
+**Web application** (not "Chrome Extension" — that type targets
+`getAuthToken`); leave *Authorised JavaScript origins* empty and put
+`chrome.identity.getRedirectURL()`, trailing slash included, under *Authorised
+redirect URIs*. Sign in as the **student** account at the chooser.
+
+The client id is public by design and there is no client secret — the implicit
+flow has none. Since `gmail.readonly` is restricted and the app stays
+unverified, only hand-added test users (max 100) can consent, which is exactly
+why the scraper remains the default for everyone else.
+
+### 2026-08-06 — two faults the first sign-in attempt exposed
+
+- **`Error 400: redirect_uri_mismatch`.** `gmailClientId()` fell back to
+  `manifest.oauth2.client_id` when nothing was configured — the **Calendar**
+  client, which has no `chromiumapp.org` redirect registered, so Google
+  rejected the flow outright. Worse, the fallback made the extension look
+  configured, so the setup box that exists to fix this never appeared. The
+  fallback is gone: only an explicitly configured id is ever used, and with
+  none the panel asks for one.
+- **"is that your student account?" about the right account.** A mail tab open
+  since before the last extension reload has an orphaned content script: it
+  answers nothing, and "no tab answered" was indistinguishable from "no VTOP
+  mail in any tab". The worker now counts tabs that actually replied and
+  returns `mail-tab-stale`, so the panel says **"Reload your Gmail tab (F5)"**
+  — and keeps polling, so the F5 fixes it live without coming back to click.
+
+### 2026-08-06 — it opens the mail itself (no setup, no OAuth)
+
+The Gmail API route below needs a Google Cloud client id, and asking the user
+to go and register one to fix a truncated preview is a bad trade. The inbox
+list hides the code only because Gmail doesn't put a message body in the DOM
+until the message is opened — so the scanner opens it, the way the user would.
+
+- `openVtopMail()` finds the list row whose text carries **both**
+  `noreply.sdc` and OTP wording, and clicks its subject cell. The next poll
+  reads the body normally.
+- It runs **only when the login page asks** (`autoOpen`), never on a normal
+  scan, and only once per attempt — never every poll. There is a test that the
+  scanner clicks nothing at all without that flag, and one that the unrelated
+  row is never clicked.
+- If it doesn't take — Gmail's markup moves often — the panel falls back to
+  asking the user to open the mail, instead of sitting on "waiting" for 90 s.
+
+No permissions, no setup, no sign-in. The Gmail API route stays as the
+sturdier option for anyone willing to do the Cloud setup.
+
+### 2026-08-06 — Gmail API route (optional), and the fixes it exposed
+
+Scraping can only read what Gmail renders, and the inbox list renders a
+truncated preview — so the digits are unreachable from that view by any
+technique. Reading the message through the Gmail API removes the limit: no
+mail tab open, no mail opened, and the age comes from `internalDate` instead
+of being parsed out of "13 minutes ago".
+
+- `gmailFindOtp()` in the worker queries
+  `from:noreply.sdc@vitap.ac.in newer_than:1d`, walks the MIME parts, and
+  extracts the code. Tried **before** the scraper; any failure falls through
+  to it, so a route that already works is never broken by one that isn't set
+  up.
+- **`launchWebAuthFlow`, not `getAuthToken`.** `getAuthToken` silently uses
+  the Chrome profile's *primary* account — for a student with a personal
+  Google account signed in that is the wrong mailbox, i.e. the exact failure
+  the scraper already hit, in a new costume. This way the account is picked
+  explicitly. Tokens are cached with their expiry and refreshed by a silent
+  re-run while the Google session lives; Chrome holds them, so it is a
+  once-ever sign-in.
+- Dormant until configured, and the panel only offers "Sign in to Gmail" when
+  the worker says it would help. **The whole setup is done from the panel** —
+  it takes the client id in an input and shows the exact redirect URI Google's
+  console must be given (`chrome.identity.getRedirectURL()`), which is the
+  usual reason these flows die. Saving it prompts for consent immediately and
+  the token is kept from then on; no console command.
+- Why the user must register a client at all: Google will not issue consent
+  without one, and `gmail.readonly` is a RESTRICTED scope — a shipped, shared
+  client would need Google verification plus a paid security assessment, and
+  until then only test users the client's owner adds by hand can use it. A
+  client the user owns works immediately. Consent screen stays in **Testing**,
+  student account added as a test user.
+- Worth stating plainly: that scope reads the whole mailbox. Google has no
+  narrower one. The code only ever queries that single sender.
+
+Two bugs fell out of testing this:
+
+- **`findSubmit()` focused our own button.** "Sign in to Gmail" matches a
+  submit-button label as well as "Verify OTP" does, and the panel sits earlier
+  in the DOM — so the new button stole the focus. It now skips the panel's own
+  contents and anything hidden.
+- **VTOP's footer pincode is a valid-looking OTP.** "Andhra Pradesh-522241"
+  is six digits within 160 characters of "One-Time Password", so it passed
+  every filter and got picked as soon as the real code was in the ignore
+  list. Digits glued to a word by a hyphen are now rejected, and a code must
+  either stand alone on its line or have the keyword pressed right against it.
+  Fixed in both the API extractor and the scraper.
+
+The suite now also boots `background.js` with only the permissions
+`manifest.json` grants and asserts it starts — a worker that throws on startup
+answers no messages at all, which from the content script looks identical to a
+code bug, and had to be ruled out by hand.
+
+### 2026-08-06 — captcha auto-reload never ran on `/vtop/login/error`
+
+`js/captcha/refreshTillCaptcha.js` was matched against the exact URL
+`https://vtop.vitap.ac.in/vtop/login`, which excludes `/vtop/login/error` —
+where a failed login actually lands. Widened to `/vtop/login*`.
+
+The retry itself was then restored, on request. It had been narrowed to
+"empty body only", which stopped the 2026 flicker but also stopped the useful
+case — a login form whose captcha image failed to load just sat there broken.
+The decision is now made on what the page *is*, so it can retry without ever
+looping:
+
+| page | action |
+| --- | --- |
+| captcha present | nothing; clear the counter |
+| **OTP step** | **never reload** — VTOP has already mailed a code and a reload bins it |
+| login form, no captcha | reload — the case worth retrying |
+| body effectively empty | reload — a dead load |
+| role picker (rendered, form hidden) | leave alone — this is what looped before |
+
+The form check is on **visibility**, not existence: the role-picker home page
+already ships `#stdForm` hidden, so "the form exists" is true there too, and a
+first cut of this put the home page into a reload loop.
+
+Capped at 5 per tab either way. The OTP-step exemption matters more than it
+looks: widening the URL match means this script now also runs on
+`/vtop/login/error`, which is where the OTP prompt lives.
+
+**The remaining unknown is the login URL.** It worked at
+`/vtop/login/error`, which the `*://vtop.vitap.ac.in/vtop/login*` match
+covers. Other campuses' hosts are listed but unverified.
 
 ## Code audit: dead code removal + latent-bug fixes (2026-08-02)
 
@@ -1183,3 +4215,54 @@ one page, as Chrome does at inject time:
 ![image](images/navbar.png)
 
 \+ auto current semester for class attendance
+## 2026-10-10 - lag and "doesn't work" pass, driven live on a real session
+- **Marks View top-bar button opened "Access Denied".** `navbarap.js` matched
+  `includes("Marks")` with last-match-wins, so "Photo & 12th Marksheet Upload"
+  replaced the real Marks entry. Now matched on `examinations/StudentMarkView`.
+- **Auto-semester gave up on every section-to-section move.** The worker's
+  page-open message beats the new page's DOM, so the picker on screen was the
+  previous page's, already answered. It now looks for a replacement picker for
+  up to 3 s. Verified live: Attendance -> Marks View, Attendance -> DA Upload.
+  `data-vr-auto` on `<html>` records the last stages for diagnosis.
+- **Attendance fetched 8 registers one by one on every visit.** Histories are now
+  persisted (`vrevamp_att_history`), keyed by the row's attended/total counts.
+  Verified live: second visit = 0 detail requests.
+- **Time Table rasterised the whole page to a PNG on every render** (dom-to-image,
+  re-fetching every font, several 404s). Now rendered only when Download is clicked.
+- Calendar lookups on every navigation no longer load all of chrome.storage
+  (`vrevamp_latest_calendar` pointer); grade scripts skip pages with no grades.
+- **Many "feature X does nothing" reports were a stale extension.** The Chrome
+  profile ran code older than the repo; an unpacked extension never updates
+  itself. Reload it at chrome://extensions after every change.
+
+## 2026-10-10 (later) - buttons take VTOP's own look
+- Every injected button now uses VTOP's Bootstrap classes (`btn btn-primary btn-sm`)
+  with no colour of its own; the old hard-coded rgb(73,117,182) was a different
+  blue from the portal's buttons.
+- Exam row: one primary (Download CATn (.ics)) and three outlined options, no
+  emoji, sentence-case labels; status text uses text-success/text-danger; the
+  address prompt uses VTOP's `form-control form-control-sm`.
+- Login "Fill OTP from mail": same `btn btn-sm btn-primary` as the page's Submit,
+  Gmail sign-in as `btn-outline-primary`, status as `small text-muted/-success/-danger`.
+- Checked as a markup preview on VTOP's real login stylesheet; the logged-in exam
+  page itself was not reachable (session expired), so confirm it after reloading.
+
+## 4.6.0 - GitHub distribution (2026-10-11)
+- Decided: ship on GitHub as an unpacked extension (not the Web Store).
+- **Update checker.** The popup reads the manifest on `master` (raw.githubusercontent.com
+  sends CORS `*`, so no new permission) at most every 6 h and shows "vX is available"
+  with the unzip-and-reload steps when it is newer. Silent when offline.
+- README rewritten for this repo: what it does, install, update (including the
+  reload step), troubleshooting, an accurate note on what leaves the browser.
+- Removed the Web Store `update_url` from the manifest; version 4.5.20 -> 4.6.0.
+
+## 4.6.0 - popup VTOP sign-in (2026-10-11)
+- New "VTOP sign-in" section in the popup: save your ID and password once.
+  `js/login_fill.js` fills them into the VTOP login form and keeps re-applying
+  them for ~6 s so they win over Chrome's / a password manager's autofill (it also
+  sets `autocomplete` off / new-password). It stops the moment you type
+  (`isTrusted` keystroke or paste) and never submits. Stored in
+  `chrome.storage.local`, unencrypted, like the hostel Wi-Fi credentials; the
+  password is never shown back. 11 tests; live-checked on the real login page
+  with dummy values (cleared afterwards).
+- Release held: PR #1 stays open, nothing merged or tagged.

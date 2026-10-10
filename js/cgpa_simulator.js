@@ -444,6 +444,7 @@
     tabs.style.cssText = "margin-bottom:8px;";
     [["gpa", "Semester GPA"], ["cgpa", "Cumulative CGPA"]].forEach(([m, label]) => {
       const btn = document.createElement("button");
+      btn.type = "button"; // never submit the enclosing VTOP form
       btn.textContent = label;
       const active = mode === m;
       btn.style.cssText =
@@ -518,6 +519,7 @@
 
     if (Object.keys(overrides).length) {
       const reset = document.createElement("button");
+      reset.type = "button"; // never submit the enclosing VTOP form
       reset.textContent = "↺ Reset changes";
       reset.style.cssText =
         "cursor:pointer;margin-top:8px;padding:4px 10px;border:1px solid #aaa;" +
@@ -633,6 +635,7 @@
       const dbgBar = document.createElement("div");
       dbgBar.style.cssText = "margin-top:8px;";
       const dbg = document.createElement("button");
+      dbg.type = "button"; // never submit the enclosing VTOP form
       dbg.textContent = "Copy debug info";
       dbg.style.cssText =
         "cursor:pointer;padding:3px 9px;border:1px solid #bbb;border-radius:3px;" +
@@ -665,6 +668,14 @@
   const scheduleBuild = () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      // cheap gate: no panel and no "Grade"/"CGPA" text anywhere means this is not a
+      // grade page, so skip the table walk below (the observer sees the whole
+      // session, and most VTOP pages have no grades on them)
+      if (
+        !document.getElementById(PANEL_ID) &&
+        !(document.body && /Grade|CGPA/.test(document.body.textContent || ""))
+      )
+        return;
       // skip rebuilds when nothing relevant changed (observer can be chatty)
       const gt = findGradeTable();
       const sig =

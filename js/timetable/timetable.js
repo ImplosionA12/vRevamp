@@ -12,6 +12,7 @@ const change_time_table = () => {
 
   const tbody_table = parent_table.children[0]; // the first element is the <tbody> with data
   const extractedHeader = extract_header(tbody_table.children);
+  const extractedLabHeader = extract_lab_header(tbody_table.children);
   const extracted_children = extract_tbody_data(tbody_table.children);
   const merged_data = filterRepeatedColumns(extractedHeader, extracted_children)
   const childrenDataArr = merged_data;
@@ -20,7 +21,12 @@ const change_time_table = () => {
     semEl && semEl.selectedIndex >= 0
       ? (semEl.options[semEl.selectedIndex].innerText || "").trim()
       : null;
-  saveTimeTable(extractedHeader, childrenDataArr, semesterName);
+  saveTimeTable(
+    extractedHeader,
+    childrenDataArr,
+    semesterName,
+    extractedLabHeader
+  );
   displayTableData(extractedHeader, childrenDataArr)
 };
 
@@ -86,12 +92,30 @@ function insertTable(table_div) {
   parent_div.insertBefore(table_div, timeTableLoader);
 
   const a = create_download_link("download-timetable"); // className = download-timetable
-  domtoimage.toPng(table_div, { quality: 0.99 }).then(
-    (blob) => {
-      a.download = 'timetable.png';
-      a.href = blob;
-    }
-  );
+  // Render the PNG only when the link is clicked. It used to be rendered on
+  // every table render whether or not anyone downloaded it, and dom-to-image
+  // re-fetches every web font (several 404s on VTOP) and rasterises the whole
+  // table each time — seconds of work on every visit to this page.
+  a.href = "#";
+  a.download = "timetable.png";
+  let rendering = false;
+  a.addEventListener("click", (event) => {
+    if (a.dataset.ready === "1") return; // second pass: let the download happen
+    event.preventDefault();
+    if (rendering) return;
+    rendering = true;
+    domtoimage.toPng(table_div, { quality: 0.99 }).then(
+      (dataUrl) => {
+        a.href = dataUrl;
+        a.dataset.ready = "1";
+        rendering = false;
+        a.click();
+      },
+      () => {
+        rendering = false;
+      }
+    );
+  });
   parent_div.insertBefore(a, table_div);
 }
 
@@ -123,6 +147,12 @@ const vr_tt_schedule = () => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.message === "timetable_view_page") {
     try {
+      // same — the page-open message does the real work; see marks_page.js
+      // (its predicate also carried two literal 0x08 bytes where a regex word
+      // boundary was meant; that is gone with it — the shape now lives in
+      // js/shared/auto_semester.js)
+      if (typeof window.vrAutoSemesterFor === "function")
+        window.vrAutoSemesterFor("timetable_view");
       // try to display the timetable data if it exists
       getTimeTable((d) => {
         if (d && d.header && d.data) displayTableData(d.header, d.data);

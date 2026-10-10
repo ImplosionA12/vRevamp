@@ -11,6 +11,984 @@ const VTOP_URLS = [
   "*://web.vitap.ac.in/*",
 ];
 
+// Webmail hosts the login-OTP scanner runs on. Must stay in sync with the
+// matching content_scripts block and host_permissions in manifest.json.
+const MAIL_TAB_PATTERNS = [
+  "https://mail.google.com/*",
+  "https://outlook.office.com/*",
+  "https://outlook.office365.com/*",
+  "https://outlook.live.com/*",
+];
+
+/* ===================== Gmail-API route for the login OTP =====================
+ *
+ * The tab-scraping route can only read what Gmail has rendered, and Gmail's
+ * inbox list truncates the preview at "Use the OTP below…" — the digits are
+ * simply not in the page until the mail is opened. Reading the message
+ * through the API removes that limit entirely: no mail tab need be open, no
+ * mail need be opened, and the age comes from `internalDate` instead of being
+ * parsed out of "13 minutes ago".
+ *
+ * ---------------------------------------------------------------------------
+ * TO SWITCH THIS ON: paste the OAuth client id into GMAIL_CLIENT_ID below.
+ * That is the whole change. Blank = dormant, and the scraper handles the OTP
+ * exactly as it does today.
+ * ---------------------------------------------------------------------------
+ *
+ * Making that client, once, in Google Cloud:
+ *   1. Any Google account may own the project — the project identifies the
+ *      APP, not the mailbox, and university Workspace accounts frequently
+ *      cannot create Cloud projects at all. Enable the Gmail API on it.
+ *   2. OAuth consent screen: External, left in **Testing**, with the STUDENT
+ *      address under Test users. gmail.readonly is a RESTRICTED scope, so a
+ *      published app would need Google verification plus a paid security
+ *      assessment; Testing caps it at 100 hand-added addresses instead.
+ *   3. Credentials -> OAuth client ID -> application type **Web application**
+ *      (NOT "Chrome Extension": that type is built for getAuthToken, the
+ *      route this deliberately avoids). Leave "Authorised JavaScript origins"
+ *      empty; put chrome.identity.getRedirectURL() — trailing slash and all —
+ *      under "Authorised redirect URIs". A mismatch there is Error 400.
+ *   4. Sign in as the STUDENT account at the chooser. The project's owning
+ *      account is irrelevant; the account picked at consent is the mailbox
+ *      that gets read.
+ *
+ * launchWebAuthFlow, not getAuthToken: getAuthToken silently uses the Chrome
+ * profile's PRIMARY account — a personal Gmail here, not the student mailbox
+ * the OTP arrives in. It would be one-click and read the wrong inbox.
+ * launchWebAuthFlow with prompt=select_account asks which account to use,
+ * which is the only way this lands on the right mailbox.
+ *
+ * The client id is NOT a secret: it ships inside the extension and is public
+ * by design. There is no client secret — the implicit flow has none.
+ */
+
+// >>> PASTE THE OAUTH CLIENT ID HERE (…apps.googleusercontent.com) <<<
+// Leave "" to keep the Gmail route off entirely.
+const GMAIL_CLIENT_ID = "256000685922-v0qi26k4h5d4olfastfer2j6cv0j7frp.apps.googleusercontent.com";
+
+const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+const GMAIL_TOKEN_KEY = "vrevamp_gmail_token";
+const GMAIL_CLIENT_KEY = "vrevamp_gmail_client_id";
+
+/*
+ * ---------------------------------------------------------------------------
+ * GOOGLE CALENDAR — the same escape hatch, for the feature that needs it most.
+ * ---------------------------------------------------------------------------
+ *
+ * Every Calendar feature in this extension already speaks the Calendar API:
+ * timetable import POSTs each event to /calendars/primary/events, and the
+ * exam/DA ✉️ buttons create events with an email reminder. None of it is
+ * reachable, because the only token route was `chrome.identity.getAuthToken`
+ * on `manifest.oauth2.client_id` — upstream's client, which is dead
+ * ("bad client id") for every user of this build.
+ *
+ * That single dead id is the whole reason the timetable import falls back to
+ * opening one prefilled editor per class and asking the student to press Save
+ * forty times. With a live token there is nothing to press: the events are
+ * written directly, in one click.
+ *
+ * TO SWITCH IT ON: paste a client id below. Blank = the no-sign-in TEMPLATE
+ * paths stay exactly as they are today, so nothing regresses if it is left
+ * empty.
+ *
+ * It can be the SAME client as GMAIL_CLIENT_ID above — one OAuth client may
+ * carry many scopes — provided that in its Cloud project you also:
+ *   1. enable the **Google Calendar API**, and
+ *   2. add `.../auth/calendar.events` to the OAuth consent screen's scopes.
+ * Without both, consent returns a token that 403s on the first write, which
+ * looks like a bug rather than a missing checkbox.
+ *
+ * Scope note: `calendar.events` (not the broader `calendar`) is all the code
+ * touches — it only ever reads and writes /calendars/primary/events. It is a
+ * SENSITIVE scope, not a restricted one, so an app left in Testing works for
+ * up to 100 hand-added addresses with no review; shipping it to every student
+ * needs Google verification, but not the paid security assessment that
+ * gmail.readonly would.
+ */
+// >>> PASTE THE OAUTH CLIENT ID HERE (…apps.googleusercontent.com) <<<
+// Leave "" to keep Calendar sign-in off.
+//
+// Deliberately the SAME client as GMAIL_CLIENT_ID: one OAuth client may carry
+// many scopes, and this project has exactly one Web-application client, already
+// registered with the chromiumapp.org redirect that launchWebAuthFlow needs —
+// proven by the Gmail OTP flow running on it. What makes it a *Calendar* client
+// is project configuration, not a second id: the Google Calendar API enabled,
+// and calendar.events added under Data Access.
+const CALENDAR_CLIENT_ID = GMAIL_CLIENT_ID;
+
+const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const CALENDAR_TOKEN_KEY = "vrevamp_calendar_token";
+const CALENDAR_CLIENT_KEY = "vrevamp_calendar_client_id";
+// 1h, not 1d: a code lives 3 minutes, so anything older is refused by the
+// caller anyway — no reason to pull a day of mail to throw it away.
+const GMAIL_QUERY = "from:noreply.sdc@vitap.ac.in newer_than:1h";
+
+// The pasted id, or one stored at runtime (handy for testing a second client
+// without editing the file). It deliberately does NOT fall back to
+// manifest.oauth2.client_id: that client is the Calendar one, registered
+// without a chromiumapp.org redirect, so launchWebAuthFlow died on it with
+// "Error 400: redirect_uri_mismatch" — and because the fallback made the
+// extension look configured, the failure had no visible cause.
+async function gmailClientId() {
+  const stored = (await chrome.storage.local.get([GMAIL_CLIENT_KEY]))[GMAIL_CLIENT_KEY];
+  if (stored) return String(stored);
+  return GMAIL_CLIENT_ID.trim() || null;
+}
+
+// Until consent has been granted once, every silent attempt fails — and the
+// login page polls every 3 s, so without this it would fire a web-auth flow
+// at Google twenty times a minute for nothing. A worker restart clears it,
+// which is the right granularity: cheap to retry, never in a tight loop.
+// Per scope: a Calendar backoff must not silence Gmail or the reverse.
+const silentBlockedUntil = new Map();
+const SILENT_BACKOFF_MS = 60000;
+
+/*
+ * WHY THE CONSENT SCREEN USED TO APPEAR ON EVERY SINGLE CLICK — fixed
+ * 2026-08-17, reported as "the extension asks me oauth everytime when i click
+ * mail me".
+ *
+ * Three independent causes, all of them here, all of them ours:
+ *
+ * 1. The interactive flow asked for `prompt=consent select_account`.
+ *    `consent` is an instruction to Google to SHOW THE CONSENT SCREEN AGAIN
+ *    even when the grant already exists — it is for apps that need a fresh
+ *    refresh token, and it is exactly wrong for a cached implicit token. It
+ *    guaranteed a full screen every time no matter what was already approved.
+ * 2. The silent flow (`prompt=none`) carried no `login_hint`. This profile has
+ *    three Google accounts signed in, and `prompt=none` must not choose
+ *    between them — so it failed by design, once an hour, forever, and every
+ *    failure fell through to the interactive flow in (1).
+ * 3. Calendar, gmail.send and gmail.readonly were three separate tokens with
+ *    three separate consents. One hour after signing in, all three expired,
+ *    and the next few clicks were three screens rather than one.
+ *
+ * The fixes, in the same order: never send `consent`; remember which account
+ * was chosen and send it as `login_hint` so the silent refresh can actually
+ * resolve; and request calendar.events + gmail.send + userinfo.email as ONE
+ * grant (`googleToken` below) so there is one consent to give and one token to
+ * cache. `include_granted_scopes` keeps an older narrow grant valid.
+ *
+ * Net effect: one screen the first time, then silence — until the student
+ * revokes access or Google expires the grant (7 days while the app is in
+ * Testing; see ROADMAP §3).
+ */
+const GOOGLE_HINT_KEY = "vrevamp_google_account";
+
+/*
+ * ROUND THREE, 2026-08-19 — "got asked again", with the account chooser on
+ * screen and the VTOP OTP page behind it.
+ *
+ * Everything above is about ONE account: the one that approved calendar.events
+ * and gmail.send. The OTP scanner is not that flow. It reads a MAILBOX with
+ * gmail.readonly, and on this profile the mailbox VTOP writes to is the student
+ * address while the account everything else runs under is the personal one.
+ * A single remembered account cannot serve both, and using one for the other is
+ * worse than not knowing:
+ *
+ *   - no hint at all → `prompt=none` cannot choose between the accounts signed
+ *     into the profile, so the silent pre-flight fails and the chooser opens.
+ *     The OTP token lives an hour and a student logs in maybe weekly, so the
+ *     cache is always cold and the chooser is on screen EVERY time. That is
+ *     what was reported.
+ *   - the app account's hint reused here → the scan silently reads the wrong
+ *     mailbox and reports "no OTP found" forever, which is the same screen with
+ *     a worse ending.
+ *
+ * So the account is remembered PER FLOW, keyed by the token's own storage key,
+ * and the mailbox flow never inherits the app flow's account. The chooser is
+ * still correct the first time — picking the mailbox is a real decision only
+ * the student can make (see `vrevamp_gmail_signin`) — and `granted` must not
+ * suppress it, because a calendar grant says nothing about which inbox holds
+ * the OTP. From the second scan on there is a hint, and it is silent.
+ */
+const GOOGLE_ACCOUNTS_KEY = "vrevamp_google_accounts";
+
+/*
+ * ROUND TWO, 2026-08-17 — "the oauth should persist, that's what i asked".
+ *
+ * The three causes above were all real and all fixed, and a consent screen was
+ * STILL appearing about once an hour. Two more, both structural:
+ *
+ * 4. THE INTERACTIVE PATH NEVER TRIED THE SILENT ONE FIRST. Read the old
+ *    webAuthToken: cache miss + interactive:true went straight to
+ *    launchWebAuthFlow with a visible window. The silent flow only ran when a
+ *    caller explicitly asked for interactive:false — i.e. background polling,
+ *    never a button. So every click after the cached hour opened a window, and
+ *    whether Google then had something to ask was beside the point: the window
+ *    is the thing the student sees, and it appeared unconditionally. A button
+ *    click now attempts prompt=none first and only opens a window if that
+ *    genuinely fails. This is the single biggest one.
+ *
+ * 5. THE SILENT FLOW WAS BEING KILLED BEFORE IT FINISHED. launchWebAuthFlow
+ *    defaults `abortOnLoadForNonInteractive` to TRUE: in non-interactive mode
+ *    Chrome tears the flow down as soon as the first navigation finishes
+ *    loading. accounts.google.com does not answer prompt=none in one hop — it
+ *    loads, then redirects — so the abort fired on a flow that was about to
+ *    succeed, and the failure was indistinguishable from "no consent". Every
+ *    silent refresh in this extension has been losing that race. Both knobs
+ *    (Chrome 105+) are passed now, with a fallback for older Chrome that
+ *    rejects unknown properties.
+ *
+ * Together with the hint below, the sequence for a returning student is:
+ * cached token → silent refresh → nothing on screen. A window means the grant
+ * is genuinely gone (revoked, or the 7-day Testing expiry — see ROADMAP §3,
+ * which no amount of client code can shorten).
+ */
+const SILENT_TIMEOUT_MS = 15000;
+// Set once any token has ever come back for this store key. Its only job is to
+// keep `prompt=select_account` off every interactive attempt after the first:
+// the chooser is a full screen, and re-showing it to someone who has already
+// picked an account is the exact behaviour being complained about.
+const GRANTED_KEY = "vrevamp_google_granted";
+
+// Which account should this particular flow name? Its own, if one has ever
+// answered for it; otherwise the app account — except for the mailbox flow,
+// which inherits nothing (see GOOGLE_ACCOUNTS_KEY). Called with no argument it
+// still answers "the account vRevamp signed in as", which is all the status
+// report wants.
+async function googleHint(storeKey) {
+  const all = await chrome.storage.local.get([GOOGLE_HINT_KEY, GOOGLE_ACCOUNTS_KEY]);
+  const own = storeKey && (all[GOOGLE_ACCOUNTS_KEY] || {})[storeKey];
+  if (own) return String(own);
+  if (storeKey === GMAIL_TOKEN_KEY) return null;
+  const stored = all[GOOGLE_HINT_KEY];
+  return stored ? String(stored) : null;
+}
+
+// Remember the account this flow actually resolved to, so the next one can name
+// it and stay silent. Stored per flow, alongside — not instead of — the app
+// account that the rest of the worker reads.
+async function rememberAccount(storeKey, email, alsoGlobal) {
+  const all = await chrome.storage.local.get([GOOGLE_ACCOUNTS_KEY]);
+  const patch = {
+    [GOOGLE_ACCOUNTS_KEY]: { ...(all[GOOGLE_ACCOUNTS_KEY] || {}), [storeKey]: email },
+  };
+  if (alsoGlobal) patch[GOOGLE_HINT_KEY] = email;
+  await chrome.storage.local.set(patch);
+}
+
+// Drop remembered accounts for the given flows (all of them when none named).
+async function forgetAccounts(storeKeys) {
+  if (!storeKeys) {
+    await chrome.storage.local.remove([GOOGLE_ACCOUNTS_KEY, GOOGLE_HINT_KEY]);
+    return;
+  }
+  const all = await chrome.storage.local.get([GOOGLE_ACCOUNTS_KEY]);
+  const map = { ...(all[GOOGLE_ACCOUNTS_KEY] || {}) };
+  for (const k of storeKeys) delete map[k];
+  await chrome.storage.local.set({ [GOOGLE_ACCOUNTS_KEY]: map });
+}
+
+// Why the last attempt for this scope failed, in Google's own words. Without
+// it every failure looks like "you closed the window", which is wrong for the
+// one that actually happens during setup: consent is refused with
+// `error=invalid_scope` when the scope has not been added to the OAuth consent
+// screen, or the API is not enabled on the project. That is a checkbox in Cloud
+// Console, and the message should say so rather than blame the student.
+const lastAuthError = new Map();
+
+// One trip to accounts.google.com. Returns the access token, or null, and
+// records Google's own words for the failure. `silent` is the only thing that
+// differs between the two attempts the caller makes.
+async function runAuthFlow({ clientId, scope, storeKey, silent, hint, granted }) {
+  const authQuery = {
+    client_id: clientId,
+    response_type: "token",
+    redirect_uri: chrome.identity.getRedirectURL(),
+    scope,
+    // an older, narrower grant (calendar-only, say) stays usable instead of
+    // being replaced — so widening the ask cannot break what already worked
+    include_granted_scopes: "true",
+  };
+  // Without it `prompt=none` cannot pick between the accounts signed into this
+  // profile and fails every time, which is what turned a once-per-week consent
+  // into a per-click one.
+  if (hint) authQuery.login_hint = hint;
+  if (silent) authQuery.prompt = "none";
+  else if (!hint && !granted) authQuery.prompt = "select_account";
+  // Interactive with a known account (or a grant already on record): send no
+  // `prompt` at all. Google reuses the grant and returns without rendering
+  // anything, and only shows a screen when something is genuinely new.
+
+  const url =
+    "https://accounts.google.com/o/oauth2/auth?" + new URLSearchParams(authQuery).toString();
+
+  const details = { url, interactive: !silent };
+  if (silent) {
+    // See the note at GRANTED_KEY: without these Chrome aborts the silent flow
+    // at the first completed navigation, which is one hop before Google's
+    // prompt=none redirect arrives.
+    details.abortOnLoadForNonInteractive = false;
+    details.timeoutMsForNonInteractive = SILENT_TIMEOUT_MS;
+  }
+
+  let redirected = null;
+  try {
+    redirected = await chrome.identity.launchWebAuthFlow(details);
+  } catch (error) {
+    const message = String((error && error.message) || error);
+    // Chrome before 105 rejects the two knobs above by name. Retry plainly
+    // rather than treating a schema complaint as a refused consent.
+    if (silent && /unexpected property|Invalid value|not allowed/i.test(message)) {
+      try {
+        redirected = await chrome.identity.launchWebAuthFlow({ url, interactive: false });
+      } catch (retryError) {
+        lastAuthError.set(storeKey, String((retryError && retryError.message) || retryError));
+        return null;
+      }
+    } else {
+      // silent flow refused (no consent yet), or the user closed the window
+      if (!silent) lastAuthError.set(storeKey, message);
+      return null;
+    }
+  }
+  if (!redirected) return null;
+
+  // Google reports refusals in the fragment too, not only by throwing
+  const params = new URLSearchParams(String(redirected).split("#")[1] || "");
+  const query = new URLSearchParams(String(redirected).split("?")[1] || "");
+  const token = params.get("access_token");
+  if (!token) {
+    const why =
+      params.get("error_description") ||
+      params.get("error") ||
+      query.get("error_description") ||
+      query.get("error");
+    if (why) lastAuthError.set(storeKey, String(why).replace(/\+/gu, " "));
+    return null;
+  }
+  return { token, ttl: Number(params.get("expires_in")) || 3600 };
+}
+
+// Cached token, else a silent flow, else (only when asked) an interactive one.
+// The implicit flow hands back ~1 h tokens with no refresh token, but a silent
+// re-run succeeds while the Google session is alive, so this stays quiet.
+//
+// One function for every scope: the Gmail route proved the mechanism works
+// where getAuthToken cannot (a Web-application client with a chromiumapp.org
+// redirect, no dependency on the Chrome profile's primary account), and the
+// Calendar features need exactly the same thing.
+async function webAuthToken({ clientId, scope, storeKey, interactive, stale }) {
+  if (!clientId) return null;
+
+  const cached = (await chrome.storage.local.get([storeKey]))[storeKey];
+  if (stale && cached && cached.token === stale) {
+    // a 401 proved this one dead — drop it rather than hand it back again
+    await chrome.storage.local.remove([storeKey]);
+  } else if (cached && cached.token && cached.exp > Date.now() + 60000) {
+    return cached.token;
+  }
+
+  const silentBlocked = Date.now() < (silentBlockedUntil.get(storeKey) || 0);
+  if (!interactive && silentBlocked) return null;
+
+  // The mailbox flow gets its own account or none — never the app account's.
+  const mailbox = storeKey === GMAIL_TOKEN_KEY;
+  const hint = await googleHint(storeKey);
+  const knownGrant = !!(await chrome.storage.local.get([GRANTED_KEY]))[GRANTED_KEY];
+  // A calendar/mail grant does not say which inbox holds the OTP, so it must
+  // not be the thing that suppresses the chooser on the mailbox flow. Left
+  // true, the student is sent silently at the wrong account with no way to say
+  // so; left false, they pick once and are never asked again.
+  const granted = knownGrant && !(mailbox && !hint);
+
+  const keep = async (result) => {
+    lastAuthError.delete(storeKey);
+    silentBlockedUntil.delete(storeKey); // consent exists; silent refresh works
+    await chrome.storage.local.set({
+      [storeKey]: { token: result.token, exp: Date.now() + result.ttl * 1000 },
+      [GRANTED_KEY]: true,
+    });
+    // Learn which account this is, once, so every later refresh can be silent.
+    // userinfo.email is on the merged grant precisely so this is possible — and
+    // the mailbox flow, which cannot carry it (widening a RESTRICTED ask to
+    // learn an address would be a bad trade), reads the same thing out of Gmail
+    // itself. Only that flow's own entry is written; the app account is set
+    // only by a grant that actually proved it.
+    if (!hint) {
+      const knowsEmail = /userinfo\.email/.test(scope);
+      const who = knowsEmail
+        ? await googleSelfEmail(result.token)
+        : /gmail\./.test(scope)
+          ? await gmailSelfEmail(result.token)
+          : null;
+      if (who) await rememberAccount(storeKey, who, knowsEmail);
+    }
+    return result.token;
+  };
+
+  /*
+   * ALWAYS TRY SILENT FIRST — including for a button click. See cause (4) at
+   * GRANTED_KEY: going straight to a visible window on every cache miss is
+   * what made a consent screen appear roughly hourly, regardless of whether
+   * Google had anything to ask. The only case where the pre-flight is skipped
+   * is when a silent attempt failed within the last minute, since repeating it
+   * would only add SILENT_TIMEOUT_MS to a click that is going to end in a
+   * window anyway.
+   */
+  // …with one exception: a first run, where nothing has ever been granted and
+  // no account is known. prompt=none cannot succeed there, and the pre-flight
+  // would only add SILENT_TIMEOUT_MS of nothing-happening before the window a
+  // first-time student has to see anyway.
+  const worthTrying = granted || !!hint || !interactive;
+  if (!silentBlocked && worthTrying) {
+    const quiet = await runAuthFlow({ clientId, scope, storeKey, silent: true, hint, granted });
+    if (quiet) return keep(quiet);
+    silentBlockedUntil.set(storeKey, Date.now() + SILENT_BACKOFF_MS);
+  }
+  if (!interactive) return null;
+
+  const loud = await runAuthFlow({ clientId, scope, storeKey, silent: false, hint, granted });
+  if (!loud) return null;
+  return keep(loud);
+}
+
+/*
+ * The one token every button shares.
+ *
+ * calendar.events (write the reminder), gmail.send (send the summary) and
+ * userinfo.email (know who "me" is) are asked for TOGETHER, so the student
+ * approves one screen instead of three and every button afterwards runs off
+ * the same cached hour.
+ *
+ * `feature` only matters on the fallback path: Google refuses a multi-scope
+ * request wholesale with `invalid_scope` and does not say WHICH scope it
+ * objected to, so if the merged ask is rejected — a Cloud project that never
+ * added gmail.send, say — retry with just the scope this caller needs. That
+ * keeps a half-configured project working for the half that IS configured
+ * instead of failing everything.
+ */
+const APP_SCOPE = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/userinfo.email",
+].join(" ");
+const APP_TOKEN_KEY = "vrevamp_google_app_token";
+
+async function googleToken({ interactive, stale, feature }) {
+  const clientId = await calendarClientId();
+  if (!clientId) return null;
+
+  const merged = await webAuthToken({
+    clientId,
+    scope: APP_SCOPE,
+    storeKey: APP_TOKEN_KEY,
+    interactive,
+    stale,
+  });
+  if (merged) return merged;
+
+  const why = lastAuthError.get(APP_TOKEN_KEY) || "";
+
+  // A stored hint that names an account no longer signed into this profile
+  // makes every attempt fail in a way that looks like a refusal. Forget it and
+  // ask once — this is the "switch Google account" path, taken automatically.
+  if (interactive && /login_required|user_not_signed|invalid_request|consent_required/i.test(why)) {
+    // GRANTED_KEY goes too: it is the flag that suppresses the account
+    // chooser, and this is the one path that genuinely needs the chooser back.
+    await chrome.storage.local.remove([GOOGLE_HINT_KEY, GRANTED_KEY]);
+    // the per-flow copy is the same stale name by another route
+    await forgetAccounts([APP_TOKEN_KEY, CALENDAR_TOKEN_KEY, GMAIL_SEND_TOKEN_KEY]);
+    const retry = await webAuthToken({
+      clientId,
+      scope: APP_SCOPE,
+      storeKey: APP_TOKEN_KEY,
+      interactive: true,
+    });
+    if (retry) return retry;
+  }
+
+  if (!/invalid_scope|admin_policy|org_internal/i.test(why)) return null;
+  const narrow = feature === "gmail.send" ? GMAIL_SEND_SCOPE : CALENDAR_SCOPE;
+  const key = feature === "gmail.send" ? GMAIL_SEND_TOKEN_KEY : CALENDAR_TOKEN_KEY;
+  const fallback = await webAuthToken({ clientId, scope: narrow, storeKey: key, interactive, stale });
+  if (!fallback) lastAuthError.set(APP_TOKEN_KEY, lastAuthError.get(key) || why);
+  return fallback;
+}
+
+// Whichever of the three keys actually recorded the refusal, in Google's words.
+const googleAuthError = () =>
+  lastAuthError.get(APP_TOKEN_KEY) ||
+  lastAuthError.get(CALENDAR_TOKEN_KEY) ||
+  lastAuthError.get(GMAIL_SEND_TOKEN_KEY) ||
+  "";
+
+// Forget every Google token and the remembered account. Used by "sign out" and
+// whenever an API answers 401 on a token we believed was live.
+async function forgetGoogleTokens() {
+  await chrome.storage.local.remove([
+    APP_TOKEN_KEY,
+    CALENDAR_TOKEN_KEY,
+    GMAIL_SEND_TOKEN_KEY,
+    GOOGLE_HINT_KEY,
+    // the per-flow accounts go with it: a sign-out that left the mailbox
+    // remembered would send the next student straight past the chooser into
+    // the previous one's inbox
+    GOOGLE_ACCOUNTS_KEY,
+    // without this a signed-out student gets no account chooser on the way
+    // back in, because "a grant exists" is exactly what sign-out revokes
+    GRANTED_KEY,
+  ]);
+  lastAuthError.clear();
+  silentBlockedUntil.clear();
+}
+
+async function gmailToken(interactive) {
+  return webAuthToken({
+    clientId: await gmailClientId(),
+    scope: GMAIL_SCOPE,
+    storeKey: GMAIL_TOKEN_KEY,
+    interactive,
+  });
+}
+
+// Same shape as gmailClientId: a runtime override, else the pasted constant,
+// and deliberately NO fallback to manifest.oauth2.client_id — that is the dead
+// upstream client, registered without a chromiumapp.org redirect, so falling
+// back to it would fail with redirect_uri_mismatch while making the extension
+// look configured.
+async function calendarClientId() {
+  const stored = (await chrome.storage.local.get([CALENDAR_CLIENT_KEY]))[CALENDAR_CLIENT_KEY];
+  if (stored) return String(stored);
+  return CALENDAR_CLIENT_ID.trim() || null;
+}
+
+// Calendar callers go through the shared grant, so signing in for the exam ✉️
+// also signs in for the timetable import and the 📧 mail — one screen, not
+// three. (googleToken is declared above; this stays as a named wrapper because
+// every call site already reads as "give me a calendar token".)
+async function calendarToken({ interactive, stale }) {
+  return googleToken({ interactive, stale, feature: "calendar" });
+}
+
+/* ===================== Direct email (Gmail users.messages.send) =============
+ *
+ * The ✉️ buttons schedule Calendar events carrying an email reminder, and that
+ * is the right mechanism for "tell me the day before": Google's servers send
+ * it, so it arrives whether or not Chrome is running. What it cannot do is put
+ * the list in the student's inbox *right now* — which is what "just mail it to
+ * me" actually means. This does that.
+ *
+ * It sends AS the student, through their own Gmail, so the mail arrives from
+ * their address and is in their own Sent folder. No third-party mail relay is
+ * involved and no address ever leaves the browser.
+ *
+ * `gmail.send` is SENSITIVE, not restricted — write-only, it cannot read a
+ * mailbox — so an app in Testing may use it with no review, exactly like
+ * calendar.events. It is a separate token from the Gmail OTP scanner's
+ * `gmail.readonly` on purpose: the two features are independent, and a student
+ * who wants mail should not be asked to hand over inbox-read access.
+ *
+ * `userinfo.email` rides along so "me" resolves without asking the student to
+ * type their own address. It is a non-sensitive scope, granted automatically.
+ */
+const GMAIL_SEND_SCOPE =
+  "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email";
+const GMAIL_SEND_TOKEN_KEY = "vrevamp_gmail_send_token";
+// A remembered "send my reminders here" address, so a student can point mail at
+// a phone-checked personal inbox rather than the account Calendar runs under.
+const REMINDER_EMAIL_KEY = "vrevamp_reminder_email";
+
+/* ===================== Sending from a vRevamp address instead ===============
+ *
+ * Asked for 2026-08-16: *"i asked for the mails to be sent by a specific mail
+ * instead of same person to same person"*. Fair — a mail from yourself, to
+ * yourself, reads like a draft you forgot to finish.
+ *
+ * The obstacle is that **a Chrome extension cannot hold a sender credential**.
+ * Everything shipped inside it is readable by every user, so a refresh token or
+ * SMTP password for a vRevamp mailbox would let anyone send mail as vRevamp,
+ * and Google would suspend the account quickly. Something the users cannot read
+ * has to do the sending.
+ *
+ * That normally means a server. It does not have to: a **Google Apps Script web
+ * app** is a free endpoint, hosted by Google, that runs AS the account that
+ * deployed it. Paste `tools/mail-relay.gs` into script.google.com under a
+ * dedicated Gmail address, deploy it as "execute as me / anyone can access",
+ * and put the /exec URL below. The mailbox credential never exists outside
+ * Google, there is nothing to host, and no domain is needed — which is the
+ * whole reason a plain @gmail sender is the right call here.
+ *
+ * Blank = off, and the gmail.send path below runs exactly as it does today, so
+ * leaving it empty cannot regress anyone.
+ *
+ * KNOWN TRADE-OFF, do not pretend otherwise: the /exec URL ships in the
+ * extension and is therefore public. Anyone who extracts it can post to it.
+ * `tools/mail-relay.gs` caps sends per day and per recipient for that reason.
+ * For a personal or single-campus build that is proportionate; a public Web
+ * Store release would want a per-user token issued by something stateful.
+ */
+// >>> PASTE THE APPS SCRIPT /exec URL HERE <<<  (blank = send from the student)
+const MAIL_RELAY_URL =
+  "https://script.google.com/macros/s/AKfycbxJSxzfsUM4ezJLE2k8_ncMi5a7nCpd-1f75_7mqFZQ8nYkFgDwk791nhwpEQ1StCBw/exec";
+const MAIL_RELAY_KEY = "vrevamp_mail_relay_url";
+
+/*
+ * WHAT RELAY MODE COSTS THE STUDENT, precisely — asked 2026-08-16, "we do not
+ * need their oauth too?":
+ *
+ *   📧 mail   — NO Google sign-in. Not one scope. The relay owns the sending
+ *               identity, and the only unknown left is the recipient, which is
+ *               asked for once in a text field and kept in that student's own
+ *               chrome.storage.local. Works for a student with no Google
+ *               account whatsoever.
+ *   ✉️ Calendar — sign-in is UNAVOIDABLE. Writing an event into someone's
+ *               Google Calendar requires that person's consent; there is no
+ *               mechanism, relay or otherwise, that gets around it. The
+ *               sign-in-free substitute is the 📅 one-tap TEMPLATE links,
+ *               where the student presses Save themselves.
+ *
+ * So the relay does not remove OAuth from the extension — it removes it from
+ * the mail feature, which is the feature that was asked for.
+ */
+/*
+ * "off" is a real value, not the absence of one.
+ *
+ * While MAIL_RELAY_URL was blank, clearing the field could just delete the key
+ * — nothing was left to fall back to. The moment a relay URL shipped in the
+ * build (2026-08-22), deleting the key started falling back to THAT, so
+ * clearing the box silently did nothing and the popup's own instruction
+ * ("Leave blank to send from your own Gmail") became false.
+ *
+ * A student who would rather their reminders came from their own address must
+ * be able to say so, and "I chose no relay" is not the same state as "nobody
+ * has configured one".
+ */
+const MAIL_RELAY_OFF = "off";
+
+async function mailRelayUrl() {
+  const stored = (await chrome.storage.local.get([MAIL_RELAY_KEY]))[MAIL_RELAY_KEY];
+  if (stored === MAIL_RELAY_OFF) return null; // deliberately declined
+  if (stored) return String(stored);
+  return MAIL_RELAY_URL.trim() || null;
+}
+
+// btoa() is byte-oriented and throws on anything above U+00FF, which every
+// vRevamp subject line hits (em dashes, emoji). TextEncoder widens to UTF-8
+// bytes first. Deliberately not the `unescape(encodeURIComponent(…))` trick:
+// that relies on Annex B globals, which is a needless bet inside a worker.
+function b64(text) {
+  const bytes = new TextEncoder().encode(String(text));
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+const b64url = (text) => b64(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+/*
+ * Whose mailbox does a gmail.readonly token read? The OTP scanner's grant
+ * carries no userinfo.email — widening a RESTRICTED scope to learn an address
+ * would be the wrong trade — but Gmail will name its own mailbox, and that
+ * address is the login_hint that keeps every later scan off the account
+ * chooser. Failure is survivable: the flow still works, it just asks again.
+ */
+async function gmailSelfEmail(token) {
+  try {
+    const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.emailAddress) return String(j.emailAddress);
+    }
+  } catch {
+    /* the scan itself is what matters; a missing hint only costs a screen */
+  }
+  return null;
+}
+
+// Whose mailbox is this token for? Needed only to address the mail to the
+// sender themselves; nothing else reads it.
+async function googleSelfEmail(token) {
+  try {
+    const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.email) return String(j.email);
+    }
+  } catch {
+    /* fall through to tokeninfo */
+  }
+  /*
+   * Second source, and not redundant: this address is also the `login_hint`
+   * that makes every later refresh silent, so failing to learn it costs a
+   * consent screen an hour, forever. /userinfo needs the People-ish endpoint to
+   * be reachable; /tokeninfo is part of the OAuth endpoint itself and answers
+   * with `email` whenever the userinfo.email scope is on the token. If both
+   * fail the flow still works — it is just louder.
+   */
+  try {
+    const r = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`
+    );
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && j.email ? String(j.email) : null;
+  } catch {
+    return null;
+  }
+}
+
+/*
+ * Relay mode: the Apps Script sends, so the extension needs no send scope at
+ * all — only the address to send to. That is a strictly smaller ask of every
+ * student who signs in: `calendar.events` for the reminders, `userinfo.email`
+ * to know where to write, and nothing that can touch a mailbox.
+ */
+async function sendMailViaRelay(url, { subject, html, text, to }) {
+  const address = to || (await chrome.storage.local.get([REMINDER_EMAIL_KEY]))[REMINDER_EMAIL_KEY];
+  // No Google sign-in on this path AT ALL. The only thing missing is where to
+  // write, and asking is both cheaper and better than an OAuth round-trip:
+  // it costs one text field instead of a consent screen, it works for a student
+  // with no Google account, and it lets them choose the inbox they actually
+  // read rather than whichever account Chrome happens to be signed into.
+  // `need_address` is a signal, not an error — the page turns it into a prompt.
+  if (!address) return { ok: false, to: null, error: "need_address" };
+
+  try {
+    // text/plain, not application/json: Apps Script web apps do not answer the
+    // CORS preflight that a JSON content-type would trigger, so a JSON body
+    // fails before it is ever sent. The script parses e.postData.contents.
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ to: address, subject, html, text }),
+    });
+    const out = await r.json().catch(() => null);
+    if (r.ok && out && out.ok) return { ok: true, to: address, error: null };
+    return {
+      ok: false,
+      to: address,
+      error: (out && out.error) || `relay returned HTTP ${r.status}`,
+    };
+  } catch (error) {
+    return { ok: false, to: address, error: `relay unreachable: ${String((error && error.message) || error)}` };
+  }
+}
+
+// Resolves { ok, to, error }. `to` is echoed back so the button can say where
+// the mail went — students routinely have two Google accounts and guess wrong.
+async function sendMailAsUser({ subject, html, text, to, interactive }) {
+  // a configured relay wins: it sends from the vRevamp address, and needs no
+  // gmail.send consent from the student at all
+  const relay = await mailRelayUrl();
+  if (relay) return sendMailViaRelay(relay, { subject, html, text, to, interactive });
+
+  const clientId = await calendarClientId();
+  if (!clientId) return { ok: false, to: null, error: "not_configured" };
+
+  const token = await googleToken({ interactive, feature: "gmail.send" });
+  if (!token) {
+    const why = googleAuthError();
+    return {
+      ok: false,
+      to: null,
+      // invalid_scope here is one Cloud Console checkbox, not a student error
+      error: /invalid_scope/i.test(why)
+        ? "gmail_send_scope"
+        : why || (interactive ? "the Google consent window was closed or denied" : "not consented yet"),
+    };
+  }
+
+  const stored = (await chrome.storage.local.get([REMINDER_EMAIL_KEY]))[REMINDER_EMAIL_KEY];
+  const address = to || stored || (await googleSelfEmail(token));
+  if (!address) return { ok: false, to: null, error: "couldn't work out which address to send to" };
+
+  // RFC 2822. The subject is RFC 2047 encoded-word wrapped because vRevamp's
+  // own subjects carry em dashes and emoji; the body is base64 for the same
+  // reason. Sending both parts lets a plain-text client read it too.
+  const boundary = `vrevamp-${Date.now().toString(36)}`;
+  const plain = text || String(html).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const raw = [
+    `To: ${address}`,
+    `Subject: =?UTF-8?B?${b64(subject)}?=`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    b64(plain),
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    b64(html || plain),
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+
+  try {
+    const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw: b64url(raw) }),
+    });
+    if (r.ok) return { ok: true, to: address, error: null };
+    const j = await r.json().catch(() => ({}));
+    const msg = (j && j.error && j.error.message) || `HTTP ${r.status}`;
+    // "has not been used in project … before or it is disabled" — the Gmail
+    // API itself is off in Cloud Console, which reads the same to the student
+    // as a missing scope, so it is reported the same way.
+    return {
+      ok: false,
+      to: address,
+      error: /accessNotConfigured|has not been used|disabled/i.test(msg) ? "gmail_send_scope" : msg,
+    };
+  } catch (error) {
+    return { ok: false, to: address, error: String((error && error.message) || error) };
+  }
+}
+
+function b64urlToText(data) {
+  const b64 = String(data || "").replace(/-/g, "+").replace(/_/g, "/");
+  try {
+    // decodeURIComponent(escape(...)) turns the byte string into UTF-8 text
+    return decodeURIComponent(
+      atob(b64)
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+  } catch {
+    return "";
+  }
+}
+
+// Gmail nests parts arbitrarily; collect every text/* body it has.
+function gmailBodyText(payload) {
+  const out = [];
+  const walk = (part) => {
+    if (!part) return;
+    const mime = part.mimeType || "";
+    if (part.body && part.body.data && mime.startsWith("text/")) {
+      const text = b64urlToText(part.body.data);
+      out.push(mime === "text/html" ? text.replace(/<[^>]*>/g, " ") : text);
+    }
+    (part.parts || []).forEach(walk);
+  };
+  walk(payload);
+  return out.join("\n");
+}
+
+// The sender is already guaranteed by the query, so this only has to pick the
+// code out of one known-good mail. Exposed for the test suite.
+function otpFromMailText(text, ignore) {
+  const skip = new Set((ignore || []).map(String));
+  const keywords = /(\botp\b|one[\s-]*time\s*(pass(word)?|pin|code)|verification\s*code)/i;
+  const re = /\b(\d{4,8})\b/g;
+  let best = null;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const code = m[1];
+    if (skip.has(code)) continue;
+    if (code.length === 4 && Number(code) >= 1900 && Number(code) <= 2100) continue;
+    // "Andhra Pradesh-522241" in VTOP's own footer is six digits sitting
+    // inside the same 160 chars as "One-Time Password", so a keyword nearby
+    // is not enough on its own.
+    if (m.index >= 2 && text[m.index - 1] === "-" && /[A-Za-z]/.test(text[m.index - 2])) continue;
+    const near = text.slice(Math.max(0, m.index - 160), m.index + 160);
+    if (!keywords.test(near)) continue;
+    // VTOP prints the code alone on its line. Accept that, or a keyword
+    // pressed right up against the digits — not merely one in the paragraph.
+    const lineStart = text.lastIndexOf("\n", m.index - 1) + 1;
+    const lineEnd = text.indexOf("\n", m.index);
+    const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
+    const tight = text.slice(Math.max(0, m.index - 48), m.index + 48);
+    if (line !== code && !keywords.test(tight)) continue;
+    const score = code.length === 6 ? 2 : 0;
+    if (!best || score > best.score) best = { code, score };
+  }
+  return best ? best.code : null;
+}
+self.__vrevampOtpFromMailText = otpFromMailText;
+
+// Newest VTOP OTP mail via the API. Returns {code, ageMin} | {error}.
+async function gmailFindOtp(ignore) {
+  const token = await gmailToken(false);
+  if (!token) return { error: "gmail-signin" };
+  const auth = { Authorization: "Bearer " + token };
+
+  const list = await fetch(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5&q=" +
+    encodeURIComponent(GMAIL_QUERY),
+    { headers: auth }
+  );
+  if (list.status === 401) {
+    await chrome.storage.local.remove([GMAIL_TOKEN_KEY]);
+    return { error: "gmail-signin" };
+  }
+  if (!list.ok) return { error: "gmail-http-" + list.status };
+
+  const ids = ((await list.json()).messages || []).map((x) => x.id);
+  if (!ids.length) return { code: null }; // signed in, nothing sent yet
+
+  // Take the YOUNGEST usable code rather than trusting list order — the API's
+  // ordering is not a promise, and picking the wrong message here is the exact
+  // mistake that put an hours-old code in the box twice.
+  let best = null;
+  for (const id of ids) {
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
+      { headers: auth }
+    );
+    if (!res.ok) continue;
+    const msg = await res.json();
+    const code = otpFromMailText(gmailBodyText(msg.payload), ignore);
+    if (!code) continue;
+    // internalDate is the real send time — no "13 minutes ago" to parse.
+    // FLOOR, so the number means whole elapsed minutes: the caller treats 3 as
+    // expired, and rounding 2.6 up to 3 would reject a code still in its
+    // window.
+    const ageMin = Math.max(
+      0,
+      Math.floor((Date.now() - Number(msg.internalDate || 0)) / 60000)
+    );
+    if (!best || ageMin < best.ageMin) best = { code, ageMin };
+  }
+  return best || { code: null };
+}
+
+// One scan of one webmail tab.
+//
+// A tab that was already open when the extension was installed or reloaded
+// has an ORPHANED content script: its chrome.runtime is dead, so it answers
+// nothing and sendMessage rejects. That is the state the panel used to report
+// as "Reload your Gmail tab (F5)" — correct, but a poor answer, because the
+// scanner can simply be put back. Inject it and ask again; only a tab that
+// still cannot be reached (no host permission, a restricted page, a tab mid
+// -navigation) comes back null and is reported as stale.
+async function scanMailTab(tab, ignore, autoOpen) {
+  const ask = () =>
+    chrome.tabs.sendMessage(tab.id, {
+      message: "vrevamp_scan_otp",
+      ignore,
+      autoOpen,
+    });
+  try {
+    return await ask();
+  } catch {
+    // no scanner in this tab (yet) — put one there
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["js/otp/mail_scan.js"],
+    });
+  } catch {
+    return null;
+  }
+  try {
+    return await ask();
+  } catch {
+    return null;
+  }
+}
+
 /*
  * Download state lives in chrome.storage.session (not module globals) so it
  * survives MV3 service-worker restarts between browsing a course page and
@@ -35,9 +1013,11 @@ function sleep(ms) {
  * (user switched tabs while the page loads), and then every message was
  * silently dropped, killing all message-driven features on that tab.
  */
-const returnMessage = (messageToReturn, tabId) => {
+// `extra` rides along in the same envelope, for the messages that carry more
+// than their own name (semester_page_open names WHICH page opened).
+const returnMessage = (messageToReturn, tabId, extra) => {
   const send = (id) =>
-    chrome.tabs.sendMessage(id, { message: messageToReturn }, () => {
+    chrome.tabs.sendMessage(id, { message: messageToReturn, ...(extra || {}) }, () => {
       // No content script listening on this page; ignore.
       void chrome.runtime.lastError;
     });
@@ -118,10 +1098,170 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   return true; // suggest() is called asynchronously
 });
 
+/*
+ * ===================== "shell healthy, content POSTs 404" =====================
+ *
+ * The session state js/session_repair.js is structurally unable to see.
+ *
+ * That script heals two things: a rendered Tomcat 404 page, and the poisoned
+ * cookie signature (404 with cookies, 200 without). Heavy use produces a third
+ * state that looks like neither, and it is the one students actually hit:
+ * `/vtop/content` still answers 200, the top bar still shows their name, the
+ * page never renders a 404 — and yet every menu click POSTs, gets a 404 back,
+ * and clears the content area. Nothing is wrong with the document, so a
+ * content script inspecting the document finds nothing wrong.
+ *
+ * The evidence only exists in the network layer, and only the worker can read
+ * it: VTOP's menu clicks are jQuery AJAX in the page's MAIN world, which an
+ * isolated-world content script cannot intercept at all. webRequest sees them
+ * regardless of world, and carries the status code.
+ *
+ * Detection, not repair. This counts and then tells the student; it never
+ * retries and never replays an endpoint. Repeating failed POSTs is what
+ * damages the session in the first place (ROADMAP rule 4), so the response to
+ * "VTOP is refusing everything" must be to stop and hand it back.
+ *
+ * Three guards against crying wolf:
+ *
+ *  - CONSECUTIVE, reset by any success. A single 404 is routine — some
+ *    endpoints simply do not exist on a given VTOP deployment, and
+ *    attendance_insights.js probes a list of them on purpose. A healthy
+ *    session answers something in between; a dead one answers nothing.
+ *  - WINDOWED. Three 404s an hour apart are three unrelated events, not a
+ *    broken session, so the run expires.
+ *  - LOGIN PATHS EXCLUDED. A 404 on the login POST means a bad sign-in
+ *    attempt, which is the one moment when telling someone to sign in again
+ *    is both obvious and useless.
+ *
+ * The counter lives in worker memory and is therefore lost if MV3 evicts the
+ * worker mid-run. That is the safe direction to fail: a lost run means one
+ * missed warning, and the next three clicks re-detect it, whereas persisting
+ * it would let a run from yesterday's session warn about today's.
+ */
+const CONTENT_404_TRIP = 3;
+const CONTENT_404_WINDOW_MS = 2 * 60 * 1000;
+// A 404 here says something other than "this session is finished".
+const CONTENT_404_IGNORED =
+  /\/vtop\/(?:login|vtopLogin|doLogin|initialProcess|logout|get\/new\/captcha)/i;
+const content404 = new Map(); // tabId -> { count, since, warned }
+
+const noteContentStatus = (details) => {
+  const tabId = details.tabId;
+  if (typeof tabId !== "number" || tabId < 0) return;
+
+  /*
+   * A real navigation starts a new session; nothing counted before it
+   * describes the one on screen now.
+   *
+   * Read off the main_frame request rather than chrome.tabs.onUpdated on
+   * purpose. An unfiltered onUpdated listener wakes this worker for every tab
+   * load anywhere in the browser, which is the same "one message per event,
+   * whether or not it concerns us" budget that produced the Page Unresponsive
+   * freeze. This event is one we already receive, and only for VTOP.
+   *
+   * VTOP's menu clicks are AJAX and never change the tab's document, so they
+   * do not land here — which is exactly right: a run of 404s must survive the
+   * clicks that produce it and end only at a genuine reload or sign-in.
+   */
+  if (details.type === "main_frame") {
+    content404.delete(tabId);
+    return;
+  }
+  // VTOP drives its content area with POSTed AJAX; a 404 on a stylesheet or a
+  // favicon says nothing about the session
+  if (details.method !== "POST") return;
+  if (details.url.indexOf("/vtop/") === -1) return;
+  if (CONTENT_404_IGNORED.test(details.url)) return;
+
+  if (details.statusCode !== 404) {
+    // VTOP answered something. Whatever run was building, it is over.
+    if (details.statusCode < 400) content404.delete(tabId);
+    return;
+  }
+
+  const now = Date.now();
+  const run = content404.get(tabId);
+  if (!run || now - run.since > CONTENT_404_WINDOW_MS) {
+    content404.set(tabId, { count: 1, since: now, warned: false });
+    return;
+  }
+  run.count += 1;
+  if (run.count < CONTENT_404_TRIP || run.warned) return;
+  run.warned = true; // one banner per run, not one per click
+  chrome.tabs.sendMessage(
+    tabId,
+    { message: "session_dead", failures: run.count },
+    () => {
+      // no content script on this page (or it navigated away mid-send)
+      void chrome.runtime.lastError;
+    }
+  );
+};
+
+chrome.tabs.onRemoved.addListener((tabId) => content404.delete(tabId));
+
+/*
+ * The four semester-gated pages, by the URL VTOP POSTs when the page ITSELF is
+ * opened — not the endpoint it POSTs afterwards to fetch that semester's data.
+ * Read off the live portal 2026-08-19; the pairs are one apart by a "do"
+ * prefix, so each key keeps its parent path to stay unambiguous:
+ *
+ *   examinations/StudentMarkView          vs examinations/doStudentMarkView
+ *   examGradeView/StudentGradeView        vs examGradeView/doStudentGradeView
+ *   examinations/StudExamSchedule         vs examinations/doSearchExamScheduleForStudent
+ *   academics/common/StudentTimeTable     vs processViewTimeTable
+ *
+ * The names on the right are what js/shared/auto_semester.js registers under.
+ */
+const SEMESTER_PAGE_URLS = [
+  ["examinations/StudExamSchedule", "exam_schedule"],
+  ["examinations/StudentMarkView", "mark_view"],
+  /*
+   * Grades (examGradeView/StudentGradeView) is deliberately NOT here. Asked
+   * 2026-08-21: "in the grades you dont use this module at all so remove it in
+   * grades — and in grade history you provide the chance to change and check
+   * the grade". Right call: that page shows ONE semester, so a semester picked
+   * for you is a semester you did not ask for, while Grade History lists every
+   * subject ever taken and is where the calculator lives. The "exam_grade"
+   * DATA message below is untouched — grade_pages.js still decorates the table
+   * once a semester is chosen by hand.
+   */
+  ["academics/common/StudentTimeTable", "timetable_view"],
+  /*
+   * Digital Assignment Upload, added 2026-08-22 by request. Read live that
+   * day: the page is examinations/StudentDA and the data POST it makes once a
+   * semester is chosen is examinations/doDigitalAssignment — neither is a
+   * substring of the other, so no exclusion is needed here.
+   *
+   * Unlike Grades, this page is not "one semester you came to look at": it is
+   * the list of everything you owe, and it is the current semester's list
+   * every time. Answering the picker is what makes the dues column and its
+   * reminders appear at all.
+   */
+  ["examinations/StudentDA", "da_upload"],
+  /*
+   * Attendance joined the registry on 2026-08-21, reported as "even the auto
+   * selecter in the attendance modue isnt wokingg". It had its own copy of
+   * this logic in js/attendance.js and none of the fixes the others got — in
+   * particular it read #semesterSubId the instant this message arrived, which
+   * is BEFORE VTOP's jQuery has written the picker, so the select was usually
+   * null and the page sat on "-- Choose Semester --".
+   *
+   * The third element is the exclusion, and it is not optional here: the
+   * per-subject endpoints (processViewStudentAttendanceDetail,
+   * …DetailDisplay) also contain "StudentAttendance", and the insights script
+   * fetches one per row. Without it, opening attendance would announce a
+   * freshly opened picker a dozen times over — the load loop this whole
+   * registry is written to avoid.
+   */
+  ["StudentAttendance", "attendance", /Detail|Display/],
+];
+
 /* Fires after the completion of a request */
 chrome.webRequest.onCompleted.addListener(
   async (details) => {
     const link = details["url"];
+    noteContentStatus(details);
     // deliver to the tab that made this request, not the focused tab
     const notify = (m) => returnMessage(m, details.tabId);
     // NOTE: "showOfflineIcon" used to be broadcast here, i.e. once per
@@ -132,6 +1272,39 @@ chrome.webRequest.onCompleted.addListener(
     // produced the "Page Unresponsive" freeze in 8055f0e. The icon needs no
     // message at all: showOfflineIcon.js renders itself on load and is
     // idempotent.
+    /*
+     * PAGE OPEN — a different event from the data POST, on the same page.
+     *
+     * A semester-gated page arrives in TWO steps. The menu click POSTs the
+     * page's own data-url and gets back a form with an empty #semesterSubId;
+     * only once a semester is chosen does VTOP POST the *data* endpoint. Every
+     * branch in the chain below listens for the second step — which is right
+     * for the scripts that decorate a rendered table, and exactly wrong for
+     * js/shared/auto_semester.js, whose entire job is to answer the picker.
+     * It was being told about the page only after somebody had answered it by
+     * hand, so on three of the four pages it could never run at all.
+     *
+     * Checked against the data-urls read live on 2026-08-19 (ROADMAP §"Live-
+     * read page shapes"): of the four, only the Time Table's happened to
+     * collide with an existing branch ("StudentTimeTable"), which is why that
+     * one page opened itself and Marks, Grades and Exam Schedule looked like
+     * the feature had never been built. Exam Schedule is the one that cost the
+     * most: its venue watcher only runs when its table renders.
+     *
+     * Deliberately NOT folded into the chain below as a widened match. This is
+     * a second event about the same URL, and widening e.g. the marks branch to
+     * catch it would also re-run modify_marks_page() against an empty form and
+     * cache that empty page over a good one. Separate event, separate message.
+     */
+    const opened = SEMESTER_PAGE_URLS.find(
+      ([path, , not]) => link.indexOf(path) !== -1 && !(not && not.test(link))
+    );
+    if (opened) returnMessage("semester_page_open", details.tabId, { page: opened[1] });
+
+    // the leave page announces itself, so the watcher can read the table that
+    // is already on screen instead of asking VTOP for it again
+    if (link.indexOf("hostel/StudentGeneralOuting") !== -1) notify("leave_page");
+
     if (link.indexOf("doStudentMarkView") !== -1) {
       notify("mark_view_page");
     } else if (link.indexOf("StudentTimeTable") !== -1) {
@@ -225,7 +1398,307 @@ const scheduleLocalReminders = async (tag, reminders) => {
   return scheduled;
 };
 
+/* ===================== The daily digest ====================================
+ *
+ * Asked for 2026-08-17: "i need mail notifications and all", about assignments
+ * and bunkable classes.
+ *
+ * Everything needed already existed and none of it ever reached the student.
+ * Attendance percentages, upcoming dues and exam dates were each computed by a
+ * content script and then left in that page — so the only way to learn that an
+ * assignment was due tomorrow was to open the DA page and read a cell, which
+ * is precisely the thing a reminder is supposed to replace. The per-course 🔔
+ * helped only if you had already gone and looked.
+ *
+ * This closes the loop. Once a day the worker reads the three snapshots the
+ * pages leave behind and sends one message: what is due, what is overdue,
+ * which subjects are near 75%, and which exams are close. It runs whether or
+ * not VTOP is open, because it reads storage rather than the DOM.
+ *
+ * Honest limit, stated because it will otherwise be mistaken for a bug: those
+ * snapshots are only as fresh as the last visit to each page. The digest says
+ * how old its data is and stops asserting anything once it is stale, rather
+ * than quietly reporting last month's attendance as today's. VTOP cannot be
+ * scraped in the background — it needs the session in a real tab, and driving
+ * it from here is what breaks sessions (ROADMAP #4).
+ */
+const DIGEST_KEY = "vrevamp_digest";
+const DIGEST_ALARM = "vrevamp|digest";
+const DIGEST_DEFAULT_HOUR = 7;
+const STALE_DAYS = 14;
+
+const digestSettings = async () => {
+  const stored = (await chrome.storage.local.get([DIGEST_KEY]))[DIGEST_KEY] || {};
+  return { enabled: !!stored.enabled, hour: Number(stored.hour) || DIGEST_DEFAULT_HOUR };
+};
+
+const nextDigestTime = (hour) => {
+  const when = new Date();
+  when.setHours(hour, 0, 0, 0);
+  if (when.getTime() <= Date.now()) when.setDate(when.getDate() + 1);
+  return when.getTime();
+};
+
+const setDigest = async (enabled, hour) => {
+  const settings = {
+    enabled: !!enabled,
+    hour: Number.isInteger(hour) ? hour : (await digestSettings()).hour,
+  };
+  await chrome.storage.local.set({ [DIGEST_KEY]: settings });
+  await chrome.alarms.clear(DIGEST_ALARM);
+  if (settings.enabled) {
+    chrome.alarms.create(DIGEST_ALARM, {
+      when: nextDigestTime(settings.hour),
+      periodInMinutes: 24 * 60,
+    });
+  }
+  return settings;
+};
+
+const daysBetween = (iso) => {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const then = new Date(y, m - 1, d).setHours(0, 0, 0, 0);
+  const today = new Date().setHours(0, 0, 0, 0);
+  return Math.round((then - today) / 86400000);
+};
+
+const ageInDays = (ms) => (ms ? Math.floor((Date.now() - ms) / 86400000) : null);
+
+// { subject, html, text, urgent } — `urgent` decides whether the Chrome
+// notification is worth raising at all, so a quiet day stays quiet.
+async function buildDigest() {
+  const store = await chrome.storage.local.get([
+    "vrevamp_da_dues",
+    "vrevamp_attendance_summary",
+    "vrevamp_exam_schedule",
+  ]);
+
+  const sections = [];
+  // Footnotes that are true but are never, on their own, worth a mail.
+  const notes = [];
+  const plain = [];
+  const headline = [];
+  let urgent = false;
+
+  /* --- assignments --- */
+  const dues = store.vrevamp_da_dues;
+  const duesAge = ageInDays(dues && dues.fetchedAt);
+  if (dues && duesAge !== null && duesAge <= STALE_DAYS) {
+    const upcoming = [];
+    let overdue = 0;
+    (dues.courses || []).forEach((course) => {
+      overdue += (course.overdue || []).length;
+      (course.upcoming || []).forEach((item) => {
+        const left = daysBetween(dueIsoOf(item.due));
+        if (left === null || left < 0) return;
+        upcoming.push({ ...item, code: course.code, left });
+      });
+    });
+    upcoming.sort((a, b) => a.left - b.left);
+    if (upcoming.length) {
+      if (upcoming[0].left <= 2) urgent = true;
+      headline.push(
+        upcoming[0].left === 0
+          ? `${upcoming[0].code} due TODAY`
+          : `${upcoming[0].code} due in ${upcoming[0].left}d`
+      );
+      sections.push(
+        "<h3>Assignments still to upload</h3><ul>" +
+          upcoming
+            .map(
+              (a) =>
+                `<li><b>${a.code}</b> — ${a.title}<br>due ${a.due} · ` +
+                (a.left === 0 ? "<b>today</b>" : `${a.left} day(s) left`) +
+                "</li>"
+            )
+            .join("") +
+          "</ul>"
+      );
+      plain.push(
+        "ASSIGNMENTS\n" +
+          upcoming.map((a) => `  ${a.due}  ${a.code} — ${a.title} (${a.left}d)`).join("\n")
+      );
+    }
+    if (overdue) {
+      urgent = true;
+      sections.push(`<p><b>${overdue} assignment(s) are past due and were never uploaded.</b></p>`);
+      plain.push(`${overdue} assignment(s) past due, never uploaded.`);
+    }
+  }
+
+  /* --- attendance --- */
+  const attendance = store.vrevamp_attendance_summary;
+  const attAge = ageInDays(attendance && attendance.fetchedAt);
+  if (attendance && attAge !== null && attAge <= STALE_DAYS) {
+    const subjects = (attendance.subjects || []).filter((s) => typeof s.pct === "number");
+    const risky = subjects.filter((s) => s.pct < 80).sort((a, b) => a.pct - b.pct);
+    if (risky.length) {
+      if (risky[0].pct < 75) urgent = true;
+      headline.push(`${risky[0].name.split(" ")[0]} at ${risky[0].pct}%`);
+      /*
+       * The same correction the home card got: a student ALREADY under 75% is
+       * not helped by "cannot skip any more" — they are past that, and the only
+       * number they can act on is how many in a row get them back over the
+       * line. `recover` / `canRecover` come from the same snapshot.
+       */
+      const verdict = (s) => {
+        if (s.below75 || s.pct < 75) {
+          if (s.canRecover === false)
+            return ` · <b>attending everything still only reaches ${
+              typeof s.maxPct === "number" ? `${s.maxPct}%` : "under 75%"
+            }</b> — talk to the faculty`;
+          return typeof s.recover === "number" && s.recover > 0
+            ? ` · <b>debarred unless you attend the next ${s.recover} ${s.unit || "class(es)"}</b>`
+            : " · <b>below 75%</b>";
+        }
+        if (typeof s.safeNow !== "number") return "";
+        return s.safeNow > 0
+          ? ` · ${s.safeNow} ${s.unit || "class(es)"} left before you drop under 75%`
+          : " · <b>no room left — one more absence puts you under 75%</b>";
+      };
+      sections.push(
+        "<h3>Attendance worth watching</h3><ul>" +
+          risky.map((s) => `<li><b>${s.name}</b> — ${s.pct}%${verdict(s)}</li>`).join("") +
+          "</ul>"
+      );
+      plain.push(
+        "ATTENDANCE\n" +
+          risky
+            .map(
+              (s) =>
+                `  ${s.pct}%  ${s.name}${verdict(s).replace(/<\/?b>/g, "").replace(/^ · /, " — ")}`
+            )
+            .join("\n")
+      );
+    }
+    const safe = subjects.filter((s) => typeof s.safeNow === "number" && s.safeNow > 0);
+    if (safe.length && !risky.length) {
+      sections.push(
+        "<h3>Free to skip today</h3><ul>" +
+          safe
+            .map((s) => `<li>${s.name} — ${s.safeNow} ${s.unit || "class(es)"} in hand</li>`)
+            .join("") +
+          "</ul>"
+      );
+      plain.push("CAN SKIP\n" + safe.map((s) => `  ${s.safeNow}  ${s.name}`).join("\n"));
+    }
+  } else if (attendance) {
+    /*
+     * A RIDER, NOT A REASON TO MAIL. This used to push into `sections`, and
+     * `sections.length` is the test for "is there anything to say" — so a
+     * student who had not opened the attendance page in a fortnight got a mail
+     * EVERY MORNING whose entire content was "your figures are 40 days old".
+     * That is how a digest gets muted, and a muted digest takes the one that
+     * mattered with it. It rides along on a digest that has real news, and
+     * otherwise says nothing.
+     */
+    notes.push(
+      `<p style="color:#777">Attendance figures are ${attAge} days old — open the VTOP attendance page to refresh them.</p>`
+    );
+  }
+
+  /* --- exams --- */
+  const exams = store.vrevamp_exam_schedule;
+  if (exams && Array.isArray(exams.exams)) {
+    const soon = exams.exams
+      .map((e) => ({ ...e, left: daysBetween(e.dateIso) }))
+      .filter((e) => e.left !== null && e.left >= 0 && e.left <= 10)
+      .sort((a, b) => a.left - b.left);
+    if (soon.length) {
+      if (soon[0].left <= 1) urgent = true;
+      headline.push(`${soon[0].code} exam in ${soon[0].left}d`);
+      sections.push(
+        "<h3>Exams in the next 10 days</h3><ul>" +
+          soon
+            .map(
+              (e) =>
+                `<li><b>${e.code}</b> ${e.title || ""} — ${e.dateIso} ${e.start || ""}` +
+                (e.venue ? ` · ${e.venue}` : "") +
+                (e.seatNo ? ` · seat ${e.seatNo}` : "") +
+                ` · in ${e.left} day(s)</li>`
+            )
+            .join("") +
+          "</ul>"
+      );
+      plain.push(
+        "EXAMS\n" + soon.map((e) => `  ${e.dateIso}  ${e.code} (${e.left}d)`).join("\n")
+      );
+    }
+  }
+
+  if (!sections.length) return null; // nothing to say — say nothing
+
+  const today = new Date().toLocaleDateString("en-IN", {
+    weekday: "long",
+    day: "numeric",
+    month: "short",
+  });
+  return {
+    subject: `vRevamp — ${headline.slice(0, 2).join(", ") || "your day"} (${today})`,
+    html:
+      `<div style="font-family:system-ui,sans-serif;max-width:560px">` +
+      `<p>Here's where things stand, ${today}.</p>` +
+      sections.join("") +
+      notes.join("") +
+      `<p style="color:#888;font-size:12px">Built from what VTOP showed the last time you opened each page. ` +
+      `Reply-free automated message from the vRevamp extension — turn it off with the 📬 button on the digital assignments page.</p></div>`,
+    text: plain.join("\n\n"),
+    urgent,
+    headline: headline.join(" · "),
+  };
+}
+
+// VTOP prints "17-Aug-2026"; everything downstream wants an ISO day.
+function dueIsoOf(due) {
+  const m = String(due).trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
+  const months = {
+    jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+    jul: "07", aug: "08", sep: "09", sept: "09", oct: "10", nov: "11", dec: "12",
+  };
+  if (!m) return String(due);
+  const mm = months[m[2].toLowerCase()];
+  if (!mm) return String(due);
+  return `${m[3]}-${mm}-${m[1].padStart(2, "0")}`;
+}
+
+async function runDigest() {
+  const digest = await buildDigest();
+  if (!digest) return { sent: false, reason: "nothing to report" };
+
+  // The notification goes out first and unconditionally: it needs no account,
+  // no scope and no network, so a failed mail must never cost the student the
+  // reminder itself.
+  chrome.notifications.create(`vrdigest|${Date.now()}`, {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
+    title: digest.urgent ? "vRevamp — needs attention today" : "vRevamp — today's summary",
+    message: digest.headline || "Open VTOP for details",
+    priority: digest.urgent ? 2 : 1,
+    requireInteraction: !!digest.urgent,
+  });
+
+  // Never interactive. A consent window that opens by itself at 7 am, with no
+  // click behind it, is indistinguishable from malware — if the grant has
+  // lapsed the digest simply stays a notification until the next manual send.
+  const mail = await sendMailAsUser({
+    subject: digest.subject,
+    html: digest.html,
+    text: digest.text,
+    interactive: false,
+  });
+  return { sent: mail.ok, reason: mail.error || null, to: mail.to };
+}
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === DIGEST_ALARM) {
+    try {
+      await runDigest();
+    } catch (error) {
+      console.warn("vRevamp digest", error);
+    }
+    return;
+  }
   if (!alarm.name.startsWith("vrrem|")) return;
   const store =
     (await chrome.storage.local.get(REMINDERS_KEY))[REMINDERS_KEY] || {};
@@ -272,21 +1745,76 @@ const waitTabComplete = (tabId, timeoutMs) =>
 // "no-button").
 const gcalClickSave = async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Verified against the live editor 2026-08-09: Save is a real
+  // <button aria-label="Save">, exactly one match among ~55 candidates. The
+  // [role="button"] arm is defensive breadth for a UI that uses div-buttons
+  // elsewhere — NOT a bug that was observed. An earlier version of this comment
+  // claimed the div form was why imports failed; that was wrong, and the import
+  // was in fact working the whole time.
   const findSave = () =>
-    Array.from(document.querySelectorAll("button")).find((b) => {
+    Array.from(document.querySelectorAll('button,[role="button"]')).find((b) => {
       const text = (b.textContent || "").trim();
-      const label = b.getAttribute("aria-label") || "";
-      return text === "Save" || label === "Save";
+      const label = (b.getAttribute("aria-label") || "").trim();
+      // \b keeps "Saved" (a status, not a control) from matching
+      return /^save\b/i.test(text) || /^save\b/i.test(label);
     });
   let btn = null;
   for (let t = 0; t < 15000 && !(btn = findSave()); t += 300) await sleep(300);
   if (!btn) return "no-button";
+
+  // A TEMPLATE link lands on /calendar/u/0/r/eventedit?... (verified live), so
+  // leaving that path is Google acknowledging the write.
+  //
+  // `hadEditUrl` matters: the old code asked "is the path free of eventedit?"
+  // without checking it was ever there, and that is a condition which can be
+  // true before the click — on any page that never used an eventedit URL it
+  // reports success instantly, having proved nothing. A signal only counts if
+  // it CHANGED. Losing the Save button is the second acceptable signal, for a
+  // UI that writes the event without moving the URL.
+  const hadEditUrl = location.pathname.includes("eventedit");
   btn.click();
-  for (let t = 0; t < 15000; t += 300) {
-    if (!location.pathname.includes("eventedit")) return "saved";
+  for (let t = 0; t < 20000; t += 300) {
     await sleep(300);
+    if (hadEditUrl && !location.pathname.includes("eventedit")) return "saved";
+    if (!findSave()) return "saved";
   }
   return "stuck";
+};
+
+/*
+ * Guided import: wait for the STUDENT to press Save in a tab they can see.
+ *
+ * Resolves "saved" when the editor navigates away from /eventedit (Google's
+ * own signal that the event was created), "closed" if they close the tab —
+ * which is the natural cancel gesture and must stop the run, because opening
+ * more tabs at someone who is closing them is the exact behaviour being fixed.
+ *
+ * Polling, not one long sleep, on purpose: every chrome.* call resets the MV3
+ * worker's idle timer, so a student who takes two minutes over the first event
+ * does not get the worker suspended out from under them.
+ */
+const waitGcalSaved = async (tabId, timeoutMs) => {
+  const step = 900;
+  let entered = false;
+  for (let t = 0; t < timeoutMs; t += step) {
+    let tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      return "closed";
+    }
+    // The TEMPLATE url redirects into /eventedit and leaves it on save
+    // (verified live 2026-08-09), so the URL alone is enough — no need to
+    // inject a probe into the page once a second.
+    const url = tab.url || "";
+    if (url.includes("eventedit")) entered = true;
+    else if (entered) return "saved";
+    // never reached the editor at all — usually no Google session in this
+    // profile, so the student was bounced to a sign-in page
+    else if (t > 25000 && /accounts\.google\.com/.test(url)) return "no-editor";
+    await new Promise((r) => setTimeout(r, step));
+  }
+  return "timeout";
 };
 
 //Routes the messages from content scripts and the popup
@@ -317,26 +1845,178 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // fresh one at click time — chrome.identity refreshes it silently once
     // the user has consented. `stale` invalidates a token a 401 proved dead.
     case "get_google_token": {
-      const mint = () =>
-        chrome.identity.getAuthToken(
-          { interactive: !!request.interactive },
-          (auth_token) => {
-            // surface the failure reason (e.g. Chrome profile has no Google
-            // account — then no consent window ever opens) instead of
-            // swallowing it; the buttons show it to the user
-            const err = chrome.runtime.lastError;
-            if (auth_token) chrome.storage.sync.set({ token: auth_token });
+      // ONE route: launchWebAuthFlow on CALENDAR_CLIENT_ID, the same mechanism
+      // the Gmail OTP feature runs on. Every caller (timetable import, exam ✉️,
+      // DA ✉) asks through this message, so they all share its consent.
+      //
+      // The old `chrome.identity.getAuthToken` fallback on
+      // manifest.oauth2.client_id is GONE. That is upstream's client and it is
+      // dead ("bad client id") for every user of this build, so the fallback
+      // could only ever produce an error — and because the content scripts
+      // pattern-matched that error into "this build's OAuth client id is dead",
+      // one stale build was enough to make a working sign-in look permanently
+      // broken. A missing client id now says exactly that instead.
+      calendarClientId().then((id) => {
+        if (!id) {
+          sendResponse({ token: null, error: "not_configured" });
+          return;
+        }
+        calendarToken({ interactive: !!request.interactive, stale: request.stale }).then(
+          (token) => {
+            const why = googleAuthError();
             sendResponse({
-              token: auth_token || null,
-              error: auth_token ? null : (err && err.message) || null,
+              token: token || null,
+              error: token
+                ? null
+                : // Google's own words first: "invalid_scope" here means
+                  // calendar.events was never added to the consent screen (or
+                  // the Calendar API is not enabled), which no amount of
+                  // clicking Allow will fix.
+                  why ||
+                  (request.interactive
+                    ? "the Google consent window was closed or denied"
+                    : "not consented yet"),
             });
-          }
+          },
+          (error) => sendResponse({ token: null, error: String((error && error.message) || error) })
         );
-      if (request.stale)
-        chrome.identity.removeCachedAuthToken({ token: request.stale }, mint);
-      else mint();
+      });
       return true;
     }
+    // A real email, sent now, from the student's own Gmail — the companion to
+    // the ✉️ buttons' "Calendar will mail you a day before". See
+    // sendMailAsUser() for why this is a separate scope and token.
+    // Where the student wants vRevamp's mail. Stored per-browser; the relay is
+    // told it per request and keeps no list of its own.
+    // Who vRevamp is signed in as, and where its mail is pointed. Lets a page
+    // say "signed in as x@gmail.com" instead of leaving the student guessing
+    // which of their accounts approved the last consent screen.
+    case "google_status":
+      (async () => {
+        const local = await chrome.storage.local.get([APP_TOKEN_KEY, GRANTED_KEY]);
+        const cached = local[APP_TOKEN_KEY];
+        const digest = await digestSettings();
+        sendResponse({
+          account: await googleHint(),
+          // `signedIn` used to mean "there is an unexpired access token", which
+          // is false for most of any given day and made a perfectly healthy
+          // grant read as "needs re-approval" in the popup. An access token
+          // lasting an hour is how the implicit flow WORKS; what the student
+          // wants to know is whether the grant is still on record, because that
+          // is what decides whether the next click is silent.
+          signedIn: !!local[GRANTED_KEY],
+          tokenFresh: !!(cached && cached.token && cached.exp > Date.now()),
+          tokenExpires: cached && cached.exp ? cached.exp : null,
+          reminderEmail:
+            (await chrome.storage.local.get([REMINDER_EMAIL_KEY]))[REMINDER_EMAIL_KEY] || null,
+          relay: !!(await mailRelayUrl()),
+          relayUrl: (await mailRelayUrl()) || "",
+          digest: digest.enabled,
+          digestHour: digest.hour,
+        });
+      })();
+      return true;
+    /*
+     * Point mail at an Apps Script relay without editing the source.
+     *
+     * MAIL_RELAY_URL was a hardcoded blank constant, so switching relay mode
+     * on meant editing background.js and reloading the extension — fine for
+     * whoever wrote it, impossible for anyone who installed it. The URL is
+     * CHECKED before it is stored: the script answers a GET with
+     * {"ok":true,"service":"vRevamp mail relay"}, so a typo or a
+     * not-yet-deployed script is caught here rather than silently swallowing
+     * every mail from then on.
+     */
+    case "set_mail_relay":
+      (async () => {
+        const url = String(request.url || "").trim();
+        if (!url) {
+          // record the refusal rather than forgetting the setting — see
+          // MAIL_RELAY_OFF above
+          await chrome.storage.local.set({ [MAIL_RELAY_KEY]: MAIL_RELAY_OFF });
+          sendResponse({ ok: true, url: "" });
+          return;
+        }
+        if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec/.test(url)) {
+          sendResponse({
+            ok: false,
+            error: "that isn't an Apps Script /exec URL — it should end in /exec",
+          });
+          return;
+        }
+        try {
+          const probe = await fetch(url, { method: "GET" });
+          const body = await probe.json().catch(() => null);
+          if (!probe.ok || !body || !body.ok) {
+            sendResponse({
+              ok: false,
+              error: `the script answered HTTP ${probe.status} instead of {"ok":true} — check it is deployed with access "Anyone"`,
+            });
+            return;
+          }
+        } catch (error) {
+          sendResponse({
+            ok: false,
+            error: `couldn't reach the script (${String((error && error.message) || error)})`,
+          });
+          return;
+        }
+        await chrome.storage.local.set({ [MAIL_RELAY_KEY]: url });
+        sendResponse({ ok: true, url });
+      })();
+      return true;
+    // Switch the daily digest on or off, and prove it works by sending one
+    // immediately — a scheduled feature whose first evidence arrives tomorrow
+    // morning is a feature nobody can tell is broken.
+    case "set_daily_digest":
+      (async () => {
+        const settings = await setDigest(request.enabled, request.hour);
+        let to = (await chrome.storage.local.get([REMINDER_EMAIL_KEY]))[REMINDER_EMAIL_KEY] || null;
+        if (settings.enabled) {
+          const run = await runDigest().catch(() => ({ sent: false }));
+          if (run && run.to) to = run.to;
+        }
+        sendResponse({ ok: true, enabled: settings.enabled, hour: settings.hour, to });
+      })();
+      return true;
+    // Drop the tokens AND the remembered account, so the next click shows the
+    // chooser again. The grant on Google's side is untouched — this is "use a
+    // different account", not "revoke access", which belongs in Google's own
+    // security settings and should not be done behind the student's back.
+    case "google_sign_out":
+      forgetGoogleTokens().then(
+        () => sendResponse({ ok: true }),
+        (error) => sendResponse({ ok: false, error: String((error && error.message) || error) })
+      );
+      return true;
+    case "set_reminder_email": {
+      const address = String(request.address || "").trim();
+      if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(address)) {
+        sendResponse({ ok: false, error: "that doesn't look like an email address" });
+        return true;
+      }
+      // promise form, not the callback overload: MV3 returns a promise when no
+      // callback is passed, and this way a storage failure is actually reported
+      // instead of the caller waiting for a reply that never comes
+      Promise.resolve(chrome.storage.local.set({ [REMINDER_EMAIL_KEY]: address })).then(
+        () => sendResponse({ ok: true, address }),
+        (error) => sendResponse({ ok: false, error: String((error && error.message) || error) })
+      );
+      return true;
+    }
+    case "send_mail":
+      sendMailAsUser({
+        subject: request.subject || "vRevamp",
+        html: request.html || "",
+        text: request.text || "",
+        to: request.to || null,
+        interactive: request.interactive !== false,
+      }).then(
+        (r) => sendResponse(r),
+        (error) =>
+          sendResponse({ ok: false, to: null, error: String((error && error.message) || error) })
+      );
+      return true;
     // One-click no-OAuth timetable import: for each prefilled
     // calendar.google.com/render?action=TEMPLATE link, open a background
     // tab, press its Save button, close it. Google's own Import page never
@@ -390,11 +2070,63 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             } catch (error) {
               /* originating tab gone — keep importing */
             }
-          // a broken setup (missing permission, blocked page) fails the same
-          // way every time — stop strobing tabs after 3 straight failures
-          if (saved === 0 && failed >= 3) break;
+          // Stop strobing. A "no-button" means this Google UI does not expose a
+          // Save control we can find — that is structural, it will fail
+          // identically on all 40 classes, so bail on the FIRST one rather than
+          // flashing tabs past the student. Timeouts can be transient, so those
+          // still get three tries.
+          if (saved === 0 && (lastError === "no-button" || failed >= 3)) break;
         }
         sendResponse({ saved, failed, total: urls.length, lastError });
+      })();
+      return true; // async sendResponse
+    /*
+     * The same TEMPLATE links, paced by the student instead of by us: one tab
+     * at a time, in the FOREGROUND, and the next one does not open until this
+     * one is saved. Slower by design. The automatic path above is a background
+     * strobe — when it cannot press Save it is worse than useless, because it
+     * also denies the student the chance to press Save themselves.
+     */
+    case "gcal_guided_import":
+      (async () => {
+        const urls = Array.isArray(request.urls) ? request.urls.slice(0, 60) : [];
+        const origin = sender && sender.tab ? sender.tab.id : null;
+        let saved = 0;
+        let stopped = null;
+        for (let i = 0; i < urls.length && !stopped; i++) {
+          let tab = null;
+          try {
+            tab = await chrome.tabs.create({ url: urls[i], active: true });
+            await waitTabComplete(tab.id, 20000);
+            const outcome = await waitGcalSaved(tab.id, 10 * 60 * 1000);
+            if (outcome === "saved") saved++;
+            else stopped = outcome; // closed / timeout / no-editor
+          } catch (error) {
+            console.warn("gcal_guided_import", urls[i], error);
+            stopped = String((error && error.message) || error);
+          }
+          // "closed" means it is already gone, and closing it again would race
+          // with whatever the student clicked next
+          if (tab && stopped !== "closed")
+            try {
+              await chrome.tabs.remove(tab.id);
+            } catch (error) {
+              /* already closed */
+            }
+          if (origin !== null)
+            try {
+              chrome.tabs.sendMessage(origin, {
+                message: "gcal_template_progress",
+                done: i + 1,
+                total: urls.length,
+                saved,
+                guided: true,
+              });
+            } catch (error) {
+              /* originating tab gone — the run still stands */
+            }
+        }
+        sendResponse({ saved, total: urls.length, stopped, guided: true });
       })();
       return true; // async sendResponse
     // NOTE: an "ics_import_fallback" case sat here — download the built .ics,
@@ -405,6 +2137,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // current caller either — the sign-in-free path is the one-tap TEMPLATE
     // links in timetable_ics.js, because Google's 2026 revamp broke
     // /r/settings/import outright (it never renders).
+    /*
+     * A notification NOW, as opposed to schedule_local_reminders' "at a time".
+     * The approval watcher needs it: a leave being accepted is news the moment
+     * it is noticed, and scheduling it for later would be telling the student
+     * about a gate pass after they were meant to be at the gate.
+     */
+    case "notify_now":
+      try {
+        chrome.notifications.create(`vrnow|${Date.now()}`, {
+          type: "basic",
+          iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
+          title: String(request.title || "vRevamp").slice(0, 150),
+          message: String(request.body || "").slice(0, 500),
+          priority: 2,
+          requireInteraction: true,
+        });
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error) });
+      }
+      return true;
     case "schedule_local_reminders":
       scheduleLocalReminders(
         request.tag,
@@ -431,6 +2184,161 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse(cookies.length || true);
         } catch {
           sendResponse(false);
+        }
+      })();
+      return true; // async sendResponse
+    // js/vtop_otp.js is waiting on the login OTP: ask every open webmail tab
+    // to scan itself and hand back the first unseen code. One scan per call —
+    // the polling loop lives in the content script, because an MV3 worker can
+    // be torn down mid-wait and a loop parked here would die with it.
+    case "vrevamp_get_otp":
+      (async () => {
+        try {
+          // Only the VTOP login pages may trigger a mail read. http is allowed
+          // because the content_scripts matches are `*://` — a page served
+          // over http is still the VTOP page, and nothing but our own content
+          // scripts can reach this listener in the first place.
+          const from = (sender && sender.url) || "";
+          if (!/^https?:\/\/[^/]*(vitap|vit)\.ac\.in\/vtop\//.test(from)) {
+            sendResponse({ error: "forbidden" });
+            return;
+          }
+          const ignore = Array.isArray(request.ignore) ? request.ignore : [];
+
+          // Gmail API first when it's set up: it reads the message itself, so
+          // no mail tab need be open and nothing depends on what Gmail chose
+          // to render. Any failure falls through to the scraper below rather
+          // than breaking a route that already works.
+          //
+          // This runs BEFORE the mail-tab check on purpose. Behind that check
+          // it could never fire for the users it exists to serve — "no mail
+          // tab need be open" was exactly the promise a `return` above it
+          // broke — and the sign-in button, which is the way out of that
+          // state, could never be offered either.
+          let gmail = null;
+          try {
+            gmail = await gmailFindOtp(ignore);
+          } catch {
+            gmail = { error: "gmail-failed" };
+          }
+          if (gmail && gmail.code) {
+            sendResponse({ code: gmail.code, ageMin: gmail.ageMin, via: "gmail" });
+            return;
+          }
+          // Offer sign-in ONLY when a client id exists and consent is what's
+          // missing. With GMAIL_CLIENT_ID blank nobody ever sees the button,
+          // which matters because an unconfigured install could never make it
+          // work anyway.
+          const needsSignIn =
+            !!(await gmailClientId()) && !!gmail && gmail.error === "gmail-signin";
+          // Signed in and reading the mailbox directly, just no OTP mail yet.
+          // Whether a mail tab happens to be open is irrelevant then.
+          const gmailReading = !!gmail && !gmail.error;
+
+          const tabs = await chrome.tabs.query({ url: MAIL_TAB_PATTERNS });
+          if (!tabs.length) {
+            if (gmailReading) {
+              // keep the caller polling — the mail is simply not sent yet
+              sendResponse({ code: null, needsSignIn, via: "gmail" });
+              return;
+            }
+            sendResponse({ error: "no-mail-tab", needsSignIn });
+            return;
+          }
+
+          // A browser signed into a personal AND a student Google account has
+          // a tab for each, and only one of them ever holds VTOP's mail. Once
+          // we have learned which mailbox that is, scan ONLY it: there is no
+          // reason for this to keep reading a personal inbox. The learned
+          // value is a /mail/u/<n>/ prefix, so it survives navigation within
+          // the mailbox. Fall back to all tabs when the learned one isn't
+          // open, otherwise a closed tab would break the feature outright.
+          const learnedKey = "vrevamp_otp_mailbox";
+          const learned = (await chrome.storage.local.get([learnedKey]))[learnedKey];
+          const preferred = learned
+            ? tabs.filter((t) => (t.url || "").startsWith(learned))
+            : [];
+          const scanning = preferred.length ? preferred : tabs;
+
+          // Ask every candidate tab, then take the YOUNGEST code rather than
+          // the first tab that answers — a code expires in 3 minutes, and one
+          // of the tabs may be showing an older thread.
+          let best = null;
+          let sawVtop = false;
+          let opened = false;
+          // Tabs that actually answered. A mail tab open since before the
+          // last extension reload has an orphaned content script: it answers
+          // nothing, which is indistinguishable from "no VTOP mail here" and
+          // made the panel blame the wrong Google account.
+          let answered = 0;
+          for (const tab of scanning) {
+            const reply = await scanMailTab(tab, ignore, !!request.autoOpen);
+            if (!reply) continue;
+            answered++;
+            if (reply.opened) opened = true;
+            if (reply.sawVtop) {
+              sawVtop = true;
+              // This is the mailbox VTOP writes to. Remember it so later
+              // scans leave every other account alone.
+              const m = (tab.url || "").match(/^https:\/\/mail\.google\.com\/mail\/u\/\d+\//);
+              if (m && m[0] !== learned) {
+                await chrome.storage.local.set({ [learnedKey]: m[0] });
+              }
+            }
+            if (!reply.code) continue;
+            const age = reply.ageMin === null ? Infinity : reply.ageMin;
+            if (!best || age < best.age) {
+              best = { code: reply.code, ageMin: reply.ageMin, host: reply.host, age };
+            }
+          }
+          if (best) {
+            // needsSignIn rides along even on a hit: the caller may still
+            // reject this code as expired, and that is precisely a moment the
+            // user might want the sturdier route offered to them.
+            sendResponse({
+              code: best.code,
+              ageMin: best.ageMin,
+              host: best.host,
+              needsSignIn,
+            });
+            return;
+          }
+          // Mail tabs are open but not one of them answered: their content
+          // scripts are orphaned and only a page reload revives them. Saying
+          // "wrong account" here would be a lie.
+          if (!answered) {
+            sendResponse({ error: "mail-tab-stale", needsSignIn });
+            return;
+          }
+          // nothing yet — caller retries, but it needs to know whether it is
+          // waiting on a mail, on the wrong mailbox being open, or on a Gmail
+          // sign-in that would sidestep the whole problem
+          sendResponse({ code: null, sawVtop, opened, needsSignIn });
+        } catch (error) {
+          sendResponse({ error: String((error && error.message) || error) });
+        }
+      })();
+      return true; // async sendResponse
+    // The one place a Google window may be opened: the panel's sign-in button,
+    // which only appears when a client id is configured and consent is what's
+    // missing. prompt=select_account is what puts the STUDENT mailbox in
+    // reach — the profile's primary account is the personal one.
+    case "vrevamp_gmail_signin":
+      (async () => {
+        try {
+          const from = (sender && sender.url) || "";
+          if (!/^https?:\/\/[^/]*(vitap|vit)\.ac\.in\/vtop\//.test(from)) {
+            sendResponse({ error: "forbidden" });
+            return;
+          }
+          if (!(await gmailClientId())) {
+            sendResponse({ error: "not-configured" });
+            return;
+          }
+          const token = await gmailToken(true);
+          sendResponse(token ? { ok: true } : { error: "denied" });
+        } catch (error) {
+          sendResponse({ error: String((error && error.message) || error) });
         }
       })();
       return true; // async sendResponse
@@ -469,6 +2377,112 @@ chrome.webRequest.onBeforeRequest.addListener(
 );
 
 /*
+ * Learns the exam-schedule SEARCH request, the same way the block above learns
+ * the attendance-detail one and for the same reason: so the venue watcher can
+ * ask VTOP the question the student's own Search button asks, without anybody
+ * having to guess the parameter names.
+ *
+ * This is what lets js/exam_schedule.js check for a newly published venue from
+ * ANY VTOP page instead of only from the exam schedule page — the complaint
+ * being that the mail waited until that page was opened by hand. Recorded on
+ * the student's own click (or on the one auto_semester.js makes for them), so
+ * nothing here is invented: it is their request, replayed later with a fresh
+ * token, at most once every few hours, and only when they have already asked
+ * for these mails.
+ *
+ * `_csrf`, `authorizedID` and `x` are dropped on purpose — a stored token is
+ * stale by definition, and window.vrVtop.post supplies live ones per call.
+ */
+const EXAM_SEARCH_AUTH_PARAMS = ["_csrf", "authorizedID", "x"];
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+    if (details.url.indexOf("doSearchExamScheduleForStudent") === -1) return;
+    const path = details.url
+      .replace(/^https?:\/\/[^/]+\//, "")
+      .replace(/^vtop\//, "")
+      .split("?")[0];
+    const params = {};
+    const formData = (details.requestBody && details.requestBody.formData) || {};
+    Object.entries(formData).forEach(([key, value]) => {
+      if (EXAM_SEARCH_AUTH_PARAMS.includes(key)) return;
+      params[key] = Array.isArray(value) ? value[0] : value;
+    });
+    chrome.storage.local.set({ vrevamp_exam_search_request: { path, params } });
+  },
+  { urls: VTOP_URLS },
+  ["requestBody"]
+);
+
+/*
+ * Learns the attendance SEARCH request — the POST VTOP makes when a semester is
+ * chosen on the Class Attendance page — for the home card's "Refresh now"
+ * button (2026-08-22).
+ *
+ * That button used to navigate to the attendance page, because replaying VTOP
+ * endpoints is what ROADMAP rule 4 warns about. The warning is about GUESSING
+ * an endpoint and firing a burst at it with a scraped token. Recording the
+ * student's own request removes the guess, exactly as the two blocks above
+ * already do for the exam search and the attendance detail; window.vrVtop.post
+ * removes the scraped token and adds the circuit breaker.
+ *
+ * The Detail/Display exclusion matters as much here as it does in the page
+ * registry: those are the per-subject endpoints the insights script fetches
+ * once per row, and recording one of THOSE as "the attendance request" would
+ * have the refresh button replay a single subject's history and parse no
+ * table at all.
+ */
+const ATTENDANCE_AUTH_PARAMS = ["_csrf", "authorizedID", "x"];
+
+/*
+ * Learns the General Outing / leave request, for the approval watcher
+ * (js/leave_watch.js, 2026-08-23). Same rule as the two recorders above and
+ * for the same reason: the endpoint is the student's own POST, replayed later
+ * with a live token, never an endpoint this code invented.
+ */
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+    if (details.url.indexOf("hostel/StudentGeneralOuting") === -1) return;
+    const path = details.url
+      .replace(/^https?:\/\/[^/]+\//, "")
+      .replace(/^vtop\//, "")
+      .split("?")[0];
+    const params = {};
+    const formData = (details.requestBody && details.requestBody.formData) || {};
+    Object.entries(formData).forEach(([key, value]) => {
+      if (ATTENDANCE_AUTH_PARAMS.includes(key)) return;
+      params[key] = Array.isArray(value) ? value[0] : value;
+    });
+    chrome.storage.local.set({ vrevamp_leave_request: { path, params } });
+  },
+  { urls: VTOP_URLS },
+  ["requestBody"]
+);
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+    if (details.url.indexOf("processViewStudentAttendance") === -1) return;
+    if (/Detail|Display/.test(details.url)) return;
+    const path = details.url
+      .replace(/^https?:\/\/[^/]+\//, "")
+      .replace(/^vtop\//, "")
+      .split("?")[0];
+    const params = {};
+    const formData = (details.requestBody && details.requestBody.formData) || {};
+    Object.entries(formData).forEach(([key, value]) => {
+      if (ATTENDANCE_AUTH_PARAMS.includes(key)) return;
+      params[key] = Array.isArray(value) ? value[0] : value;
+    });
+    chrome.storage.local.set({ vrevamp_attendance_request: { path, params } });
+  },
+  { urls: VTOP_URLS },
+  ["requestBody"]
+);
+
+/*
  * Checks if the user is online or offline
  * and renders an offline view for the page
  *
@@ -496,3 +2510,25 @@ chrome.webRequest.onBeforeRequest.addListener(
 function viewOfflinePage() {
   chrome.tabs.create({ url: chrome.runtime.getURL("html/offline.html") });
 }
+
+/*
+ * Re-arm the digest alarm on startup and on update.
+ *
+ * chrome.alarms survive a browser restart, but NOT an extension update or
+ * reinstall — and this extension is loaded unpacked, so it is updated often.
+ * Without this the digest silently stops the first time the extension is
+ * reloaded, which is the worst failure mode a scheduled feature has: it looks
+ * enabled and does nothing. Creating an alarm that already exists with the
+ * same name just replaces it, so running this on both events is safe.
+ */
+const rearmDigest = async () => {
+  const settings = await digestSettings();
+  if (!settings.enabled) return;
+  if (await chrome.alarms.get(DIGEST_ALARM)) return;
+  chrome.alarms.create(DIGEST_ALARM, {
+    when: nextDigestTime(settings.hour),
+    periodInMinutes: 24 * 60,
+  });
+};
+chrome.runtime.onStartup.addListener(rearmDigest);
+chrome.runtime.onInstalled.addListener(rearmDigest);

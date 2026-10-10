@@ -58,7 +58,21 @@
       return null;
     // saved header keeps repeated time columns; filterRepeated collapses them
     // so index i aligns with the de-duplicated theory/lab rows
-    const header = filterRepeated(timetable.header);
+    // Collapse repeated time columns by the SAME kept indices for both grids,
+    // so headerLab[i] still describes the column theory header[i] describes.
+    // (filterRepeated(headerLab) on its own could drop different positions and
+    // silently shift every lab time by a column.)
+    const seen = new Set();
+    const keep = [];
+    timetable.header.forEach((h, i) => {
+      if (seen.has(h)) return;
+      seen.add(h);
+      keep.push(i);
+    });
+    const header = keep.map((i) => timetable.header[i]);
+    const rawLab = Array.isArray(timetable.headerLab) ? timetable.headerLab : [];
+    const headerLab = keep.map((i) => rawLab[i]);
+
     const today = new Date().getDay();
     const row = timetable.data.find((r) => dayToNum(r.day) === today);
     if (!row) return [];
@@ -66,10 +80,17 @@
     const lab = Array.isArray(row.lab) ? row.lab : [];
     const classes = [];
     for (let i = 1; i < header.length; i++) {
-      const range = parseRange(header[i]);
-      if (!range) continue;
-      const info = parseCell(theory[i]) || parseCell(lab[i]);
+      const fromTheory = parseCell(theory[i]);
+      const fromLab = fromTheory ? null : parseCell(lab[i]);
+      const info = fromTheory || fromLab;
       if (!info) continue;
+      // A lab must take its own grid's time. Falling back to the theory column
+      // (legacy saves have no headerLab) is what showed L35 as 18:00 when it
+      // really starts at 17:40.
+      const range = parseRange(
+        fromLab ? headerLab[i] || header[i] : header[i]
+      );
+      if (!range) continue;
       classes.push({ ...range, ...info });
     }
     classes.sort((a, b) => a.start - b.start);
@@ -86,6 +107,77 @@
     `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(
       mins % 60
     ).padStart(2, "0")}`;
+
+  /* -------------------------------------------------------------------------
+   * EXAM BLOCKS — asked for 2026-08-22
+   * -------------------------------------------------------------------------
+   * "it says i have a next class on hompage but until the last exam coplete
+   * ... until the cat exams over there wont be classes".
+   *
+   * Right, and the card had no way to know: it reads the saved timetable and
+   * nothing else, so during a CAT it cheerfully announces the class that
+   * would have run. A timetable says what happens in an ordinary week; an
+   * exam block is precisely the week that is not ordinary.
+   *
+   * The block is taken from the cached exam schedule rather than the academic
+   * calendar, deliberately. The calendar marks a day "CAT-2" only where an
+   * exam is actually sat, and whether it ALSO marks it instructional varies;
+   * the exam schedule carries dated rows per exam, so first-to-last of a type
+   * is the block — and a day inside it with no exam of your own is still a day
+   * with no classes, which is exactly the case the student is asking about.
+   */
+  // LOCAL "YYYY-MM-DD". toISOString() is UTC, which east of Greenwich rolls
+  // the date over before midnight local — the same trap home_notices.js and
+  // attendance_insights.js both document.
+  const isoToday = () => {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  const examWindows = (schedule) => {
+    const byType = {};
+    (((schedule || {}).exams) || []).forEach((exam) => {
+      if (!exam || !exam.dateIso) return;
+      const type = exam.type || "Exam";
+      const window = byType[type];
+      if (!window) {
+        byType[type] = { type, from: exam.dateIso, to: exam.dateIso };
+        return;
+      }
+      if (exam.dateIso < window.from) window.from = exam.dateIso;
+      if (exam.dateIso > window.to) window.to = exam.dateIso;
+    });
+    return Object.keys(byType).map((k) => byType[k]);
+  };
+
+  const examBlockOn = (schedule, iso) =>
+    examWindows(schedule).find((w) => iso >= w.from && iso <= w.to) || null;
+
+  const describeExamDay = (schedule, block, iso) => {
+    const mine = (((schedule || {}).exams) || [])
+      .filter((e) => e.dateIso === iso)
+      .sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+    if (mine.length) {
+      const first = mine[0];
+      const when = first.reporting ? `, report ${first.reporting}` : "";
+      const where = first.venue && first.venue !== "-" ? ` @ ${first.venue}` : "";
+      const more = mine.length > 1 ? ` (+${mine.length - 1} more today)` : "";
+      return {
+        tone: "#c0392b",
+        text: `\u{1F4DD} ${block.type} today: ${first.code}${where}${when}${more} — no regular classes.`,
+      };
+    }
+    const [y, m, d] = block.to.split("-").map(Number);
+    const until = new Date(y, m - 1, d).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+    });
+    return {
+      tone: "#b8860b",
+      text: `\u{1F4DD} ${block.type} block runs to ${until} — no regular classes, and no exam of yours today.`,
+    };
+  };
 
   const describe = (classes) => {
     if (classes === null) return null; // no saved timetable
@@ -117,6 +209,9 @@
   let timetableStale = false;
 
   const getLatestCalendar = async () => {
+    const pointer = await chrome.storage.local.get("vrevamp_latest_calendar");
+    if (pointer.vrevamp_latest_calendar) return pointer.vrevamp_latest_calendar;
+    // written by the attendance page; until it has run once, fall back to the scan
     const all = await chrome.storage.local.get(null);
     const calendars = Object.keys(all)
       .filter((k) => k.startsWith("vrevamp_calendar_"))
@@ -167,12 +262,33 @@
       timetable = await getSavedTimetable();
       timetableStale = await checkStale(timetable);
     }
+    /*
+     * The exam block outranks the timetable, but NOT the stale-timetable
+     * warning: if the saved timetable is last semester's, that is the thing
+     * the student has to fix, and a confident exam line on top of it would
+     * only bury it. It is read fresh each render — this runs once a minute,
+     * a storage read is cheap, and a schedule cached mid-session should take
+     * effect without a reload.
+     */
+    let examLine = null;
+    if (!timetableStale) {
+      try {
+        const iso = isoToday();
+        const cached = (await chrome.storage.local.get("vrevamp_exam_schedule"))
+          .vrevamp_exam_schedule;
+        const block = examBlockOn(cached, iso);
+        if (block) examLine = describeExamDay(cached, block, iso);
+      } catch (error) {
+        console.warn("vRevamp next-class:", error); // no schedule cached yet
+      }
+    }
+
     const info = timetableStale
       ? {
           tone: "#b8860b",
           text: "\u{1F5D3}️ Saved timetable looks like last semester's — open the Time Table page once to refresh it.",
         }
-      : describe(todaysClasses(timetable));
+      : examLine || describe(todaysClasses(timetable));
     if (!info) return true; // no timetable saved — stay silent
     let card = document.getElementById(CARD_ID);
     if (!card) {

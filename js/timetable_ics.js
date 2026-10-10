@@ -14,51 +14,8 @@
   const CALENDAR_PREFIX = "vrevamp_calendar_";
   const GCAL_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
-  // Fresh Google token via the worker at click time (chrome.identity refreshes
-  // silently once consent exists). The worker replies { token, error } — the
-  // error is kept so the buttons can say WHY no consent window appeared (most
-  // often: the Chrome profile itself has no Google account signed in).
-  // Shared with exam_schedule.js/da_upload.js, hence the window guard.
-  if (typeof window.vrGoogleToken !== "function") {
-    window.vrGoogleAuthError = null;
-    window.vrGoogleToken = (opts) =>
-      new Promise((resolve) => {
-        const fallback = () =>
-          chrome.storage.sync.get(["token"], (r) => resolve(r.token || null));
-        try {
-          chrome.runtime.sendMessage(
-            {
-              message: "get_google_token",
-              interactive: !!(opts && opts.interactive),
-              stale: (opts && opts.stale) || null,
-            },
-            (resp) => {
-              if (chrome.runtime.lastError || resp === undefined) return fallback();
-              if (resp && typeof resp === "object") {
-                window.vrGoogleAuthError = resp.error || null;
-                return resolve(resp.token || null);
-              }
-              resolve(resp || null); // worker from before the update: bare token
-            }
-          );
-        } catch {
-          fallback();
-        }
-      });
-    // the sign-in failure, phrased for the button status lines
-    window.vrGoogleAuthHint = () => {
-      const e = window.vrGoogleAuthError || "";
-      if (/bad client id|invalid_client|deleted_client/i.test(e))
-        return "Google sign-in can't work in this build (its OAuth client id is dead) — no sign-in needed though: use the 📅 one-tap links on the exam/DA pages, or the 📅 import button on the timetable page";
-      if (/not signed in/i.test(e))
-        return "Chrome has no Google account signed in (so no consent window can open) — sign in to Chrome itself, then retry";
-      if (/did not approve|access|denied|closed|cancel/i.test(e))
-        return "the Google consent window was closed — click again and allow access";
-      return e
-        ? `Google sign-in failed: ${e}`
-        : "Google sign-in failed — allow the consent window, then retry";
-    };
-  }
+  // vrGoogleToken / vrGoogleAuthHint / vrGcalTemplateUrl live in
+  // js/shared/google_auth.js, loaded before this file by the manifest.
 
   // getDay() index for the recurrence: 0=Sun..6=Sat
   const dayToNum = (name) =>
@@ -99,15 +56,24 @@
 
   // Per day: classes sorted by start, with contiguous same-course slots merged
   // into a single block (so a 2-hour lab becomes one event).
-  const classesForDay = (header, row) => {
+  // `grid` is { theory, lab }: the two time headers from headerOf(), already
+  // collapsed on identical indices so grid.lab[i] describes the same column as
+  // grid.theory[i].
+  const classesForDay = (grid, row) => {
     const theory = Array.isArray(row.theory) ? row.theory : [];
     const lab = Array.isArray(row.lab) ? row.lab : [];
     const raw = [];
-    for (let i = 1; i < header.length; i++) {
-      const range = parseRange(header[i]);
-      if (!range) continue;
-      const info = parseCell(theory[i]) || parseCell(lab[i]);
+    for (let i = 1; i < grid.theory.length; i++) {
+      const fromTheory = parseCell(theory[i]);
+      const fromLab = fromTheory ? null : parseCell(lab[i]);
+      const info = fromTheory || fromLab;
       if (!info) continue;
+      // labs run on their own offset grid; borrowing the theory column's time
+      // exported every lab event at the wrong hour
+      const range = parseRange(
+        fromLab ? grid.lab[i] || grid.theory[i] : grid.theory[i]
+      );
+      if (!range) continue;
       raw.push({ ...range, ...info });
     }
     raw.sort((a, b) => a.start - b.start);
@@ -146,6 +112,10 @@
     )}00`;
 
   const getLatestCalendar = async () => {
+    const pointer = await chrome.storage.local.get("vrevamp_latest_calendar");
+    if (pointer.vrevamp_latest_calendar && pointer.vrevamp_latest_calendar.lastInstructional)
+      return pointer.vrevamp_latest_calendar;
+    // written by the attendance page; until it has run once, fall back to the scan
     const all = await chrome.storage.local.get(null);
     const cals = Object.keys(all)
       .filter((k) => k.startsWith(CALENDAR_PREFIX))
@@ -163,8 +133,23 @@
   // header is only guaranteed on timetables saved by the current build; an
   // older/partial blob without it must degrade into "no classes found"
   // rather than throwing out of an un-awaited click handler
-  const headerOf = (timetable) =>
-    filterRepeated(Array.isArray(timetable.header) ? timetable.header : []);
+  // Returns both grids, collapsed on the SAME kept indices so a lab cell can
+  // be timed from the lab row rather than the theory row beside it.
+  const headerOf = (timetable) => {
+    const raw = Array.isArray(timetable.header) ? timetable.header : [];
+    const rawLab = Array.isArray(timetable.headerLab) ? timetable.headerLab : [];
+    const seen = new Set();
+    const keep = [];
+    raw.forEach((h, i) => {
+      if (seen.has(h)) return;
+      seen.add(h);
+      keep.push(i);
+    });
+    return {
+      theory: keep.map((i) => raw[i]),
+      lab: keep.map((i) => rawLab[i]),
+    };
+  };
 
   const buildIcs = (timetable, untilIso, exams) => {
     const header = headerOf(timetable);
@@ -478,10 +463,23 @@
     panel.style.cssText =
       "margin:8px;padding:10px 12px;border:1px solid #c4cfdd;border-radius:8px;" +
       "background:#f6f8fb;font-size:13px;line-height:1.5;max-width:920px;color:#222;";
+    // Queue them for the student instead of making them click 40 links: same
+    // prefilled editors, one at a time, paced by their Save.
+    const guided = window.vrButton(
+      "tt-guided",
+      ` ▶ open them one at a time (${links.length}) `,
+      {}
+    );
+    guided.title =
+      "Opens each class in a tab you can see. Press Save, and the next one opens. Close the tab to stop — clicking again carries on from there.";
+    guided.style.marginLeft = "0";
+    guided.style.marginBottom = "8px";
+    panel.appendChild(guided);
+
     const head = document.createElement("div");
     head.style.cssText = "margin-bottom:8px;";
     head.textContent =
-      "Click each class once — Google Calendar opens with it prefilled " +
+      "Or click each class once — Google Calendar opens with it prefilled " +
       "(weekly repeat for the whole semester included) — press Save there, " +
       "come back, click the next. Saved ones grey out.";
     panel.appendChild(head);
@@ -528,10 +526,152 @@
       }
     });
 
+  /*
+   * Guided import — the student presses Save, we just queue the tabs.
+   *
+   * The automatic path opens a background tab per class and presses Save
+   * itself. When that works it is the best experience there is; when it does
+   * not, it is the worst, because each tab is also closed again before anyone
+   * could have reached for Save by hand. This path inverts that: one FOREGROUND
+   * tab at a time, and the next one does not open until this one is saved.
+   */
+  const guidedImport = (urls) =>
+    new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ message: "gcal_guided_import", urls }, (r) => {
+          resolve(chrome.runtime.lastError || r === undefined ? null : r);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+
+  // Re-derived at click time rather than closed over: the handler below runs on
+  // whatever button is on screen when it is clicked, which after a VTOP
+  // re-render is not the element that existed when the panel was built.
+  const collectTemplateLinks = async () => {
+    const timetable = await getSavedTimetable();
+    if (!timetable || !Array.isArray(timetable.data) || !timetable.data.length)
+      return null;
+    const cal = await getLatestCalendar();
+    const titles = await courseTitles();
+    const rawExams = (await upcomingCachedExams()) || [];
+    return templateLinks(timetable, cal, titles, rawExams);
+  };
+
+  const onGuidedClick = async (gbtn) => {
+    const found = await collectTemplateLinks();
+    if (!found || !found.links.length) {
+      tt_status(gbtn, "no classes to import — reload the timetable page and retry", false);
+      return;
+    }
+    // same duplicate trap as the automatic route, and the same one-click-to-
+    // confirm out of it (resuming a stopped run is exempt: dataset.vrDone > 0
+    // means these are the events that have NOT been created yet)
+    if (!Number(gbtn.dataset.vrDone || 0) && (await askBeforeDuplicating(gbtn, found.links.length)))
+      return;
+    // Resume where the last run stopped. Without this, a student who closes the
+    // tab halfway and clicks again re-saves everything before the stopping
+    // point — and Google Calendar has no opinion about duplicates.
+    const from = Number(gbtn.dataset.vrDone || 0);
+    const pending = found.links.slice(from);
+    if (!pending.length) {
+      tt_status(gbtn, `✓ all ${found.links.length} already done in this session`, true);
+      return;
+    }
+    gbtn.disabled = true;
+    tt_status(
+      gbtn,
+      `opening ${from + 1} of ${found.links.length} — press Save in the tab that opens, ` +
+        "and the next one follows. Close the tab to stop.",
+      true
+    );
+    const res = await guidedImport(pending.map((l) => l.url));
+    gbtn.disabled = false;
+    const saved = res && typeof res.saved === "number" ? res.saved : 0;
+    const done = from + saved;
+    gbtn.dataset.vrDone = String(done);
+    if (saved > 0) await markImported(done);
+    const stopped = res && res.stopped;
+    tt_status(
+      gbtn,
+      done === 0
+        ? `nothing saved${stopped ? ` (${stopped})` : ""} — use the one-tap links below instead`
+        : `✓ ${done}/${found.links.length} saved` +
+            (done < found.links.length
+              ? stopped === "closed"
+                ? " — stopped when you closed the tab. Click again to carry on from here."
+                : ` — stopped (${stopped || "unknown"}). Click again to carry on from here.`
+              : ""),
+      done > 0
+    );
+  };
+
+  /*
+   * The TEMPLATE routes cannot clean up after themselves.
+   *
+   * The API import calls deleteOldImports() first, so re-running it REPLACES
+   * the previous run. A TEMPLATE link cannot: it carries no extended property
+   * to find the old events by, and without a token there is nothing to delete
+   * them with. So every re-run silently adds a complete second copy of the
+   * timetable, and Google Calendar has no opinion about that whatsoever.
+   *
+   * Verified on the real calendar 2026-08-09: 66 class events in one week, 35
+   * distinct — most of them present exactly three times, from three runs. The
+   * import had been working correctly the entire time; nothing warned that
+   * running it again was destructive-by-addition.
+   *
+   * So: remember that a run happened, and make the second one deliberate. The
+   * status line already said "re-running adds everything AGAIN" — but only
+   * AFTER the run that had just added it.
+   */
+  const IMPORT_MARK = "vrevamp_tt_imported";
+
+  const previousImport = async () => {
+    try {
+      const all = await chrome.storage.local.get([IMPORT_MARK]);
+      return all[IMPORT_MARK] || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const markImported = async (count) => {
+    try {
+      await chrome.storage.local.set({
+        [IMPORT_MARK]: { count, at: Date.now() },
+      });
+    } catch {
+      /* storage gone — worst case we warn one time too few */
+    }
+  };
+
+  // Second click within the same page view means "yes, I meant it".
+  const confirmedRerun = (btn) => btn.dataset.vrConfirm === "1";
+
+  const askBeforeDuplicating = async (btn, count) => {
+    const prev = await previousImport();
+    if (!prev || confirmedRerun(btn)) return false;
+    const when = new Date(prev.at);
+    const ago = Math.max(0, Math.round((Date.now() - prev.at) / 86400000));
+    btn.dataset.vrConfirm = "1";
+    tt_status(
+      btn,
+      `⚠ you already imported ${prev.count} event(s) on ${when.toLocaleDateString()}` +
+        (ago === 0 ? " (today)" : ago === 1 ? " (yesterday)" : ` (${ago} days ago)`) +
+        `. Importing again ADDS a second copy of all ${count} — Google will not merge them, ` +
+        "and this route cannot delete the old ones (that needs Google sign-in). " +
+        "Delete the old ones in Google Calendar first, or click again to add anyway.",
+      false
+    );
+    return true;
+  };
+
   const oneTapFallback = async (btn, timetable, cal, titles) => {
     const rawExams = (await upcomingCachedExams()) || [];
     const { links, untilIso } = templateLinks(timetable, cal, titles, rawExams);
     if (!links.length) return false;
+    if (await askBeforeDuplicating(btn, links.length)) return true;
     btn.disabled = true;
     tt_status(
       btn,
@@ -543,6 +683,7 @@
     btn.disabled = false;
     const saved = res && typeof res.saved === "number" ? res.saved : 0;
     if (saved > 0) {
+      await markImported(saved);
       tt_status(
         btn,
         `✓ ${saved}/${links.length} event(s) saved to Google Calendar — ` +
@@ -717,24 +858,33 @@
     }
   };
 
+  /*
+   * Delegated, for the reasons in js/shared/click.js. This file used to hold
+   * the exact inverse of exam_schedule.js's old bug: the retry loop below was
+   * right, but the guard was `getElementById(BTN_ID)` — an id, which serialises
+   * into innerHTML. So once VTOP re-rendered the timetable from cached markup,
+   * a handler-less clone of the button satisfied the guard and permanently
+   * blocked its own replacement: the button sat there looking normal and did
+   * nothing until a full page reload. With the handler on `document` and the
+   * identity in an attribute, that same clone is live and the id guard is
+   * doing what it reads like it does — preventing duplicates.
+   */
+  window.vrDelegate("tt-ics", (btn) => onClick(btn));
+  window.vrDelegate("tt-gcal", (btn) => onGcalClick(btn));
+  window.vrDelegate("tt-guided", (btn) => onGuidedClick(btn));
+
   const addButton = () => {
     if (document.getElementById(BTN_ID)) return true;
     const loader = document.getElementById("loadMyFragment");
     const anchor = loader ? loader.parentElement : document.querySelector("#main-section");
     if (!anchor) return false;
-    const btn = document.createElement("button");
+    const btn = window.vrButton("tt-ics", " Export timetable to .ics ");
     btn.id = BTN_ID;
-    btn.className = "btn btn-primary";
-    btn.textContent = " Export timetable to .ics ";
     btn.style.cssText = "margin:8px;background:rgb(73,117,182);";
-    btn.onclick = () => onClick(btn);
     anchor.insertBefore(btn, anchor.firstChild);
-    const gbtn = document.createElement("button");
+    const gbtn = window.vrButton("tt-gcal", " 📅 import timetable to Google Calendar ");
     gbtn.id = GCAL_BTN_ID;
-    gbtn.className = "btn btn-primary";
-    gbtn.textContent = " 📅 import timetable to Google Calendar ";
     gbtn.style.cssText = "margin:8px;background:rgb(73,117,182);";
-    gbtn.onclick = () => onGcalClick(gbtn);
     anchor.insertBefore(gbtn, btn.nextSibling);
     return true;
   };
@@ -751,11 +901,18 @@
     if (request.message === "timetable_view_page") addWithRetries();
     if (request.message === "gcal_template_progress") {
       lastAutoProgress = { saved: request.saved || 0 };
-      const b = document.getElementById(GCAL_BTN_ID);
+      // guided runs report against their own button — the student is watching
+      // the tab, not the timetable, and the count is the only thing that tells
+      // them the queue is still moving when they come back
+      const b = request.guided
+        ? document.querySelector('[data-vr-action="tt-guided"]')
+        : document.getElementById(GCAL_BTN_ID);
       if (b)
         tt_status(
           b,
-          `importing… ${request.done}/${request.total} (${request.saved} saved)`,
+          request.guided
+            ? `${request.saved} saved — opening ${Math.min(request.done + 1, request.total)} of ${request.total}…`
+            : `importing… ${request.done}/${request.total} (${request.saved} saved)`,
           true
         );
     }

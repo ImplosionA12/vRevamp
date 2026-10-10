@@ -66,38 +66,25 @@
 
   /* ---------------- VTOP request helper ---------------- */
 
-  const getCsrf = () => {
-    const el = document.querySelector('input[name="_csrf"]');
-    return el ? el.value || el.defaultValue : null;
-  };
-
-  const getAuthorizedID = () => {
-    const el = document.querySelector("#authorizedIDX");
-    return el ? el.value : null;
-  };
-
-  const vtopPost = async (path, params) => {
-    const csrf = getCsrf();
-    const authorizedID = getAuthorizedID();
-    if (!csrf || !authorizedID) throw new Error("missing _csrf/authorizedID");
-    const body = new URLSearchParams({
-      _csrf: csrf,
-      authorizedID,
-      x: new Date().toUTCString(),
-      ...params,
-    });
-    const res = await fetch(`${location.origin}/vtop/${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: body.toString(),
-      credentials: "same-origin",
-    });
-    if (!res.ok) throw new Error(`VTOP request failed: ${path} (${res.status})`);
-    return res.text();
-  };
+  /*
+   * Routed through js/shared/vtop.js, which now owns the token, the student
+   * id, the concurrency and the circuit breaker. (The local getCsrf /
+   * getAuthorizedID that used to sit here went with it — they had no other
+   * caller. AUTH_PARAMS below still names those parameters, but only to
+   * recognise and strip them from a captured request template.)
+   *
+   * Sharing the breaker matters here more than anywhere: this file fires one
+   * POST PER SUBJECT and, when it cannot find the right endpoint, one per
+   * CANDIDATE per subject — comfortably twenty failed requests on a stale
+   * session, which is how a merely-expired session became a broken one.
+   */
+  const vtopPost = async (path, params, options) =>
+    window.vrVtop.post(path, params, options);
+  // A guess at an endpoint this deployment may not have. Expected to 404, so
+  // it must not count toward the "this session is dead" breaker — see the
+  // PROBES vs REAL REQUESTS note in js/shared/vtop.js.
+  const vtopProbe = async (path, params) =>
+    window.vrVtop.post(path, params, { probe: true });
 
   /* ---------------- per-subject attendance history ---------------- */
 
@@ -244,6 +231,12 @@
 
   const buildAttempts = async (call) => {
     const attempts = [];
+    // `probe` marks an attempt as a GUESS. The first two entries are not
+    // guesses — one worked earlier in this very run, the other is the request
+    // VTOP itself made when the student opened a detail modal — so a refusal
+    // there is real news and counts toward the circuit breaker. Everything
+    // after them is a list of endpoint names that may simply not exist on this
+    // deployment, and 404s from those are routine.
     if (resolvedAttempt)
       attempts.push({
         path: resolvedAttempt.path,
@@ -259,9 +252,9 @@
         params: paramsFromTemplate(rec.params, call) || defaultParams(call),
       });
     const mined = await findEndpointInScripts(call.fn);
-    if (mined) attempts.push({ path: mined, params: defaultParams(call) });
+    if (mined) attempts.push({ path: mined, params: defaultParams(call), probe: true });
     [call.fn, ...DETAIL_ENDPOINT_CANDIDATES].forEach((path) =>
-      attempts.push({ path, params: defaultParams(call) })
+      attempts.push({ path, params: defaultParams(call), probe: true })
     );
     return attempts;
   };
@@ -276,7 +269,7 @@
       tried.add(key);
       let html;
       try {
-        html = await vtopPost(attempt.path, attempt.params);
+        html = await vtopPost(attempt.path, attempt.params, { probe: attempt.probe });
       } catch (error) {
         lastError = error;
         continue;
@@ -380,7 +373,10 @@
     let menuUrl = null;
     for (const candidate of candidates) {
       try {
-        const doc = parseHtml(await vtopPost(candidate, { verifyMenu: "true" }));
+        // both candidates are guesses at where this deployment keeps its
+        // academic calendar — the first is the current path, the second is
+        // whatever the sidebar link carries on older builds
+        const doc = parseHtml(await vtopProbe(candidate, { verifyMenu: "true" }));
         if (doc.querySelector("option")) {
           landing = doc;
           menuUrl = candidate;
@@ -414,7 +410,7 @@
     let monthDates = new Set();
     try {
       const monthsPage = parseHtml(
-        await vtopPost("getDateForSemesterPreview", { semSubId, classGroupId })
+        await vtopProbe("getDateForSemesterPreview", { semSubId, classGroupId })
       );
       monthDates = collectMonthDates(monthsPage);
     } catch (error) {
@@ -444,7 +440,7 @@
       try {
         // current VTOP: dedicated grid endpoint with calDate
         const grid = parseHtml(
-          await vtopPost("processViewCalendar", { calDate: dateStr, semSubId, classGroupId })
+          await vtopProbe("processViewCalendar", { calDate: dateStr, semSubId, classGroupId })
         );
         parseMonthGrid(grid, monthDate, days);
       } catch (error) {
@@ -514,7 +510,11 @@
       const cached = await chrome.storage.local.get(key);
       // version check invalidates caches built before the duplicate-month /
       // duplicate-day dedupe (those could hold multiply-counted class days)
-      if (cached[key] && cached[key].version === 4) return cached[key];
+      if (cached[key] && cached[key].version === 4) {
+        // readers on other pages look here instead of scanning all of storage
+        chrome.storage.local.set({ vrevamp_latest_calendar: cached[key] });
+        return cached[key];
+      }
       const calendar = await fetchCalendar(semesterName);
       // drop caches of other semesters, then store this one
       const all = await chrome.storage.local.get(null);
@@ -522,7 +522,7 @@
         (k) => k.startsWith(CACHE_PREFIX) && k !== key
       );
       if (stale.length) await chrome.storage.local.remove(stale);
-      await chrome.storage.local.set({ [key]: calendar });
+      await chrome.storage.local.set({ [key]: calendar, vrevamp_latest_calendar: calendar });
       return calendar;
     } catch (error) {
       console.warn("vRevamp: academic calendar unavailable", error);
@@ -659,12 +659,59 @@
   // Classes this subject still has on instructional days after today and
   // before untilIso (exclusive); untilIso null = through the last
   // instructional day
+  /*
+   * Days inside an exam block, from the cached exam schedule — first to last
+   * dated exam of a type. Asked for 2026-08-22: "until the cat exams over
+   * there wont be classes". Regular classes do not run while a CAT or FAT
+   * block is on, so counting those days as class days inflates "Left this sem"
+   * and every bunkable column with classes that will never be held.
+   *
+   * Taken from the exam schedule rather than the calendar's own CAT flags on
+   * purpose: the calendar marks only the days an exam is actually sat, and a
+   * day mid-block with no exam of your own is still a day with no classes.
+   * Empty when nothing is cached, so this can only ever remove phantom
+   * classes — never invent them.
+   */
+  let examBlockDays = new Set();
+
+  const loadExamBlockDays = async () => {
+    try {
+      const cached = (await chrome.storage.local.get("vrevamp_exam_schedule"))
+        .vrevamp_exam_schedule;
+      const dates = (((cached || {}).exams) || [])
+        .map((e) => e && e.dateIso)
+        .filter(Boolean)
+        .sort();
+      if (!dates.length) return;
+      const byType = {};
+      (((cached || {}).exams) || []).forEach((e) => {
+        if (!e || !e.dateIso) return;
+        const t = e.type || "Exam";
+        const w = byType[t] || (byType[t] = { from: e.dateIso, to: e.dateIso });
+        if (e.dateIso < w.from) w.from = e.dateIso;
+        if (e.dateIso > w.to) w.to = e.dateIso;
+      });
+      const days = new Set();
+      Object.values(byType).forEach(({ from, to }) => {
+        const [fy, fm, fd] = from.split("-").map(Number);
+        const [ty, tm, td] = to.split("-").map(Number);
+        const end = new Date(ty, tm - 1, td);
+        for (let d = new Date(fy, fm - 1, fd); d <= end; d.setDate(d.getDate() + 1))
+          days.add(isoOf(d));
+      });
+      examBlockDays = days;
+    } catch (error) {
+      console.warn("vRevamp insights: exam blocks unavailable", error);
+    }
+  };
+
   const countClassesUntil = (calendar, meetings, untilIso) => {
     const todayIso = isoOf(new Date());
     let count = 0;
     calendar.instructionalDays.forEach((iso) => {
       if (iso <= todayIso) return;
       if (untilIso && iso >= untilIso) return;
+      if (examBlockDays.has(iso)) return; // exam block: no regular classes
       count += meetings[wdOfIso(iso)] || 0;
     });
     return count;
@@ -881,6 +928,258 @@
     anchor.insertAdjacentElement("beforebegin", banner);
   };
 
+  /* ---------------- the skip planner ----------------------------------------
+   *
+   * Asked for 2026-08-22, after this exact question was answered by hand:
+   * "if i skip the college from tuesday to next monday, 25 - 31 august then how
+   * much attendance would i have remained".
+   *
+   * The bunk table cannot answer it, and the reason is worth stating. Its
+   * columns are "safe to skip now" and "bunkable before CAT-2 / FAT" — every
+   * one of them counts classes from today up to a fixed point. None of them
+   * can answer "what about THESE dates", which is the question a student
+   * actually asks before booking a train.
+   *
+   * Doing it by hand also showed why it needs the calendar rather than a
+   * seven-day guess. For 25–31 Aug the real answer was FOUR class days, not
+   * seven: 26 Aug was Milad-un-Nabi, 30 Aug a Sunday, 31 Aug a "No
+   * Instructional Day" — and that student's timetable has no Monday row at
+   * all, so the last day of the range cost nothing twice over. A planner that
+   * counted weekdays would have been wrong by three days in one direction and
+   * silently right for the wrong reason in the other.
+   */
+  const PLANNER_ID = "vrevamp-skip-planner";
+  const PLANNER_OUT = "vrevamp-skip-result";
+
+  // Classes this subject holds inside [fromIso, toIso], in HISTORY units
+  // (hours for labs). Only real instructional days count, and exam-block days
+  // are excluded for the same reason they are everywhere else: no classes run.
+  const classesBetween = (calendar, meetings, fromIso, toIso) => {
+    if (!calendar || !calendar.instructionalDays) return null;
+    const todayIso = isoOf(new Date());
+    let count = 0;
+    calendar.instructionalDays.forEach((iso) => {
+      if (iso <= todayIso) return; // already held — it is in attended/total
+      if (iso < fromIso || iso > toIso) return;
+      if (examBlockDays.has(iso)) return;
+      count += meetings[wdOfIso(iso)] || 0;
+    });
+    return count;
+  };
+
+  const plannerDays = (calendar, fromIso, toIso) => {
+    const todayIso = isoOf(new Date());
+    const held = [];
+    const off = [];
+    const [fy, fm, fd] = fromIso.split("-").map(Number);
+    const [ty, tm, td] = toIso.split("-").map(Number);
+    const end = new Date(ty, tm - 1, td);
+    const instructional = new Set(calendar ? calendar.instructionalDays : []);
+    for (let d = new Date(fy, fm - 1, fd); d <= end; d.setDate(d.getDate() + 1)) {
+      const iso = isoOf(d);
+      if (iso <= todayIso) continue;
+      if (instructional.has(iso) && !examBlockDays.has(iso)) held.push(iso);
+      else off.push(iso);
+    }
+    return { held, off };
+  };
+
+  const B = "1px solid #b0b0b0";
+  const planCell = (v, extra) =>
+    `<td style="border:${B};padding:6px 9px;${extra || ""}">${v}</td>`;
+
+  const renderSkipResult = (rowsData, calendar, fromIso, toIso) => {
+    const out = document.getElementById(PLANNER_OUT);
+    if (!out) return;
+    if (!calendar) {
+      out.innerHTML =
+        '<p style="color:#c0392b;font-size:12px;margin:8px 0">' +
+        "The academic calendar hasn't loaded, so the classes in that range " +
+        "can't be counted. Reopen this page once it has.</p>";
+      return;
+    }
+    if (toIso < fromIso) {
+      out.innerHTML =
+        '<p style="color:#c0392b;font-size:12px;margin:8px 0">' +
+        "The second date is before the first.</p>";
+      return;
+    }
+
+    const { held, off } = plannerDays(calendar, fromIso, toIso);
+    /*
+     * The recovery column, added the same day the planner shipped.
+     *
+     * "idk how i get 0 marhi like i attend all classe again until a month na"
+     * — and that is the tool's fault, not a misreading. "Headroom 0" was
+     * measured at the BOTTOM of the dip, the last day of the trip, and the
+     * table then said nothing about the month of classes that follows. It
+     * showed the scare and hid the recovery.
+     *
+     * Worked through for the 25-31 Aug case: CSE3009 Theory bottoms out at
+     * exactly 75.0% on 31 Aug and is back to 24/28 = 85.7% by CAT-2 if every
+     * class after the trip is attended. Both numbers are true; presenting only
+     * the first one is what made a survivable trip look like a debar.
+     *
+     * So: the dip is still shown, because the days right after it are the
+     * genuinely risky ones, and beside it where the student actually ends up.
+     */
+    const nextDay = (iso) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      const t = new Date(y, m - 1, d + 1);
+      return isoOf(t);
+    };
+    const prevDay = (iso) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      const t = new Date(y, m - 1, d - 1);
+      return isoOf(t);
+    };
+
+    const head = ["Subject", "Now", "Classes missed", "Lowest it gets", "By the next exam"]
+      .map(
+        (h) =>
+          `<th style="border:${B};padding:7px 9px;background:#eef1f5;text-align:left;` +
+          `font-size:11px;text-transform:uppercase;letter-spacing:.04em;">${h}</th>`
+      )
+      .join("");
+
+    let worst = null;
+    const body = rowsData
+      .map((r) => {
+        const missed = classesBetween(calendar, r.meetings || {}, fromIso, toIso);
+        const after = r.total + missed;
+        const pct = after ? (r.attended / after) * 100 : null;
+        // headroom AFTER the trip, in whole sessions, on the same integer
+        // formula the alert column uses
+        const spare = Math.max(
+          0,
+          Math.floor(Math.floor((4 * r.attended - 3 * after) / 3) / r.size)
+        );
+        const below = pct !== null && pct < 75;
+        if (pct !== null && (worst === null || pct < worst)) worst = pct;
+        const unit = /lab/i.test(r.unit || "") ? "lab(s)" : "class(es)";
+        const shown = Math.round(missed / r.size);
+
+        // …and where it ends up: every class from the day after the trip until
+        // the next exam, attended
+        let recovered = null;
+        if (r.nextExamIso && r.nextExamIso > toIso) {
+          const back = classesBetween(
+            calendar,
+            r.meetings || {},
+            nextDay(toIso),
+            prevDay(r.nextExamIso)
+          );
+          if (back !== null) {
+            const denom = after + back;
+            if (denom) recovered = ((r.attended + back) / denom) * 100;
+          }
+        }
+
+        return (
+          "<tr>" +
+          planCell(r.name, "font-weight:600;") +
+          planCell(`${r.pct}%`, "white-space:nowrap;") +
+          planCell(
+            missed ? `${shown} ${unit}` : "—",
+            "white-space:nowrap;" + (missed ? "" : "color:#888;")
+          ) +
+          planCell(
+            (pct === null ? "—" : `${pct.toFixed(1)}%`) +
+              `<div style="font-weight:400;color:#666;font-size:11px;">` +
+              (below ? "below the line" : `${spare} ${unit} spare`) +
+              "</div>",
+            "white-space:nowrap;font-weight:700;" +
+              (below
+                ? "color:#c0392b;background:#fdecea;"
+                : pct !== null && pct < 76
+                  ? "color:#b8860b;background:#fff8e1;"
+                  : "color:#2e7d32;")
+          ) +
+          planCell(
+            recovered === null
+              ? '<span style="color:#888;">—</span>'
+              : `${recovered.toFixed(1)}%` +
+                  `<div style="font-weight:400;color:#666;font-size:11px;">` +
+                  `${r.nextExamLabel || "next exam"}, attending the rest</div>`,
+            "white-space:nowrap;font-weight:700;" +
+              (recovered !== null && recovered < 75
+                ? "color:#c0392b;background:#fdecea;"
+                : "color:#2e7d32;")
+          ) +
+          "</tr>"
+        );
+      })
+      .join("");
+
+    const offNote = off.length
+      ? ` ${off.length} day(s) in that range cost you nothing (holidays, ` +
+        "Sundays, exam days or days you have no class)."
+      : "";
+    out.innerHTML =
+      `<p style="margin:10px 0 6px;font-size:13px;">` +
+      `<b>${held.length} teaching day(s)</b> in ${fromIso} → ${toIso}.${offNote}</p>` +
+      `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;` +
+      `border:${B};font-size:13px;">` +
+      `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>` +
+      (worst !== null && worst < 75
+        ? '<p style="color:#c0392b;font-size:12px;margin:8px 0 0">' +
+          "At least one subject drops below 75% — that is a debar, not a warning.</p>"
+        : worst !== null && worst < 76
+          ? '<p style="color:#b8860b;font-size:12px;margin:8px 0 0">' +
+            `Tightest subject bottoms out at ${worst.toFixed(1)}% on the last day of ` +
+            "the trip. That is the low point, not where you end up — the last " +
+            "column is where you land if you attend everything afterwards. The " +
+            "risk is the few days right after, when one more absence has " +
+            "nothing to cushion it.</p>"
+          : "");
+  };
+
+  const renderSkipPlanner = (rowsData, calendar, container) => {
+    if (document.getElementById(PLANNER_ID)) return;
+    const box = document.createElement("div");
+    box.id = PLANNER_ID;
+    box.style.cssText =
+      "margin:14px 0;padding:10px 12px;border:1px solid #ccc;border-radius:4px;" +
+      "background:#fafafa;font-size:13px;";
+    const iso = (d) => isoOf(d);
+    const today = new Date();
+    const weekOut = new Date();
+    weekOut.setDate(weekOut.getDate() + 7);
+    box.innerHTML =
+      '<div style="font-weight:700;margin-bottom:6px;">' +
+      "Planning to skip? Pick the dates</div>" +
+      '<label style="margin-right:10px;">From ' +
+      `<input type="date" id="vrevamp-skip-from" value="${iso(today)}" ` +
+      'style="font-size:13px;padding:2px 4px;"></label>' +
+      '<label style="margin-right:10px;">To ' +
+      `<input type="date" id="vrevamp-skip-to" value="${iso(weekOut)}" ` +
+      'style="font-size:13px;padding:2px 4px;"></label>' +
+      `<span id="${PLANNER_OUT}"></span>`;
+    container.insertAdjacentElement("afterend", box);
+
+    // the result node has to be a block sibling, not the inline span above
+    const out = document.createElement("div");
+    out.id = PLANNER_OUT;
+    document.getElementById(PLANNER_OUT).replaceWith(out);
+
+    if (typeof window.vrButton === "function") {
+      const go = window.vrButton("skip-plan", "Show me");
+      go.style.cssText =
+        "font-size:13px;padding:3px 12px;cursor:pointer;border:1px solid #999;" +
+        "border-radius:3px;background:#4975b6;color:#fff;";
+      out.insertAdjacentElement("beforebegin", go);
+    }
+
+    if (typeof window.vrDelegate === "function") {
+      window.vrDelegate("skip-plan", () => {
+        const from = (document.getElementById("vrevamp-skip-from") || {}).value;
+        const to = (document.getElementById("vrevamp-skip-to") || {}).value;
+        if (!from || !to) return;
+        renderSkipResult(rowsData, calendar, from, to);
+      });
+    }
+  };
+
   /* ---------------- bunk table rendering ---------------- */
 
   const TD_STYLE =
@@ -914,17 +1213,56 @@
     const table = document.createElement("table");
     table.style.cssText = "border-collapse:collapse;width:100%;";
 
+    /*
+     * WHICH COLUMNS ARE WORTH DRAWING — decided per render, from the data.
+     *
+     * Read off the live page 2026-08-17, on a day CAT-1 had just started:
+     * "Bunkable before CAT-1" said "could've bunked 3" on every single theory
+     * row and "no CATs for labs" on every lab row, and "Bunkable before CAT-2"
+     * said "no CATs for labs" on half of them. Two of seven columns carried no
+     * decision a student could act on, and they sat between the reader and the
+     * one number the table exists to give — "safe to skip now", which was the
+     * fourth of seven and set in the same weight as the noise around it.
+     *
+     * A retrospective ("could've bunked N") is history, not advice, so it goes
+     * in the tooltip rather than the grid; a column where every row is
+     * retrospective or inapplicable is dropped entirely. What is left is
+     * always at least Subject / Now / Safe to skip now.
+     *
+     * Also added: the CURRENT PERCENTAGE. It was genuinely absent — the table
+     * told you how many classes you could skip without telling you where you
+     * stood, so every reading meant scrolling back to VTOP's own table above.
+     */
+    const dead = (v) =>
+      v === undefined ||
+      v === null ||
+      v === "--" ||
+      /^no CATs for labs$/i.test(String(v)) ||
+      /^none this sem$/i.test(String(v)) ||
+      /^could've bunked/i.test(String(v));
+    const examCols = [
+      ["Bunkable before CAT-1", "cat1"],
+      ["Bunkable before CAT-2", "cat2"],
+      ["Bunkable before FAT", "fat"],
+    ].filter(([, key]) => rowsData.some((r) => !dead(r[key])));
+
     const head = document.createElement("tr");
     [
-      "Subject",
-      "Classes held",
-      "Remaining till sem end",
-      "Safe to skip now (never <75%)",
-      "Bunkable before CAT-1",
-      "Bunkable before CAT-2",
-      "Bunkable before FAT",
-    ].forEach((h) =>
-      head.appendChild(makeCell("th", h, "background:rgb(60,141,188,0.8);"))
+      ["Subject", null],
+      ["Now", null],
+      ["Held", null],
+      ["Left this sem", null],
+      ["SAFE TO SKIP NOW", null],
+      ...examCols,
+    ].forEach(([h]) =>
+      head.appendChild(
+        makeCell(
+          "th",
+          h,
+          "background:rgb(60,141,188,0.8);" +
+            (h === "SAFE TO SKIP NOW" ? "background:rgb(46,125,50,0.85);" : "")
+        )
+      )
     );
     table.appendChild(head);
 
@@ -1015,15 +1353,69 @@
         }
         tr.appendChild(td);
       };
+      // Where you stand right now, in the units VTOP's own table uses so the
+      // two can be read against each other without arithmetic.
+      const pctCell = makeCell(
+        "td",
+        r.pct === null ? "--" : `${r.pct}%`,
+        "font-weight:bold;" +
+          (r.below75 ? "color:#c0392b;" : r.pct !== null && r.pct < 80 ? "color:#b8860b;" : "color:#2e7d32;")
+      );
+      if (typeof r.attended === "number") {
+        const sub = document.createElement("div");
+        sub.textContent = `${r.attended}/${r.total}`;
+        sub.style.cssText = "color:#777;font-size:11px;font-weight:normal;margin-top:2px;";
+        pctCell.appendChild(sub);
+      }
+      tr.appendChild(pctCell);
+
       addCell(r.held);
       addCell(r.remaining, r.bestNote);
-      addCell(r.safeNow, r.debarNote);
-      addCell(r.cat1);
-      addCell(r.cat2);
-      addCell(r.fat);
+
+      // The answer the table exists for, drawn like it. Everything else on
+      // this row is context for this number.
+      const safeCell = makeCell(
+        "td",
+        r.safeNow,
+        "font-weight:bold;font-size:15px;" +
+          (r.safeCount === 0
+            ? "color:#c0392b;background:rgba(238,75,43,0.12);"
+            : r.safeCount === 1
+              ? "color:#b8860b;background:rgba(255,193,7,0.14);"
+              : "color:#2e7d32;background:rgba(46,125,50,0.10);")
+      );
+      if (r.debarNote) {
+        const sub = document.createElement("div");
+        sub.textContent = r.debarNote;
+        sub.style.cssText = "color:#777;font-size:11px;font-weight:normal;margin-top:2px;";
+        safeCell.appendChild(sub);
+      }
+      tr.appendChild(safeCell);
+
+      // Retrospectives are history, not advice — they ride in the tooltip so
+      // a column of them cannot crowd out the columns that are.
+      const past = [
+        ["CAT-1", r.cat1],
+        ["CAT-2", r.cat2],
+        ["FAT", r.fat],
+      ]
+        .filter(([, v]) => /^could've bunked/i.test(String(v)))
+        .map(([label, v]) => `${label}: ${v}`);
+      if (past.length) subjCell.title = past.join("\n");
+
+      examCols.forEach(([, key]) => addCell(dead(r[key]) ? "—" : r[key]));
       table.appendChild(tr);
     });
     container.appendChild(table);
+
+    // 120 words of caveats sat under the table, unread, competing with the
+    // numbers. They are all true and worth keeping — behind a disclosure, so
+    // they are there when a number is being doubted and invisible otherwise.
+    const details = document.createElement("details");
+    const summaryEl = document.createElement("summary");
+    summaryEl.textContent = "How these numbers are worked out";
+    summaryEl.style.cssText = "color:#666;font-size:12px;cursor:pointer;margin-top:6px;";
+    details.appendChild(summaryEl);
 
     const note = document.createElement("p");
     note.textContent =
@@ -1039,7 +1431,8 @@
       "used only if the calendar marks no separate lab FAT). One-off " +
       "day-order swaps and unposted attendance are not visible here.";
     note.style.cssText = "color:#666;font-size:12px;margin-top:5px;";
-    container.appendChild(note);
+    details.appendChild(note);
+    container.appendChild(details);
 
     anchor.insertAdjacentElement("afterend", container);
   };
@@ -1074,6 +1467,15 @@
   // after a VTOP re-render repaint instantly instead of refetching
   const historyCache = {};
 
+  // …and keep them ACROSS page loads. Every visit to Attendance used to refetch
+  // one register per subject, one after another, which is the long "fetching
+  // attendance details…" wait. A register only changes when the table's own
+  // attended/total counts change, so those counts are the cache key's
+  // signature: same counts, same register, no request.
+  const PERSIST_KEY = "vrevamp_att_history";
+  const encodeHistory = (h) => h.map((e) => [e.date.getTime(), e.attended ? 1 : 0]);
+  const decodeHistory = (a) => a.map(([t, p]) => ({ date: new Date(t), attended: !!p }));
+
   const doRun = async () => {
     const tableWrap = document.querySelector(".table-responsive");
     if (!tableWrap) return;
@@ -1085,6 +1487,13 @@
     const totalCol = headRow
       ? Array.from(headRow.cells).findIndex((c) => /total/i.test(c.innerText))
       : -1;
+    const attendedCol = headRow
+      ? Array.from(headRow.cells).findIndex((c) => /attended/i.test(c.innerText))
+      : -1;
+    const rowSig = (row) =>
+      [totalCol, attendedCol]
+        .map((i) => (i >= 0 && row.cells && row.cells[i] ? row.cells[i].innerText.trim() : "?"))
+        .join("/");
     const hasClasses = (row) => {
       if (totalCol === -1 || !row.cells || row.cells.length <= totalCol)
         return true; // can't judge — keep the row
@@ -1112,16 +1521,33 @@
     showStatus("vRevamp: fetching attendance details…", null, false);
     const collected = [];
     let lastDetailError = "";
+    let persisted = {};
+    try {
+      persisted = (await chrome.storage.local.get(PERSIST_KEY))[PERSIST_KEY] || {};
+    } catch (e) {
+      /* no storage: just fetch */
+    }
+    let persistedDirty = false;
     for (const s of subjects) {
       try {
         // VTOP swapped the table out mid-run (semester change) — these rows
         // are gone, and a fresh run for the new table is already queued
         if (!s.row.isConnected && !liveRowFor(s)) continue;
         const cacheKey = s.call.args.join("|");
+        const sig = rowSig(s.row);
         let history = historyCache[cacheKey];
+        const saved = persisted[cacheKey];
+        if (!history && saved && saved.sig === sig && Array.isArray(saved.h)) {
+          history = decodeHistory(saved.h);
+          historyCache[cacheKey] = history;
+        }
         if (!history) {
           history = await fetchDetailHistory(s.call);
           historyCache[cacheKey] = history;
+          if (history.length > 0) {
+            persisted[cacheKey] = { sig, h: encodeHistory(history) };
+            persistedDirty = true;
+          }
           await sleepMs(250);
         }
         if (history.length === 0) continue;
@@ -1129,6 +1555,14 @@
       } catch (error) {
         console.warn("vRevamp: subject insight failed", error);
         lastDetailError = String(error && error.message ? error.message : error);
+      }
+    }
+
+    if (persistedDirty) {
+      try {
+        chrome.storage.local.set({ [PERSIST_KEY]: persisted });
+      } catch (e) {
+        /* best effort */
       }
     }
 
@@ -1330,6 +1764,10 @@
         attended,
         total,
         size,
+        // the weekly pattern this subject meets on, carried out of here so the
+        // skip planner below can count the classes inside an arbitrary date
+        // range rather than only up to an exam (2026-08-22)
+        meetings,
         remainEntries,
         staleSince,
         debarNote,
@@ -1349,6 +1787,13 @@
         maxPct,
         nextBunkable,
         nextExamLabel: nextExam ? nextExam[0] : null,
+        // WHICH exam nextBunkable counts up to. Without it the number is
+        // undated and cannot be checked later — which is exactly how the home
+        // page came to display "only 0 class(es) skippable before the next
+        // exam" for a subject with three in hand: that 0 was computed against
+        // CAT-1 days earlier, CAT-1 then arrived, and nothing could tell that
+        // the figure had stopped meaning anything. See js/home_notices.js.
+        nextExamIso: upcoming,
         pct,
         below75,
         // attendToTarget works in history entries (hours for labs) — show
@@ -1372,6 +1817,10 @@
 
     renderForecastBanner(rowsData);
     renderBunkTable(rowsData);
+    // and the planner, under the bunk table it complements — that table
+    // answers "up to CAT-2", this one answers "between these two dates"
+    const bunkBox = document.getElementById("vrevamp-bunk-table-container");
+    if (bunkBox) renderSkipPlanner(rowsData, calendar, bunkBox);
 
     // stale registers also get a visible nudge on VTOP's own row, where the
     // (outdated) percentage is displayed
@@ -1403,7 +1852,29 @@
           pct: r.pct,
           safeNow: r.safeCount,
           nextBunkable: r.nextBunkable,
+          nextExamIso: r.nextExamIso,
+          nextExamLabel: r.nextExamLabel,
           unit: r.unit,
+          /*
+           * DEBAR FIELDS — added 2026-08-17 because the home card was asked to
+           * stop leading with "skippable before CAT-1" and lead with debarment
+           * instead. That is the right call and not only a wording change:
+           * "before CAT-1" stops meaning anything the day CAT-1 arrives (see
+           * js/home_notices.js), whereas 75% is the rule that actually costs a
+           * student the exam hall, and it is measured against the whole
+           * semester so it never silently expires.
+           *
+           * safeNow above already IS the debar headroom — how many sessions can
+           * be missed while never dipping under 75%. What the card could not do
+           * without these is speak to the student already UNDER the line, who
+           * needs "attend the next N", or to the one for whom even a perfect
+           * record no longer reaches 75%, who needs to be told to stop counting.
+           */
+          below75: r.below75,
+          recover: r.recover,
+          canRecover: r.canRecover,
+          maxPct: r.maxPct,
+          debarNote: r.debarNote,
         })),
       },
     });
@@ -1429,6 +1900,9 @@
     }
     running = true;
     try {
+      // before any projection: the days no class will be held on because an
+      // exam block is running (2026-08-22)
+      await loadExamBlockDays();
       await doRun();
     } finally {
       running = false;

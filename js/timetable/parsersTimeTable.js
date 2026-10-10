@@ -14,6 +14,27 @@ function extract_header(tbody_table_children) {
   return tdHeader;
 }
 
+// VTOP's timetable has FOUR header rows, not two: theory start/end in rows
+// 0-1 and lab start/end in rows 2-3 (which is why extract_tbody_data() below
+// skips indices 0 and 2). Labs run on their own grid that drifts away from the
+// hourly theory slots — verified live 2026-08-04, where the last theory column
+// is 18:00-18:50 while the lab column beside it is 17:40-18:30. Reading only
+// the theory rows made every lab render at its neighbouring theory time (L35
+// showed as 18:00 instead of 17:40) in the next-class widget and the .ics
+// export alike.
+function extract_lab_header(tbody_table_children) {
+  const tr_3 = tbody_table_children[2];
+  const tr_4 = tbody_table_children[3];
+  if (!tr_3 || !tr_4) return []; // pre-2026 layout: no lab header rows
+  const startTimes = extract_tr_data(tr_3);
+  const endTimes = extract_tr_data(tr_4, true);
+  const tdHeader = [];
+  for (let i = 0; i < startTimes.length; i++) {
+    tdHeader.push(startTimes[i] + " - " + endTimes[i]);
+  }
+  return tdHeader;
+}
+
 function getCourseCode(str) {
   const regex = /([A-Z]{3,4})\d{3}/g;
   const matches = str.match(regex);
