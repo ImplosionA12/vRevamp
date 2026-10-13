@@ -24,7 +24,6 @@
   const ISO_DATE_RE = /\b(\d{4})-(\d{2})-(\d{2})\b/;
   const NUM_DATE_RE = /\b(\d{1,2})-(\d{1,2})-(\d{4})\b/; // dd-mm-yyyy (newer detail modal)
 
-  const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   const parseAnyDate = (text) => {
     let m = VTOP_DATE_RE.exec(text);
@@ -251,6 +250,14 @@
         path: normalizeEndpoint(rec.path),
         params: paramsFromTemplate(rec.params, call) || defaultParams(call),
       });
+    return attempts;
+  };
+
+  // Guesses, built only if the known attempts found nothing. Mining the page's
+  // scripts downloads every same-origin <script src> one by one, and used to
+  // run before the FIRST request even when a stored endpoint would have worked.
+  const buildGuesses = async (call) => {
+    const attempts = [];
     const mined = await findEndpointInScripts(call.fn);
     if (mined) attempts.push({ path: mined, params: defaultParams(call), probe: true });
     [call.fn, ...DETAIL_ENDPOINT_CANDIDATES].forEach((path) =>
@@ -259,11 +266,16 @@
     return attempts;
   };
 
+  const attemptsFor = async function* (call) {
+    yield* await buildAttempts(call);
+    yield* await buildGuesses(call);
+  };
+
   const fetchDetailHistory = async (call) => {
     const tried = new Set();
     let lastError = null;
     let sawResponse = false;
-    for (const attempt of await buildAttempts(call)) {
+    for await (const attempt of attemptsFor(call)) {
       const key = attempt.path + "|" + JSON.stringify(attempt.params);
       if (tried.has(key)) continue;
       tried.add(key);
@@ -434,30 +446,37 @@
       if (!months.has(key)) months.set(key, { dateStr, monthDate });
     }
 
-    const days = [];
-    for (const { dateStr, monthDate } of months.values()) {
-      const before = days.length;
-      try {
-        // current VTOP: dedicated grid endpoint with calDate
-        const grid = parseHtml(
-          await vtopProbe("processViewCalendar", { calDate: dateStr, semSubId, classGroupId })
-        );
-        parseMonthGrid(grid, monthDate, days);
-      } catch (error) {
-        /* fall through to the legacy shape */
-      }
-      if (days.length === before) {
+    // Three months at a time: the serial loop with a 200ms sleep per month was
+    // most of the wait. Each month fills its own list so the "did the first
+    // endpoint yield anything" check stays per-month.
+    const perMonth = await window.vrVtop.pool(
+      [...months.values()],
+      3,
+      async ({ dateStr, monthDate }) => {
+        const found = [];
         try {
+          // current VTOP: dedicated grid endpoint with calDate
           const grid = parseHtml(
-            await vtopPost(menuUrl, { semSubId, date: dateStr })
+            await vtopProbe("processViewCalendar", { calDate: dateStr, semSubId, classGroupId })
           );
-          parseMonthGrid(grid, monthDate, days);
+          parseMonthGrid(grid, monthDate, found);
         } catch (error) {
-          console.warn("vRevamp: calendar month failed", dateStr, error);
+          /* fall through to the legacy shape */
         }
+        if (found.length === 0) {
+          try {
+            const grid = parseHtml(
+              await vtopPost(menuUrl, { semSubId, date: dateStr })
+            );
+            parseMonthGrid(grid, monthDate, found);
+          } catch (error) {
+            console.warn("vRevamp: calendar month failed", dateStr, error);
+          }
+        }
+        return found;
       }
-      await sleepMs(200);
-    }
+    );
+    const days = perMonth.flatMap((r) => (Array.isArray(r) ? r : []));
     if (days.length === 0) throw new Error("no calendar day cells parsed");
 
     // one record per date, flags OR-ed — a date must never appear twice in
@@ -694,6 +713,7 @@
    * classes — never invent them.
    */
   let examBlockDays = new Set();
+  let examBlocksReady = Promise.resolve();
 
   const loadExamBlockDays = async () => {
     try {
@@ -1549,11 +1569,11 @@
       /* no storage: just fetch */
     }
     let persistedDirty = false;
-    for (const s of subjects) {
+    const loadSubject = async (s) => {
       try {
         // VTOP swapped the table out mid-run (semester change) — these rows
         // are gone, and a fresh run for the new table is already queued
-        if (!s.row.isConnected && !liveRowFor(s)) continue;
+        if (!s.row.isConnected && !liveRowFor(s)) return null;
         const cacheKey = s.call.args.join("|");
         const sig = rowSig(s.row);
         let history = historyCache[cacheKey];
@@ -1569,15 +1589,35 @@
             persisted[cacheKey] = { sig, h: encodeHistory(history) };
             persistedDirty = true;
           }
-          await sleepMs(250);
         }
-        if (history.length === 0) continue;
-        collected.push({ s, history });
+        return history.length === 0 ? null : { s, history };
       } catch (error) {
         console.warn("vRevamp: subject insight failed", error);
         lastDetailError = String(error && error.message ? error.message : error);
+        return null;
       }
+    };
+    // Cached subjects cost nothing. The first one that needs a request runs
+    // alone so it can learn the working endpoint (resolvedAttempt); the rest
+    // then go three at a time, replacing the old one-by-one loop with a 250ms
+    // sleep after every subject.
+    const results = new Array(subjects.length);
+    const needsFetch = (s) =>
+      !historyCache[s.call.args.join("|")] &&
+      !(persisted[s.call.args.join("|")] &&
+        persisted[s.call.args.join("|")].sig === rowSig(s.row));
+    const firstMiss = subjects.findIndex(needsFetch);
+    for (let i = 0; i < subjects.length; i++) {
+      if (i !== firstMiss && !needsFetch(subjects[i])) results[i] = await loadSubject(subjects[i]);
     }
+    if (firstMiss !== -1) {
+      results[firstMiss] = await loadSubject(subjects[firstMiss]);
+      const rest = subjects.map((_, i) => i).filter((i) => i !== firstMiss && results[i] === undefined);
+      await window.vrVtop.pool(rest, 3, async (i) => {
+        results[i] = await loadSubject(subjects[i]);
+      });
+    }
+    results.forEach((r) => r && collected.push(r));
 
     if (persistedDirty) {
       try {
@@ -1602,15 +1642,17 @@
 
     // Phase 2: academic calendar, then the bunk table
     showStatus("VTOP Extension: reading the academic calendar…", null, false);
-    const calendar = semesterName
-      ? await getAcademicCalendar(semesterName)
-      : null;
-
     // The student's actual timetable (if they've opened the timetable page)
     // gives the true weekly schedule; fall back to inferring it from history.
-    const schedule = scheduleFromTimetable(await getSavedTimetable());
+    // It is a local storage read, so it overlaps the calendar's network wait.
+    const [calendar, savedTimetable] = await Promise.all([
+      semesterName ? getAcademicCalendar(semesterName) : null,
+      getSavedTimetable(),
+    ]);
+    const schedule = scheduleFromTimetable(savedTimetable);
     const timetableSaved = Object.keys(schedule).length > 0;
 
+    await examBlocksReady;
     const todayIso = isoOf(new Date());
     const rowsData = collected.map(({ s, history }) => {
       const attended = history.filter((h) => h.attended).length;
@@ -1923,7 +1965,9 @@
     try {
       // before any projection: the days no class will be held on because an
       // exam block is running (2026-08-22)
-      await loadExamBlockDays();
+      // exam blocks load alongside the fetching; doRun waits for them just
+      // before the first projection
+      examBlocksReady = loadExamBlockDays();
       await doRun();
     } catch (error) {
       console.warn("vRevamp: attendance insights failed", error);

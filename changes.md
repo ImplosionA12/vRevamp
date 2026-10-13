@@ -4350,3 +4350,11 @@ one page, as Chrome does at inject time:
   * Holidays: dates flagged Holiday are removed from instructionalDays on read (cached and fresh),
     so a date labelled both Instructional and Holiday no longer counts as a class day.
     Still open: with NO calendar, missedPostings can't see holidays (already documented there).
+- Attendance load speed (attendance_insights.js), same session, not yet timed live:
+  * Calendar months fetched 3 at a time via vrVtop.pool (was serial + 200ms sleep per month).
+  * Subject histories: cached ones cost nothing; the first miss runs alone to learn the endpoint,
+    the rest 3 at a time (was serial + 250ms sleep each).
+  * Endpoint guesses (script mining downloads every site <script src>) are now lazy: only after the
+    stored/learned endpoint fails. Previously they ran before the first request.
+  * Timetable read overlaps the calendar fetch; exam-block load overlaps phase 1.
+  * Removed unused sleepMs. npm test: 593 passed, 0 failed.
