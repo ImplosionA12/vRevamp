@@ -504,8 +504,27 @@
     };
   };
 
+  // A date the calendar marks as a holiday is never a class day, even when
+  // another label on the same date says "Instructional Day". Applied on read
+  // so caches built before this need no version bump.
+  const withoutHolidays = (calendar) => {
+    const off = new Set(calendar.holidays || []);
+    if (off.size === 0) return calendar;
+    return {
+      ...calendar,
+      instructionalDays: calendar.instructionalDays.filter((d) => !off.has(d)),
+    };
+  };
+
+  // After a failed read, don't repeat the whole serial month-by-month fetch
+  // on every re-run of this page
+  const CALENDAR_RETRY_MS = 90 * 1000;
+  let calendarFailedAt = 0;
+
   const getAcademicCalendar = async (semesterName) => {
     const key = CACHE_PREFIX + normText(semesterName);
+    if (calendarFailedAt && Date.now() - calendarFailedAt < CALENDAR_RETRY_MS)
+      return null;
     try {
       const cached = await chrome.storage.local.get(key);
       // version check invalidates caches built before the duplicate-month /
@@ -513,7 +532,7 @@
       if (cached[key] && cached[key].version === 4) {
         // readers on other pages look here instead of scanning all of storage
         chrome.storage.local.set({ vrevamp_latest_calendar: cached[key] });
-        return cached[key];
+        return withoutHolidays(cached[key]);
       }
       const calendar = await fetchCalendar(semesterName);
       // drop caches of other semesters, then store this one
@@ -523,8 +542,10 @@
       );
       if (stale.length) await chrome.storage.local.remove(stale);
       await chrome.storage.local.set({ [key]: calendar, vrevamp_latest_calendar: calendar });
-      return calendar;
+      calendarFailedAt = 0;
+      return withoutHolidays(calendar);
     } catch (error) {
+      calendarFailedAt = Date.now();
       console.warn("vRevamp: academic calendar unavailable", error);
       lastCalendarError = String(error && error.message ? error.message : error);
       return null;
@@ -1904,6 +1925,12 @@
       // exam block is running (2026-08-22)
       await loadExamBlockDays();
       await doRun();
+    } catch (error) {
+      console.warn("vRevamp: attendance insights failed", error);
+      showStatus(
+        "VTOP Extension: couldn't finish the attendance details " +
+          `(${String((error && error.message) || error)}). Reopen this page to try again.`
+      );
     } finally {
       running = false;
       if (pendingRerun) {

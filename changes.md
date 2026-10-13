@@ -4341,3 +4341,12 @@ one page, as Chrome does at inject time:
   27 Oct is a Tuesday (labs run that day). The live calendar shows 20 Oct as a plain
   "Holiday (Vijaya Dashami / Dussehra)" cell, which the planner already excluded. An
   attempted holiday-filter/cache-bump change was reverted. Check the range end date first.
+- Attendance "keeps loading" / sudden delay / holidays (found by reading, NOT yet verified live):
+  * js/shared/vtop.js: every VTOP POST now has a 25s timeout (AbortController). A hung request
+    used to leave "reading the academic calendar…" on screen forever. Timeouts don't trip the breaker.
+  * attendance_insights.js: runInsights now catches a failed run and shows a red message instead of
+    leaving the grey "reading…" status up; a failed calendar fetch isn't retried for 90s (each retry
+    was ~15 serial requests + 200ms sleeps per month, repeated on every re-run).
+  * Holidays: dates flagged Holiday are removed from instructionalDays on read (cached and fresh),
+    so a date labelled both Instructional and Holiday no longer counts as a class day.
+    Still open: with NO calendar, missedPostings can't see holidays (already documented there).

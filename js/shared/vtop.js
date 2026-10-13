@@ -59,6 +59,11 @@
    */
   const PROBE_TRIP_AFTER = 12;
 
+  // A request that never answers used to leave "reading…" on screen forever.
+  // A timeout is VTOP having a bad minute, not a refused session, so it does
+  // not count toward the breaker.
+  const REQUEST_TIMEOUT_MS = 25000;
+
   const state = {
     consecutiveFailures: 0,
     probeFailures: 0,
@@ -164,8 +169,11 @@
     });
 
     let res;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
     try {
       res = await fetch(`${location.origin}/vtop/${path}`, {
+        signal: abort.signal,
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -175,7 +183,11 @@
         credentials: "same-origin",
       });
     } catch (error) {
+      if (error && error.name === "AbortError")
+        throw new Error(`network: ${path} timed out`);
       throw new Error(`network: ${String((error && error.message) || error)}`);
+    } finally {
+      clearTimeout(timer);
     }
 
     const countFailure = (status) => {
