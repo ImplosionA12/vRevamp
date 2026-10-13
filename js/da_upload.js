@@ -512,6 +512,19 @@ let da_page_2026 = async () => {
     span.textContent = `${upcoming[0].due} · ${days}d left`;
     span.title = `${upcoming[0].title} — due ${upcoming[0].due}`;
     cell.appendChild(span);
+    // The cell used to show only the next due date, so a course with one DA
+    // coming up and another already missed looked clean here while the bar
+    // above counted the missed one. Say so in the cell too.
+    const missedToo = meta.items.filter(
+      (a) => !a.uploaded && dueMs(a.due) + 86399000 < now
+    ).length;
+    if (missedToo > 0) {
+      const late = document.createElement("div");
+      late.style.cssText = "font-size:11px;white-space:nowrap;color:#b00;";
+      late.textContent = `⚠ ${missedToo} past due`;
+      late.title = "Not uploaded and the due date has passed";
+      cell.appendChild(late);
+    }
     // Everything both buttons need, written onto the buttons themselves. See
     // the handlers above for why this is an attribute and not a closure.
     const payload = JSON.stringify({

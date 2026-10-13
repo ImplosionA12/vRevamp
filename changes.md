@@ -4358,3 +4358,14 @@ one page, as Chrome does at inject time:
     stored/learned endpoint fails. Previously they ran before the first request.
   * Timetable read overlaps the calendar fetch; exam-block load overlaps phase 1.
   * Removed unused sleepMs. npm test: 593 passed, 0 failed.
+- Live walkthrough 2026-10-14 (extension 4.7.0 reloaded, real VTOP, signed in):
+  * WORKS live: home card + next-class, Attendance (table/forecast/bunk calc agree, loads in ~3s from
+    cache, semester auto-picked), Marks View, DA Upload, Time Table (+ .ics/GCal buttons), Exam Schedule
+    (CAT buttons present, past exams say "no upcoming"), Grade History simulator (S->F on 4 credits:
+    8.68 -> 8.27, hand-checked; bar clears on reset), General Outing page loads.
+  * FIXED: DA Upload course cell hid a past-due DA whenever another DA was still upcoming, while the
+    summary bar counted it (SWE3004 showed clean, bar said 2 past due). The cell now adds "warning N past due".
+  * NOT checked: popup (chrome-extension:// pages are blocked for me), every mail/reminder/GCal button
+    (they send or create things), leave watcher baseline, Faculty page, Course Page after picking a course.
+  * Odd but not ours: Time Table has no MON row (VTOP's own data); SWE3004 Experiment-1 is dated
+    31-Jul-2026, before the semester began - looks like a faculty typo.
