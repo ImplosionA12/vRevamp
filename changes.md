@@ -4337,3 +4337,7 @@ one page, as Chrome does at inject time:
 - DA summary bar: dropped the emoji prefixes (they render as tiny mismatched icons) and
   made the wording consistent: "Remind me about all of them", "Email me this list now",
   "Email me a daily digest". Checked on the real page first.
+- Skip planner "counted Dussehra Tuesday" report was NOT a bug: the range was 16-27 Oct and
+  27 Oct is a Tuesday (labs run that day). The live calendar shows 20 Oct as a plain
+  "Holiday (Vijaya Dashami / Dussehra)" cell, which the planner already excluded. An
+  attempted holiday-filter/cache-bump change was reverted. Check the range end date first.
