@@ -91,7 +91,7 @@ const flagAttendanceRisk = async () => {
       s.pct < 75
         ? `⚠ attendance ${s.pct}%`
         : "⚠ attendance: no safe skips left";
-    badge.title = "VTOP Extension: from your last visit to the Attendance page";
+    badge.title = "vRevamp: from your last visit to the Attendance page";
     badge.style.cssText =
       "color:#c0392b;font-weight:bold;font-size:11px;margin-top:2px;white-space:nowrap;";
     cell.appendChild(badge);

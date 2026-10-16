@@ -281,7 +281,7 @@
     head.style.cssText =
       "display:flex;justify-content:space-between;align-items:center;cursor:pointer;";
     const title = document.createElement("p");
-    title.textContent = "VTOP Extension — heads up";
+    title.textContent = "vRevamp — heads up";
     title.style.cssText =
       "font-weight:bold;margin:0;font-size:13px;color:rgb(60,141,188);";
     const toggle = document.createElement("span");
@@ -315,7 +315,7 @@
     if (stale) {
       body.appendChild(
         line(
-          `\u{1F4CC} VTOP Extension's cached data is from "${semName}", which looks over — open the Attendance and Time Table pages once so the new semester loads.`,
+          `\u{1F4CC} vRevamp's cached data is from "${semName}", which looks over — open the Attendance and Time Table pages once so the new semester loads.`,
           "#b8860b"
         )
       );
@@ -354,7 +354,7 @@
     } else if (!calendar) {
       body.appendChild(
         line(
-          "Open the Attendance page once so VTOP Extension can read the academic calendar.",
+          "Open the Attendance page once so vRevamp can read the academic calendar.",
           "#888"
         )
       );

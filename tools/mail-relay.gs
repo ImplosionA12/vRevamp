@@ -81,7 +81,7 @@ function doPost(e) {
 
     var req = JSON.parse(raw);
     var to = String(req.to || "").trim();
-    var subject = String(req.subject || "VTOP Extension").slice(0, MAX_SUBJECT);
+    var subject = String(req.subject || "vRevamp").slice(0, MAX_SUBJECT);
     var html = String(req.html || "").slice(0, MAX_BODY);
     var text = String(req.text || "").slice(0, MAX_BODY);
 
@@ -94,14 +94,14 @@ function doPost(e) {
     if (!gate.ok) return reply(gate);
 
     if (MailApp.getRemainingDailyQuota() < 1)
-      return reply({ ok: false, error: "the VTOP Extension mailbox has hit its daily Gmail quota" });
+      return reply({ ok: false, error: "the vRevamp mailbox has hit its daily Gmail quota" });
 
     MailApp.sendEmail({
       to: to,
       subject: subject,
       body: text || html.replace(/<[^>]*>/g, " "),
       htmlBody: html || undefined,
-      name: "VTOP Extension",
+      name: "vRevamp",
     });
 
     return reply({ ok: true });
@@ -112,7 +112,7 @@ function doPost(e) {
 
 // A GET is handy for checking the deployment is alive without sending anything.
 function doGet() {
-  return reply({ ok: true, service: "VTOP Extension mail relay", quotaLeft: MailApp.getRemainingDailyQuota() });
+  return reply({ ok: true, service: "vRevamp mail relay", quotaLeft: MailApp.getRemainingDailyQuota() });
 }
 
 /*

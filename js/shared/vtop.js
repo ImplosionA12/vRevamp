@@ -139,9 +139,9 @@
     state.tripped = true;
     state.lastStatus = status;
     showBanner(
-      `VTOP Extension stopped talking to VTOP: it refused ${count} requests in a row ` +
+      `vRevamp stopped talking to VTOP: it refused ${count} requests in a row ` +
         `(HTTP ${status}). That usually means the ` +
-        "session has gone stale. Sign out of VTOP and sign in again — VTOP Extension " +
+        "session has gone stale. Sign out of VTOP and sign in again — vRevamp " +
         "deliberately sends nothing more until then, because repeating failed " +
         "requests is what breaks the session further."
     );

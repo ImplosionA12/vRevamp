@@ -121,7 +121,7 @@ const build_exam_ics = (exams) => {
     ]);
   }
   return {
-    ics: vrIcs.calendar("-//VTOP Extension//iCal Generator//EN", blocks),
+    ics: vrIcs.calendar("-//vRevamp//iCal Generator//EN", blocks),
     events: blocks.length,
   };
 };
@@ -397,12 +397,12 @@ window.vrDelegate("exam-mail", async (mail) => {
           title: `${label} — ${title}`,
           body: lines.slice(0, 3).join("\n"),
           subject: `${label}: ${title}`,
-          text: `${title}\n\n${lines.join("\n")}\n\nSent by VTOP Extension.`,
+          text: `${title}\n\n${lines.join("\n")}\n\nSent by vRevamp.`,
           html:
             `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px">` +
             `<h3 style="margin:0 0 8px">${exam_html_escape(label)}: ${exam_html_escape(title)}</h3>` +
             lines.map((l) => `<div>${exam_html_escape(l)}</div>`).join("") +
-            `<p style="color:#666;font-size:12px;margin-top:16px">Sent by VTOP Extension from your VTOP exam schedule.</p></div>`,
+            `<p style="color:#666;font-size:12px;margin-top:16px">Sent by vRevamp from your VTOP exam schedule.</p></div>`,
         });
       });
     });
@@ -423,7 +423,7 @@ window.vrDelegate("exam-mail", async (mail) => {
       r.ok
     );
   } catch (error) {
-    console.warn("VTOP Extension exam schedule:", error);
+    console.warn("vRevamp exam schedule:", error);
     exam_status(mail, "failed — refresh and try again", false);
   }
 });
@@ -480,7 +480,7 @@ const exam_mail_body = (exams, examType, semester, opts) => {
     text:
       `${examType} — ${exams.length} upcoming exam(s)\n` +
       (lead ? `${lead}\n` : "") +
-      `\n${text}\n\nSent by VTOP Extension from your VTOP exam schedule.`,
+      `\n${text}\n\nSent by vRevamp from your VTOP exam schedule.`,
     html:
       `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111;">` +
       `<h2 style="margin:0 0 4px;font-size:18px;">${exam_html_escape(examType)} — ${exams.length} upcoming exam(s)</h2>` +
@@ -492,7 +492,7 @@ const exam_mail_body = (exams, examType, semester, opts) => {
         : "") +
       `<table style="border-collapse:collapse;font-size:14px;">` +
       `<thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>` +
-      `<p style="color:#666;font-size:12px;margin-top:16px;">Sent by VTOP Extension from your VTOP exam schedule.</p>` +
+      `<p style="color:#666;font-size:12px;margin-top:16px;">Sent by vRevamp from your VTOP exam schedule.</p>` +
       `</div>`,
   };
 };
@@ -888,7 +888,7 @@ const exam_ask_address = (btn, onSaved) => {
   const input = document.createElement("input");
   input.type = "email";
   input.placeholder = "you@example.com";
-  input.setAttribute("aria-label", "Email address for VTOP Extension reminders");
+  input.setAttribute("aria-label", "Email address for vRevamp reminders");
   // VTOP's own form control, so it matches the portal's inputs
   // both spellings: the portal's logged-in pages use an older Bootstrap
   input.className = "form-control input-sm form-control-sm";
@@ -971,7 +971,7 @@ window.vrDelegate("exam-send", async (btn) => {
     // This is the ONLY thing the mail feature needs from the student when a
     // relay is configured: no Google account, no consent screen, one field.
     if (r && r.error === "need_address") {
-      exam_status(btn, "where should VTOP Extension mail you?", true);
+      exam_status(btn, "where should vRevamp mail you?", true);
       exam_ask_address(btn, async (address) => {
         btn.disabled = true;
         exam_status(btn, `sending ${upcoming.length} exam(s)…`, true);

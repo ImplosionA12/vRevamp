@@ -4369,3 +4369,13 @@ one page, as Chrome does at inject time:
     (they send or create things), leave watcher baseline, Faculty page, Course Page after picking a course.
   * Odd but not ours: Time Table has no MON row (VTOP's own data); SWE3004 Experiment-1 is dated
     31-Jul-2026, before the semester began - looks like a faculty typo.
+
+## Rebrand reverted: back to "vRevamp" (2026-10-16)
+- Undid 4.6.1 (rename to "VTOP Extension") and the VTOP-style popup redesign, on request.
+- Every user-visible "VTOP Extension" is "vRevamp" again: manifest name, popup title and banner,
+  injected-page titles and status text, reminder/digest mail subjects and bodies, ICS product ids,
+  the mail relay script, README. Storage keys and element ids were never touched.
+- Popup is back to the pre-rename look (css/popup.css restored), including the "forked from
+  vRevamp" attribution footer and "Send from a vRevamp address instead".
+- Kept on purpose: config.json and the config-driven GitHub/Issues links and update check (behaviour,
+  not branding), and version 4.7.0.

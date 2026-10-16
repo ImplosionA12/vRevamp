@@ -84,7 +84,7 @@
     const how = document.createElement("div");
     how.className = "vr-hint";
     how.textContent =
-      "Unzip over the old folder, then press reload on VTOP Extension at chrome://extensions.";
+      "Unzip over the old folder, then press reload on vRevamp at chrome://extensions.";
     box.append(text, link, how);
   };
 
