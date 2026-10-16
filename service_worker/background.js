@@ -67,8 +67,8 @@ const MAIL_TAB_PATTERNS = [
 const GMAIL_CLIENT_ID = "256000685922-v0qi26k4h5d4olfastfer2j6cv0j7frp.apps.googleusercontent.com";
 
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
-const GMAIL_TOKEN_KEY = "vrevamp_gmail_token";
-const GMAIL_CLIENT_KEY = "vrevamp_gmail_client_id";
+const GMAIL_TOKEN_KEY = "vtopext_gmail_token";
+const GMAIL_CLIENT_KEY = "vtopext_gmail_client_id";
 
 /*
  * ---------------------------------------------------------------------------
@@ -117,8 +117,8 @@ const GMAIL_CLIENT_KEY = "vrevamp_gmail_client_id";
 const CALENDAR_CLIENT_ID = GMAIL_CLIENT_ID;
 
 const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
-const CALENDAR_TOKEN_KEY = "vrevamp_calendar_token";
-const CALENDAR_CLIENT_KEY = "vrevamp_calendar_client_id";
+const CALENDAR_TOKEN_KEY = "vtopext_calendar_token";
+const CALENDAR_CLIENT_KEY = "vtopext_calendar_client_id";
 // 1h, not 1d: a code lives 3 minutes, so anything older is refused by the
 // caller anyway — no reason to pull a day of mail to throw it away.
 const GMAIL_QUERY = "from:noreply.sdc@vitap.ac.in newer_than:1h";
@@ -173,7 +173,7 @@ const SILENT_BACKOFF_MS = 60000;
  * revokes access or Google expires the grant (7 days while the app is in
  * Testing; see ROADMAP §3).
  */
-const GOOGLE_HINT_KEY = "vrevamp_google_account";
+const GOOGLE_HINT_KEY = "vtopext_google_account";
 
 /*
  * ROUND THREE, 2026-08-19 — "got asked again", with the account chooser on
@@ -198,11 +198,11 @@ const GOOGLE_HINT_KEY = "vrevamp_google_account";
  * So the account is remembered PER FLOW, keyed by the token's own storage key,
  * and the mailbox flow never inherits the app flow's account. The chooser is
  * still correct the first time — picking the mailbox is a real decision only
- * the student can make (see `vrevamp_gmail_signin`) — and `granted` must not
+ * the student can make (see `vtopext_gmail_signin`) — and `granted` must not
  * suppress it, because a calendar grant says nothing about which inbox holds
  * the OTP. From the second scan on there is a hint, and it is silent.
  */
-const GOOGLE_ACCOUNTS_KEY = "vrevamp_google_accounts";
+const GOOGLE_ACCOUNTS_KEY = "vtopext_google_accounts";
 
 /*
  * ROUND TWO, 2026-08-17 — "the oauth should persist, that's what i asked".
@@ -240,12 +240,12 @@ const SILENT_TIMEOUT_MS = 15000;
 // keep `prompt=select_account` off every interactive attempt after the first:
 // the chooser is a full screen, and re-showing it to someone who has already
 // picked an account is the exact behaviour being complained about.
-const GRANTED_KEY = "vrevamp_google_granted";
+const GRANTED_KEY = "vtopext_google_granted";
 
 // Which account should this particular flow name? Its own, if one has ever
 // answered for it; otherwise the app account — except for the mailbox flow,
 // which inherits nothing (see GOOGLE_ACCOUNTS_KEY). Called with no argument it
-// still answers "the account vRevamp signed in as", which is all the status
+// still answers "the account VTOP Extension signed in as", which is all the status
 // report wants.
 async function googleHint(storeKey) {
   const all = await chrome.storage.local.get([GOOGLE_HINT_KEY, GOOGLE_ACCOUNTS_KEY]);
@@ -464,7 +464,7 @@ const APP_SCOPE = [
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
-const APP_TOKEN_KEY = "vrevamp_google_app_token";
+const APP_TOKEN_KEY = "vtopext_google_app_token";
 
 async function googleToken({ interactive, stale, feature }) {
   const clientId = await calendarClientId();
@@ -585,12 +585,12 @@ async function calendarToken({ interactive, stale }) {
  */
 const GMAIL_SEND_SCOPE =
   "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email";
-const GMAIL_SEND_TOKEN_KEY = "vrevamp_gmail_send_token";
+const GMAIL_SEND_TOKEN_KEY = "vtopext_gmail_send_token";
 // A remembered "send my reminders here" address, so a student can point mail at
 // a phone-checked personal inbox rather than the account Calendar runs under.
-const REMINDER_EMAIL_KEY = "vrevamp_reminder_email";
+const REMINDER_EMAIL_KEY = "vtopext_reminder_email";
 
-/* ===================== Sending from a vRevamp address instead ===============
+/* ===================== Sending from a VTOP Extension address instead ===============
  *
  * Asked for 2026-08-16: *"i asked for the mails to be sent by a specific mail
  * instead of same person to same person"*. Fair — a mail from yourself, to
@@ -598,7 +598,7 @@ const REMINDER_EMAIL_KEY = "vrevamp_reminder_email";
  *
  * The obstacle is that **a Chrome extension cannot hold a sender credential**.
  * Everything shipped inside it is readable by every user, so a refresh token or
- * SMTP password for a vRevamp mailbox would let anyone send mail as vRevamp,
+ * SMTP password for a VTOP Extension mailbox would let anyone send mail as VTOP Extension,
  * and Google would suspend the account quickly. Something the users cannot read
  * has to do the sending.
  *
@@ -622,7 +622,7 @@ const REMINDER_EMAIL_KEY = "vrevamp_reminder_email";
 // The shipped relay URL is NOT in this file. It lives in /config.json next to
 // manifest.json, so changing the sender is an edit to one data file, not to
 // code (blank there = send from the student's own Gmail).
-const MAIL_RELAY_KEY = "vrevamp_mail_relay_url";
+const MAIL_RELAY_KEY = "vtopext_mail_relay_url";
 
 let extensionConfigCache = null;
 async function extensionConfig() {
@@ -677,7 +677,7 @@ async function mailRelayUrl() {
 }
 
 // btoa() is byte-oriented and throws on anything above U+00FF, which every
-// vRevamp subject line hits (em dashes, emoji). TextEncoder widens to UTF-8
+// VTOP Extension subject line hits (em dashes, emoji). TextEncoder widens to UTF-8
 // bytes first. Deliberately not the `unescape(encodeURIComponent(…))` trick:
 // that relies on Annex B globals, which is a needless bet inside a worker.
 function b64(text) {
@@ -784,7 +784,7 @@ async function sendMailViaRelay(url, { subject, html, text, to }) {
 // Resolves { ok, to, error }. `to` is echoed back so the button can say where
 // the mail went — students routinely have two Google accounts and guess wrong.
 async function sendMailAsUser({ subject, html, text, to, interactive }) {
-  // a configured relay wins: it sends from the vRevamp address, and needs no
+  // a configured relay wins: it sends from the VTOP Extension address, and needs no
   // gmail.send consent from the student at all
   const relay = await mailRelayUrl();
   if (relay) return sendMailViaRelay(relay, { subject, html, text, to, interactive });
@@ -809,10 +809,10 @@ async function sendMailAsUser({ subject, html, text, to, interactive }) {
   const address = to || stored || (await googleSelfEmail(token));
   if (!address) return { ok: false, to: null, error: "couldn't work out which address to send to" };
 
-  // RFC 2822. The subject is RFC 2047 encoded-word wrapped because vRevamp's
+  // RFC 2822. The subject is RFC 2047 encoded-word wrapped because VTOP Extension's
   // own subjects carry em dashes and emoji; the body is base64 for the same
   // reason. Sending both parts lets a plain-text client read it too.
-  const boundary = `vrevamp-${Date.now().toString(36)}`;
+  const boundary = `vtopext-${Date.now().toString(36)}`;
   const plain = text || String(html).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
   const raw = [
     `To: ${address}`,
@@ -917,7 +917,7 @@ function otpFromMailText(text, ignore) {
   }
   return best ? best.code : null;
 }
-self.__vrevampOtpFromMailText = otpFromMailText;
+self.__vtopextOtpFromMailText = otpFromMailText;
 
 // Newest VTOP OTP mail via the API. Returns {code, ageMin} | {error}.
 async function gmailFindOtp(ignore) {
@@ -977,7 +977,7 @@ async function gmailFindOtp(ignore) {
 async function scanMailTab(tab, ignore, autoOpen) {
   const ask = () =>
     chrome.tabs.sendMessage(tab.id, {
-      message: "vrevamp_scan_otp",
+      message: "vtopext_scan_otp",
       ignore,
       autoOpen,
     });
@@ -1380,7 +1380,7 @@ chrome.webRequest.onCompleted.addListener(
  * Alarms survive browser restarts; ones missed while Chrome was closed fire
  * once at the next launch.
  */
-const REMINDERS_KEY = "vrevamp_local_reminders";
+const REMINDERS_KEY = "vtopext_local_reminders";
 
 const scheduleLocalReminders = async (tag, reminders) => {
   const safeTag = String(tag || "misc").replace(/[^\w:-]/g, "");
@@ -1449,8 +1449,8 @@ const scheduleLocalReminders = async (tag, reminders) => {
  * scraped in the background — it needs the session in a real tab, and driving
  * it from here is what breaks sessions (ROADMAP #4).
  */
-const DIGEST_KEY = "vrevamp_digest";
-const DIGEST_ALARM = "vrevamp|digest";
+const DIGEST_KEY = "vtopext_digest";
+const DIGEST_ALARM = "vtopext|digest";
 const DIGEST_DEFAULT_HOUR = 7;
 const STALE_DAYS = 14;
 
@@ -1496,9 +1496,9 @@ const ageInDays = (ms) => (ms ? Math.floor((Date.now() - ms) / 86400000) : null)
 // notification is worth raising at all, so a quiet day stays quiet.
 async function buildDigest() {
   const store = await chrome.storage.local.get([
-    "vrevamp_da_dues",
-    "vrevamp_attendance_summary",
-    "vrevamp_exam_schedule",
+    "vtopext_da_dues",
+    "vtopext_attendance_summary",
+    "vtopext_exam_schedule",
   ]);
 
   const sections = [];
@@ -1509,7 +1509,7 @@ async function buildDigest() {
   let urgent = false;
 
   /* --- assignments --- */
-  const dues = store.vrevamp_da_dues;
+  const dues = store.vtopext_da_dues;
   const duesAge = ageInDays(dues && dues.fetchedAt);
   if (dues && duesAge !== null && duesAge <= STALE_DAYS) {
     const upcoming = [];
@@ -1555,7 +1555,7 @@ async function buildDigest() {
   }
 
   /* --- attendance --- */
-  const attendance = store.vrevamp_attendance_summary;
+  const attendance = store.vtopext_attendance_summary;
   const attAge = ageInDays(attendance && attendance.fetchedAt);
   if (attendance && attAge !== null && attAge <= STALE_DAYS) {
     const subjects = (attendance.subjects || []).filter((s) => typeof s.pct === "number");
@@ -1626,7 +1626,7 @@ async function buildDigest() {
   }
 
   /* --- exams --- */
-  const exams = store.vrevamp_exam_schedule;
+  const exams = store.vtopext_exam_schedule;
   if (exams && Array.isArray(exams.exams)) {
     const soon = exams.exams
       .map((e) => ({ ...e, left: daysBetween(e.dateIso) }))
@@ -1722,7 +1722,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     try {
       await runDigest();
     } catch (error) {
-      console.warn("vRevamp digest", error);
+      console.warn("VTOP Extension digest", error);
     }
     return;
   }
@@ -1941,9 +1941,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // A real email, sent now, from the student's own Gmail — the companion to
     // the ✉️ buttons' "Calendar will mail you a day before". See
     // sendMailAsUser() for why this is a separate scope and token.
-    // Where the student wants vRevamp's mail. Stored per-browser; the relay is
+    // Where the student wants VTOP Extension's mail. Stored per-browser; the relay is
     // told it per request and keeps no list of its own.
-    // Who vRevamp is signed in as, and where its mail is pointed. Lets a page
+    // Who VTOP Extension is signed in as, and where its mail is pointed. Lets a page
     // say "signed in as x@gmail.com" instead of leaving the student guessing
     // which of their accounts approved the last consent screen.
     case "google_status":
@@ -1978,7 +1978,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
      * on meant editing background.js and reloading the extension — fine for
      * whoever wrote it, impossible for anyone who installed it. The URL is
      * CHECKED before it is stored: the script answers a GET with
-     * {"ok":true,"service":"vRevamp mail relay"}, so a typo or a
+     * {"ok":true,"service":"VTOP Extension mail relay"}, so a typo or a
      * not-yet-deployed script is caught here rather than silently swallowing
      * every mail from then on.
      */
@@ -2252,7 +2252,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // to scan itself and hand back the first unseen code. One scan per call —
     // the polling loop lives in the content script, because an MV3 worker can
     // be torn down mid-wait and a loop parked here would die with it.
-    case "vrevamp_get_otp":
+    case "vtopext_get_otp":
       (async () => {
         try {
           // Only the VTOP login pages may trigger a mail read. http is allowed
@@ -2314,7 +2314,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           // value is a /mail/u/<n>/ prefix, so it survives navigation within
           // the mailbox. Fall back to all tabs when the learned one isn't
           // open, otherwise a closed tab would break the feature outright.
-          const learnedKey = "vrevamp_otp_mailbox";
+          const learnedKey = "vtopext_otp_mailbox";
           const learned = (await chrome.storage.local.get([learnedKey]))[learnedKey];
           const preferred = learned
             ? tabs.filter((t) => (t.url || "").startsWith(learned))
@@ -2384,7 +2384,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // which only appears when a client id is configured and consent is what's
     // missing. prompt=select_account is what puts the STUDENT mailbox in
     // reach — the profile's primary account is the personal one.
-    case "vrevamp_gmail_signin":
+    case "vtopext_gmail_signin":
       (async () => {
         try {
           const from = (sender && sender.url) || "";
@@ -2431,7 +2431,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       });
       record.params = params;
     }
-    chrome.storage.local.set({ vrevamp_detail_request: record });
+    chrome.storage.local.set({ vtopext_detail_request: record });
   },
   { urls: VTOP_URLS },
   ["requestBody"]
@@ -2470,7 +2470,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       if (EXAM_SEARCH_AUTH_PARAMS.includes(key)) return;
       params[key] = Array.isArray(value) ? value[0] : value;
     });
-    chrome.storage.local.set({ vrevamp_exam_search_request: { path, params } });
+    chrome.storage.local.set({ vtopext_exam_search_request: { path, params } });
   },
   { urls: VTOP_URLS },
   ["requestBody"]
@@ -2516,7 +2516,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       if (ATTENDANCE_AUTH_PARAMS.includes(key)) return;
       params[key] = Array.isArray(value) ? value[0] : value;
     });
-    chrome.storage.local.set({ vrevamp_leave_request: { path, params } });
+    chrome.storage.local.set({ vtopext_leave_request: { path, params } });
   },
   { urls: VTOP_URLS },
   ["requestBody"]
@@ -2537,7 +2537,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       if (ATTENDANCE_AUTH_PARAMS.includes(key)) return;
       params[key] = Array.isArray(value) ? value[0] : value;
     });
-    chrome.storage.local.set({ vrevamp_attendance_request: { path, params } });
+    chrome.storage.local.set({ vtopext_attendance_request: { path, params } });
   },
   { urls: VTOP_URLS },
   ["requestBody"]

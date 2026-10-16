@@ -96,7 +96,7 @@
       )
       .filter((p) => p && p !== "_")
       .join("-");
-    return `${slug || "vrevamp"}@vitap.ac.in`;
+    return `${slug || "vtopext"}@vitap.ac.in`;
   };
 
   // RFC 5545 §3.6.5: a TZID parameter must reference a VTIMEZONE defined in

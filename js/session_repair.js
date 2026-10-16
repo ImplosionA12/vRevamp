@@ -13,7 +13,7 @@
 // genuinely broken server (404 with AND without cookies) is left alone and
 // this can never turn into a reload loop.
 (() => {
-  const REPAIR_KEY = "vrevamp_session_repairs";
+  const REPAIR_KEY = "vtopext_session_repairs";
   let store = null;
   try {
     store = window.sessionStorage;
@@ -108,7 +108,7 @@
     if (!request || request.message !== "session_dead") return;
     if (typeof window.vrVtop === "undefined" || !window.vrVtop.banner) return;
     // vrVtop's own circuit breaker may have already drawn this banner from the
-    // requests vRevamp sends; banner() is keyed on its id and returns null
+    // requests VTOP Extension sends; banner() is keyed on its id and returns null
     // rather than stacking a second one.
     window.vrVtop.banner(
       `VTOP refused ${request.failures || 3} page requests in a row (HTTP 404) ` +

@@ -236,11 +236,11 @@ if (typeof window.vrAskAddress !== "function") {
   window.vrAskAddress = (anchor, say) =>
     new Promise((resolve) => {
       if (!anchor || !anchor.parentNode) return resolve(null);
-      const existing = anchor.parentNode.querySelector(".vrevamp-mail-ask");
+      const existing = anchor.parentNode.querySelector(".vtopext-mail-ask");
       if (existing) existing.remove();
 
       const wrap = document.createElement("span");
-      wrap.className = "vrevamp-mail-ask";
+      wrap.className = "vtopext-mail-ask";
       wrap.style.cssText = "display:inline-block;margin-left:6px;font-size:12px;";
 
       const field = document.createElement("input");

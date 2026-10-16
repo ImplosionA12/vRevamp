@@ -27,7 +27,7 @@ let pass = 0,
  */
 const B = { subject: 0, held: 1, remaining: 2, safeNow: 3, cat1: 4, cat2: 5, fat: 6, now: 7, title: 8, headers: 9 };
 const READ_BUNK = `(() => {
-  const c = document.getElementById("vrevamp-bunk-table-container");
+  const c = document.getElementById("vtopext-bunk-table-container");
   if (!c) return null;
   const trs = [...c.querySelectorAll("tr")];
   if (!trs.length) return null;
@@ -113,7 +113,7 @@ const initScript = (fixedMs, storageSeed) => `
             if (cb) cb({ ok: false, error: "that doesn't look like an email address" });
             return;
           }
-          window.__storage.vrevamp_reminder_email = a;
+          window.__storage.vtopext_reminder_email = a;
           if (cb) cb({ ok: true, address: a });
           return;
         }
@@ -121,7 +121,7 @@ const initScript = (fixedMs, storageSeed) => `
           // relay mode with nobody to write to yet: the worker answers
           // need_address and the page must ask, not fail
           // (no backticks in this comment - the whole shim is a template literal)
-          if (window.__mailNeedsAddress && !m.to && !window.__storage.vrevamp_reminder_email) {
+          if (window.__mailNeedsAddress && !m.to && !window.__storage.vtopext_reminder_email) {
             if (cb) cb({ ok: false, to: null, error: "need_address" });
             return;
           }
@@ -138,7 +138,7 @@ const initScript = (fixedMs, storageSeed) => `
                     // the worker echoes back the address it actually used, so
                     // the button can name it — students routinely have two
                     // Google accounts and guess wrong about which one was used
-                    to: m.to || window.__storage.vrevamp_reminder_email ||
+                    to: m.to || window.__storage.vtopext_reminder_email ||
                       window.__mailTo || "student@vitapstudent.ac.in",
                     error: null,
                   }
@@ -148,7 +148,7 @@ const initScript = (fixedMs, storageSeed) => `
         if (m && m.message === "get_reminder_email") {
           // what the worker knows: the saved address, and that mail goes
           // through the extension's own relay (no Google sign-in)
-          if (cb) cb({ address: window.__storage.vrevamp_reminder_email || null, relay: true });
+          if (cb) cb({ address: window.__storage.vtopext_reminder_email || null, relay: true });
           return;
         }
         if (m && m.message === "gcal_template_import") {
@@ -257,7 +257,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("nav_bar_change"));
     await delay(1200);
     const text = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-next-class");
+      const el = document.getElementById("vtopext-next-class");
       return el ? el.textContent : null;
     });
     ok("card rendered", !!text, text || "no card");
@@ -285,7 +285,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         fixedMs: fixed,
         storage: {
           "timeTable-V1": timetable,
-          vrevamp_exam_schedule: { semester: "Fall Semester 2026-27", exams },
+          vtopext_exam_schedule: { semester: "Fall Semester 2026-27", exams },
         },
       });
       await inject(p, [
@@ -297,7 +297,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await p.evaluate(() => window.__dispatch("nav_bar_change"));
       await delay(1200);
       const out = await p.evaluate(() => {
-        const el = document.getElementById("vrevamp-next-class");
+        const el = document.getElementById("vtopext-next-class");
         return el ? el.textContent : null;
       });
       await p.close();
@@ -378,9 +378,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("exam_grade"));
     await delay(700); // build is debounced 400ms
 
-    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vrevamp-cgpa-sim")));
+    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vtopext-cgpa-sim")));
     const rowCells = await page.evaluate(() =>
-      [...document.querySelectorAll("#vrevamp-cgpa-sim table tr")]
+      [...document.querySelectorAll("#vtopext-cgpa-sim table tr")]
         .map((tr) => [...tr.children].map((td) => td.textContent.trim()))
         .filter((c) => /CSE1005|MAT2001/.test(c[0] || ""))
     );
@@ -390,7 +390,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       JSON.stringify(rowCells.map((c) => c[1]))
     );
     const bodyText = () =>
-      page.evaluate(() => document.getElementById("vrevamp-sim-body").textContent);
+      page.evaluate(() => document.getElementById("vtopext-sim-body").textContent);
     let text = await bodyText();
     ok("current semester GPA = 8.57", /Current semester GPA:\s*8\.57/.test(text), text.slice(0, 120));
     ok(
@@ -402,7 +402,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     // change CSE1005 A -> S (10): (40+24)/7 = 9.142
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("#vrevamp-cgpa-sim select")[0];
+      const sel = document.querySelectorAll("#vtopext-cgpa-sim select")[0];
       sel.value = "S";
       sel.dispatchEvent(new Event("change"));
     });
@@ -412,7 +412,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // CGPA mode folds the delta into the page's CGPA Details box:
     // (8.5*27 - 60 + 64)/27 = 8.648 -> 8.65
     await page.evaluate(() => {
-      [...document.querySelectorAll("#vrevamp-sim-body button")]
+      [...document.querySelectorAll("#vtopext-sim-body button")]
         .find((b) => b.textContent === "Cumulative CGPA")
         .click();
     });
@@ -450,11 +450,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         });
         await new Promise((r) => setTimeout(r, 900));
         // now change a grade, as the student would
-        const sel = document.querySelector("select.vrevamp-gh-select:not([disabled])");
+        const sel = document.querySelector("select.vtopext-gh-select:not([disabled])");
         sel.value = sel.value === "S" ? "A" : "S";
         sel.dispatchEvent(new Event("change", { bubbles: true }));
         await new Promise((r) => setTimeout(r, 300));
-        return document.getElementById("vrevamp-gradehist-body").textContent;
+        return document.getElementById("vtopext-gradehist-body").textContent;
       });
       ok(
         "an empty re-parse cannot leave the calculator with no courses",
@@ -474,14 +474,14 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await p2.evaluate(() => window.__dispatch("exam_grade"));
       await delay(700);
       const before = await p2.evaluate(
-        () => !!document.getElementById("vrevamp-gradehist-calc")
+        () => !!document.getElementById("vtopext-gradehist-calc")
       );
       const gone = await p2.evaluate(async () => {
         document.querySelectorAll("table").forEach((t) => t.remove());
         await new Promise((r) => setTimeout(r, 900)); // build is debounced 400ms
         return {
-          panel: !!document.getElementById("vrevamp-gradehist-calc"),
-          bar: !!document.getElementById("vrevamp-gh-bar"),
+          panel: !!document.getElementById("vtopext-gradehist-calc"),
+          bar: !!document.getElementById("vtopext-gh-bar"),
         };
       });
       ok(
@@ -527,7 +527,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("exam_grade"));
     await delay(700); // build is debounced 400ms
 
-    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vrevamp-gradehist-calc")));
+    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vtopext-gradehist-calc")));
 
     /* ---- and it must LEAVE when the table it describes does ----
      *
@@ -544,7 +544,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
      */
 
     const sels = await page.evaluate(() =>
-      [...document.querySelectorAll("select.vrevamp-gh-select")].map((s) => ({
+      [...document.querySelectorAll("select.vtopext-gh-select")].map((s) => ({
         value: s.value,
         disabled: s.disabled,
         // the select must sit in the same cell as the grade it belongs to
@@ -565,7 +565,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
 
     const bodyText = () =>
-      page.evaluate(() => document.getElementById("vrevamp-gradehist-body").textContent);
+      page.evaluate(() => document.getElementById("vtopext-gradehist-body").textContent);
     let text = await bodyText();
     ok("baseline is the page's official CGPA (8.50)", /Current CGPA:\s*8\.50/.test(text), text.slice(0, 120));
     ok("counts 3 of 4 rows towards the CGPA", /3 of 4 rows/.test(text), text.slice(0, 200));
@@ -573,7 +573,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // change the FAILED attempt (row 1, F) to B: delta = (8-0)*4 = +32
     // projected = (8.5*27 + 32)/27 = 9.685 -> 9.69
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("select.vrevamp-gh-select")[0];
+      const sel = document.querySelectorAll("select.vtopext-gh-select")[0];
       sel.value = "B";
       sel.dispatchEvent(new Event("change"));
     });
@@ -583,7 +583,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ok(
       "only the changed row is tinted",
       await page.evaluate(() => {
-        const rows = [...document.querySelectorAll("tr[data-vrevamp-gh]")];
+        const rows = [...document.querySelectorAll("tr[data-vtopext-gh]")];
         return rows.filter((r) => r.style.background).length === 1;
       })
     );
@@ -593,7 +593,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // 29 rows below the dropdown just changed — correct, and off screen. The
     // projected CGPA now also rides in a fixed bar that stays with the user.
     const bar = await page.evaluate(() => {
-      const b = document.getElementById("vrevamp-gh-bar");
+      const b = document.getElementById("vtopext-gh-bar");
       if (!b) return null;
       const cs = getComputedStyle(b);
       return {
@@ -630,21 +630,21 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "reset clears the bar and the tints",
       await page.evaluate(
         () =>
-          !document.getElementById("vrevamp-gh-bar") &&
-          [...document.querySelectorAll("tr[data-vrevamp-gh]")].every((r) => !r.style.background)
+          !document.getElementById("vtopext-gh-bar") &&
+          [...document.querySelectorAll("tr[data-vtopext-gh]")].every((r) => !r.style.background)
       )
     );
 
     // put the change back for the assertions that follow
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("select.vrevamp-gh-select")[0];
+      const sel = document.querySelectorAll("select.vtopext-gh-select")[0];
       sel.value = "B";
       sel.dispatchEvent(new Event("change"));
     });
 
     // the SECOND CSE1005 attempt must be independent of the first
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("select.vrevamp-gh-select")[1];
+      const sel = document.querySelectorAll("select.vtopext-gh-select")[1];
       sel.value = "S";
       sel.dispatchEvent(new Event("change"));
     });
@@ -657,7 +657,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
 
     await page.evaluate(() => {
-      [...document.querySelectorAll("#vrevamp-gradehist-body button")]
+      [...document.querySelectorAll("#vtopext-gradehist-body button")]
         .find((b) => /Reset changes/.test(b.textContent))
         .click();
     });
@@ -666,8 +666,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ok(
       "reset clears every select and tint",
       await page.evaluate(() => {
-        const sels = [...document.querySelectorAll("select.vrevamp-gh-select")];
-        const rows = [...document.querySelectorAll("tr[data-vrevamp-gh]")];
+        const sels = [...document.querySelectorAll("select.vtopext-gh-select")];
+        const rows = [...document.querySelectorAll("tr[data-vtopext-gh]")];
         return sels[0].value === "F" && sels[1].value === "B" &&
           rows.every((r) => !r.style.background);
       })
@@ -702,7 +702,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, ["js/shared/click.js", "js/grade_history_calc.js"]);
     await delay(700);
     const picked = await page.evaluate(() => {
-      const rows = [...document.querySelectorAll("tr[data-vrevamp-gh]")];
+      const rows = [...document.querySelectorAll("tr[data-vtopext-gh]")];
       return {
         n: rows.length,
         table: rows.length ? rows[0].closest("table").id : null,
@@ -721,7 +721,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     // (9*4 + 8*3 + 10*3)/10 = 9.0
     const text = await page.evaluate(() =>
-      document.getElementById("vrevamp-gradehist-body").textContent
+      document.getElementById("vtopext-gradehist-body").textContent
     );
     ok("CGPA computed over the outer table = 9.00", /Current CGPA:\s*9\.00/.test(text), text.slice(0, 140));
     await page.close();
@@ -741,16 +741,16 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, ["js/shared/click.js", "js/grade_history_calc.js"]);
     await delay(700);
     let text = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-gradehist-body");
+      const el = document.getElementById("vtopext-gradehist-body");
       return el ? el.textContent : null;
     });
     ok("computed baseline CGPA = 8.67", !!text && /Current CGPA:\s*8\.67/.test(text), (text || "").slice(0, 120));
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("select.vrevamp-gh-select")[1];
+      const sel = document.querySelectorAll("select.vtopext-gh-select")[1];
       sel.value = "S";
       sel.dispatchEvent(new Event("change"));
     });
-    text = await page.evaluate(() => document.getElementById("vrevamp-gradehist-body").textContent);
+    text = await page.evaluate(() => document.getElementById("vtopext-gradehist-body").textContent);
     // (52 + (10-8)*2)/6 = 9.333 -> 9.33
     ok("projected from the computed baseline = 9.33", /Projected CGPA:\s*9\.33/.test(text), text.slice(0, 200));
     ok(
@@ -776,7 +776,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("exam_grade"));
     await delay(700);
     const panelText = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-cgpa-sim");
+      const el = document.getElementById("vtopext-cgpa-sim");
       return el ? el.textContent : null;
     });
     ok("panel still renders without a grade table", !!panelText, panelText ? "" : "no panel");
@@ -814,8 +814,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.setContent(html);
     await shim(page, {
       storage: {
-        vrevamp_grade_credits: { ECE2015: 3, SWE2006: 4 },
-        vrevamp_cgpa_details: { cgpa: 8.28, creditsEarned: 95 },
+        vtopext_grade_credits: { ECE2015: 3, SWE2006: 4 },
+        vtopext_cgpa_details: { cgpa: 8.28, creditsEarned: 95 },
       },
     });
     await page.addScriptTag({ content: `
@@ -832,9 +832,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("exam_grade"));
     await delay(2000); // initial build + silent cutoff fetch + rebuild
 
-    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vrevamp-cgpa-sim")));
+    ok("panel rendered", await page.evaluate(() => !!document.getElementById("vtopext-cgpa-sim")));
     const rowCells = await page.evaluate(() =>
-      [...document.querySelectorAll("#vrevamp-cgpa-sim table tr")]
+      [...document.querySelectorAll("#vtopext-cgpa-sim table tr")]
         .map((tr) => [...tr.children].map((td) => td.textContent.trim()))
         .filter((c) => /ECE2015|SWE2006/.test(c[0] || ""))
     );
@@ -854,17 +854,17 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       rowCells[1][4]
     );
     const bodyText = () =>
-      page.evaluate(() => document.getElementById("vrevamp-sim-body").textContent);
+      page.evaluate(() => document.getElementById("vtopext-sim-body").textContent);
     let text = await bodyText();
     // 3cr B(8) + 4cr A(9) = 60/7 = 8.571
     ok("semester GPA from cached credits = 8.57", /Current semester GPA:\s*8\.57/.test(text), text.slice(0, 140));
 
     // ECE2015 B -> A, CGPA mode: (8.28*95 - 60 + 63)/95 = 8.311 -> 8.31
     await page.evaluate(() => {
-      const sel = document.querySelectorAll("#vrevamp-cgpa-sim select")[0];
+      const sel = document.querySelectorAll("#vtopext-cgpa-sim select")[0];
       sel.value = "A";
       sel.dispatchEvent(new Event("change"));
-      [...document.querySelectorAll("#vrevamp-sim-body button")]
+      [...document.querySelectorAll("#vtopext-sim-body button")]
         .find((b) => b.textContent === "Cumulative CGPA")
         .click();
     });
@@ -895,20 +895,20 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(700);
     ok(
       "no panel on the Grade History page",
-      await page.evaluate(() => !document.getElementById("vrevamp-cgpa-sim"))
+      await page.evaluate(() => !document.getElementById("vtopext-cgpa-sim"))
     );
     const stored = await page.evaluate(() => window.__storage);
     ok(
       "credits harvested to storage",
-      !!stored.vrevamp_grade_credits &&
-        stored.vrevamp_grade_credits.ECE2015 === 3 &&
-        stored.vrevamp_grade_credits.SWE2006 === 4,
-      JSON.stringify(stored.vrevamp_grade_credits)
+      !!stored.vtopext_grade_credits &&
+        stored.vtopext_grade_credits.ECE2015 === 3 &&
+        stored.vtopext_grade_credits.SWE2006 === 4,
+      JSON.stringify(stored.vtopext_grade_credits)
     );
     ok(
       "CGPA details harvested to storage",
-      !!stored.vrevamp_cgpa_details && stored.vrevamp_cgpa_details.cgpa === 8.28,
-      JSON.stringify(stored.vrevamp_cgpa_details)
+      !!stored.vtopext_cgpa_details && stored.vtopext_cgpa_details.cgpa === 8.28,
+      JSON.stringify(stored.vtopext_cgpa_details)
     );
     await page.close();
   }
@@ -927,7 +927,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     };
     const storage = {
       "timeTable-V1": timetable,
-      "vrevamp_calendar_fall semester 2025-26": { lastInstructional: "2025-11-20", fetchedAt: Date.now() },
+      "vtopext_calendar_fall semester 2025-26": { lastInstructional: "2025-11-20", fetchedAt: Date.now() },
     };
     const page = await newPage(browser);
     await page.setContent("<body><div id='main-section'><div id='loadMyFragment'></div></div></body>");
@@ -943,8 +943,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
     await delay(1200);
-    ok("export button rendered", await page.evaluate(() => !!document.getElementById("vrevamp-timetable-ics")));
-    await page.evaluate(() => document.getElementById("vrevamp-timetable-ics").click());
+    ok("export button rendered", await page.evaluate(() => !!document.getElementById("vtopext-timetable-ics")));
+    await page.evaluate(() => document.getElementById("vtopext-timetable-ics").click());
     await delay(300);
     const ics = await page.evaluate(() => window.__downloads[0] || null);
     const eventCount = ics ? (ics.match(/BEGIN:VEVENT/g) || []).length : 0;
@@ -1002,11 +1002,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           header: ["Start - End", "08:00 - 08:50"],
           data: [{ day: "MON", theory: ["", "TA1-CSE1005-ETH-G14-CB-ALL"], lab: ["", ""] }],
         },
-        "vrevamp_calendar_fall semester 2025-26": {
+        "vtopext_calendar_fall semester 2025-26": {
           lastInstructional: "2025-11-20",
           fetchedAt: Date.now(),
         },
-        vrevamp_exam_schedule: {
+        vtopext_exam_schedule: {
           fetchedAt: Date.now(),
           semester: "Fall Semester 2025-26",
           exams: [
@@ -1033,7 +1033,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
     await delay(1200);
-    await page.evaluate(() => document.getElementById("vrevamp-timetable-ics").click());
+    await page.evaluate(() => document.getElementById("vtopext-timetable-ics").click());
     await delay(300);
     const ics = await page.evaluate(() => window.__downloads[0] || null);
     const n = ics ? (ics.match(/BEGIN:VEVENT/g) || []).length : 0;
@@ -1058,11 +1058,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "button reports what it wrote",
       /exam\(s\)/.test(
         await page.evaluate(
-          () => document.getElementById("vrevamp-timetable-ics").nextElementSibling?.textContent || ""
+          () => document.getElementById("vtopext-timetable-ics").nextElementSibling?.textContent || ""
         )
       ),
       await page.evaluate(
-        () => document.getElementById("vrevamp-timetable-ics").nextElementSibling?.textContent || ""
+        () => document.getElementById("vtopext-timetable-ics").nextElementSibling?.textContent || ""
       )
     );
     await page.close();
@@ -1087,18 +1087,18 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const mondays = ["2025-10-06", "2025-10-13", "2025-10-27", "2025-11-03", "2025-11-10", "2025-11-17"];
     const storage = {
       "timeTable-V1": timetable,
-      "vrevamp_calendar_fall semester 2025-26": {
+      "vtopext_calendar_fall semester 2025-26": {
         lastInstructional: "2025-11-20",
         instructionalDays: mondays,
         holidays: ["2025-10-20"],
         fetchedAt: fixed,
       },
-      vrevamp_attendance_summary: {
+      vtopext_attendance_summary: {
         subjects: [{ name: "CSE1005 - Data Structures - Theory Only", code: "CSE1005" }],
       },
       // cached by the Exam Schedule page: one upcoming FAT (after the last
       // instructional day), one past CAT2, one CAT1 without a published time
-      vrevamp_exam_schedule: {
+      vtopext_exam_schedule: {
         fetchedAt: fixed,
         semester: "Fall Semester 2025-26",
         exams: [
@@ -1142,8 +1142,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ]);
     await page.evaluate(() => window.__dispatch("timetable_view_page"));
     await delay(1200);
-    ok("import button rendered", await page.evaluate(() => !!document.getElementById("vrevamp-timetable-gcal")));
-    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    ok("import button rendered", await page.evaluate(() => !!document.getElementById("vtopext-timetable-gcal")));
+    await page.evaluate(() => document.getElementById("vtopext-timetable-gcal").click());
     await delay(2500);
     const posts = gcal.filter((g) => g.method === "POST");
     const dels = gcal.filter((g) => g.method === "DELETE");
@@ -1203,7 +1203,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         /Seat: R3C1 · No\. 5/.test(singles[0].description),
       singles[0] && JSON.stringify(singles[0].description)
     );
-    const note = await page.evaluate(() => document.querySelector(".vrevamp-tt-note")?.textContent);
+    const note = await page.evaluate(() => document.querySelector(".vtopext-tt-note")?.textContent);
     ok(
       "inline confirmation with class/exam counts, end date + replaced count",
       note === "✓ 3 event(s) in Google Calendar — 2 weekly class(es) + 1 exam(s), classes until 2025-11-20, replaced 1 old",
@@ -1211,8 +1211,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok(
       "events tagged for future replacement",
-      !!theory && theory.extendedProperties?.private?.vrevamp === "timetable" &&
-        singles.length === 1 && singles[0].extendedProperties?.private?.vrevamp === "timetable"
+      !!theory && theory.extendedProperties?.private?.vtopext === "timetable" &&
+        singles.length === 1 && singles[0].extendedProperties?.private?.vtopext === "timetable"
     );
 
     // dead upstream OAuth client (what every user of the published build
@@ -1228,16 +1228,16 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       window.open = (u) => { window.__opened.push(u); return null; };
       window.__downloads.length = 0;
     });
-    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await page.evaluate(() => document.getElementById("vtopext-timetable-gcal").click());
     await delay(800);
     const fb = await page.evaluate(() => {
-      const panel = document.getElementById("vrevamp-tt-links");
+      const panel = document.getElementById("vtopext-tt-links");
       return {
         links: panel ? [...panel.querySelectorAll("a")].map((a) => ({ t: a.textContent, h: a.href })) : null,
         dl: window.__downloads[0] || null,
         opened: window.__opened,
         sent: (window.__sent || []).map((m) => m && m.message),
-        note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
+        note: document.getElementById("vtopext-timetable-gcal").nextElementSibling?.textContent || "",
       };
     });
     ok(
@@ -1273,7 +1273,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     // clicking a link marks it done (grey + ✓) so the user can keep track
     const clicked = await page.evaluate(() => {
-      const a = document.querySelector("#vrevamp-tt-links a");
+      const a = document.querySelector("#vtopext-tt-links a");
       a.addEventListener("click", (e) => e.preventDefault()); // don't navigate the test page
       a.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       return { t: a.textContent, op: a.style.opacity };
@@ -1299,13 +1299,13 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // success note, no manual panel needed
     await page.evaluate(() => {
       window.__autoImportSaves = 3;
-      document.getElementById("vrevamp-tt-links")?.remove();
+      document.getElementById("vtopext-tt-links")?.remove();
     });
-    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await page.evaluate(() => document.getElementById("vtopext-timetable-gcal").click());
     await delay(800);
     const auto = await page.evaluate(() => ({
-      note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
-      panel: !!document.getElementById("vrevamp-tt-links"),
+      note: document.getElementById("vtopext-timetable-gcal").nextElementSibling?.textContent || "",
+      panel: !!document.getElementById("vtopext-tt-links"),
     }));
     ok(
       "worker auto-import → ✓ 3/3 saved note, no manual panel",
@@ -1322,10 +1322,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => {
       window.__autoImportSaves = 2;
     });
-    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await page.evaluate(() => document.getElementById("vtopext-timetable-gcal").click());
     await delay(500);
     const warned = await page.evaluate(() => ({
-      note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
+      note: document.getElementById("vtopext-timetable-gcal").nextElementSibling?.textContent || "",
       sent: (window.__sent || []).filter((m) => m && m.message === "gcal_template_import").length,
     }));
     ok(
@@ -1339,11 +1339,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // clicking again is the confirmation, and then it proceeds as before:
     // partial auto-import (e.g. one editor never loaded) counts what saved and
     // shows the panel so the rest can be finished by hand
-    await page.evaluate(() => document.getElementById("vrevamp-timetable-gcal").click());
+    await page.evaluate(() => document.getElementById("vtopext-timetable-gcal").click());
     await delay(800);
     const partial = await page.evaluate(() => ({
-      note: document.getElementById("vrevamp-timetable-gcal").nextElementSibling?.textContent || "",
-      links: document.querySelectorAll("#vrevamp-tt-links a").length,
+      note: document.getElementById("vtopext-timetable-gcal").nextElementSibling?.textContent || "",
+      links: document.querySelectorAll("#vtopext-tt-links a").length,
     }));
     ok(
       "partial auto-import → ✓ 2/3 note + one-tap panel to finish manually",
@@ -1481,7 +1481,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(2500);
 
     const banner = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-forecast-banner");
+      const el = document.getElementById("vtopext-forecast-banner");
       return el ? el.textContent : null;
     });
     ok("forecast banner rendered", !!banner, banner ? banner.slice(0, 80) + "…" : "none");
@@ -1497,7 +1497,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // bunkable-before-CAT-1 cells should be numeric (calendar parsed)
     const calendarWorked = await page.evaluate(() => {
       const all = window.__storage;
-      const cal = Object.keys(all).find((k) => k.startsWith("vrevamp_calendar_"));
+      const cal = Object.keys(all).find((k) => k.startsWith("vtopext_calendar_"));
       return cal ? all[cal] : null;
     });
     ok("academic calendar parsed & cached", !!calendarWorked && calendarWorked.cat1 === "2025-07-10" && calendarWorked.fat === "2025-07-20",
@@ -1523,17 +1523,17 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
      * 15-Jul is FIVE teaching days where counting calendar days says eleven.
      * That gap is the entire feature.
      */
-    const planner = await page.evaluate(() => !!document.getElementById("vrevamp-skip-planner"));
+    const planner = await page.evaluate(() => !!document.getElementById("vtopext-skip-planner"));
     ok("the skip planner renders under the bunk table", planner, String(planner));
     if (planner) {
       await page.evaluate(() => {
-        document.getElementById("vrevamp-skip-from").value = "2025-07-05";
-        document.getElementById("vrevamp-skip-to").value = "2025-07-15";
+        document.getElementById("vtopext-skip-from").value = "2025-07-05";
+        document.getElementById("vtopext-skip-to").value = "2025-07-15";
       });
       await page.click('[data-vr-action="skip-plan"]');
       await delay(400);
       const result = await page.evaluate(() => {
-        const el = document.getElementById("vrevamp-skip-result");
+        const el = document.getElementById("vtopext-skip-result");
         return el
           ? { text: el.textContent.replace(/\s+/g, " "), rows: el.querySelectorAll("tbody tr").length }
           : null;
@@ -1568,13 +1568,13 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
        * and never lower than the dip beside it.
        */
       await page.evaluate(() => {
-        document.getElementById("vrevamp-skip-from").value = "2025-07-05";
-        document.getElementById("vrevamp-skip-to").value = "2025-07-08";
+        document.getElementById("vtopext-skip-from").value = "2025-07-05";
+        document.getElementById("vtopext-skip-to").value = "2025-07-08";
       });
       await page.click('[data-vr-action="skip-plan"]');
       await delay(400);
       const pair = await page.evaluate(() =>
-        [...document.querySelectorAll("#vrevamp-skip-result tbody tr")].map((tr) => {
+        [...document.querySelectorAll("#vtopext-skip-result tbody tr")].map((tr) => {
           const cells = [...tr.cells].map((c) => c.textContent);
           const num = (t) => {
             const m = /(\d+(?:\.\d+)?)%/.exec(t || "");
@@ -1596,8 +1596,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       ok(
         "the dip is labelled as the low point, not as the outcome",
         await page.evaluate(() =>
-          /Lowest it gets/.test(document.getElementById("vrevamp-skip-result").textContent) ||
-          /Lowest it gets/.test(document.getElementById("vrevamp-skip-planner").textContent)
+          /Lowest it gets/.test(document.getElementById("vtopext-skip-result").textContent) ||
+          /Lowest it gets/.test(document.getElementById("vtopext-skip-planner").textContent)
         ),
         "header text"
       );
@@ -1751,7 +1751,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(2500);
 
     const banner = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-forecast-banner");
+      const el = document.getElementById("vtopext-forecast-banner");
       return el ? el.textContent : null;
     });
     ok("banner rendered (new layout)", !!banner, banner ? banner.slice(0, 80) + "…" : "none");
@@ -1901,7 +1901,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const vtopStale = await page.evaluate(() => {
       const row = [...document.querySelectorAll(".table-responsive tbody tr")]
         .find((r) => /PHY1999/.test(r.innerText));
-      const flag = row && row.querySelector(".vrevamp-stale-flag");
+      const flag = row && row.querySelector(".vtopext-stale-flag");
       return flag ? flag.textContent : null;
     });
     ok(
@@ -1911,7 +1911,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     // richer snapshot for the home card / marks page
     const snap = await page.evaluate(
-      () => (window.__storage.vrevamp_attendance_summary || {}).subjects || []
+      () => (window.__storage.vtopext_attendance_summary || {}).subjects || []
     );
     const phySnap = snap.find((s) => s.code === "PHY1999");
     ok(
@@ -1921,14 +1921,14 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     // what-if simulator: open CSE's row, skip one -> 8/11 = 72.7%
     const whatIf = await page.evaluate(() => {
-      const row = [...document.querySelectorAll("#vrevamp-bunk-table-container tr")]
+      const row = [...document.querySelectorAll("#vtopext-bunk-table-container tr")]
         .find((r) => /CSE1005/.test(r.textContent));
       const cell = row.cells[0];
       cell.click();
       const skipBtn = [...cell.querySelectorAll("button")]
         .find((b) => b.textContent === "Skip +1");
       skipBtn.click();
-      const sim = cell.querySelector(".vrevamp-whatif");
+      const sim = cell.querySelector(".vtopext-whatif");
       return { visible: sim.style.display !== "none", text: sim.textContent };
     });
     ok(
@@ -1938,7 +1938,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     const cal = await page.evaluate(() => {
       const all = window.__storage;
-      const k = Object.keys(all).find((x) => x.startsWith("vrevamp_calendar_"));
+      const k = Object.keys(all).find((x) => x.startsWith("vtopext_calendar_"));
       return k ? all[k] : null;
     });
     ok(
@@ -2126,7 +2126,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     </div></body>`);
     await shim(page, {
       storage: {
-        vrevamp_attendance_summary: {
+        vtopext_attendance_summary: {
           fetchedAt: Date.now(),
           subjects: [{ name: "SWE2007 - Embedded Lab", code: "SWE2007", pct: 50, safeNow: 0, unit: "lab(s)" }],
         },
@@ -2136,7 +2136,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("mark_view_page"));
     await delay(500);
     const totals = await page.evaluate(() => {
-      const tr = document.querySelector(".vrevamp-marks-total");
+      const tr = document.querySelector(".vtopext-marks-total");
       return tr ? [...tr.children].map((c) => c.textContent.trim()) : null;
     });
     ok(
@@ -2159,11 +2159,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => window.__dispatch("mark_view_page"));
     await delay(300);
     const rowCount = await page.evaluate(
-      () => document.querySelectorAll(".vrevamp-marks-total").length
+      () => document.querySelectorAll(".vtopext-marks-total").length
     );
     ok("totals row not duplicated on message re-fire", rowCount === 1, `rows=${rowCount}`);
     const badge = await page.evaluate(() => {
-      const b = document.querySelector("[data-vrevamp-att-flag]");
+      const b = document.querySelector("[data-vtopext-att-flag]");
       return b ? b.textContent : null;
     });
     ok(
@@ -2245,7 +2245,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           selected: sel.options[sel.selectedIndex].text,
           changes: window.__semChanges,
           rows: document.querySelectorAll(".table-responsive tbody tr").length,
-          alert: (document.querySelector(".vrevamp-bunk-cell") || {}).textContent || null,
+          alert: (document.querySelector(".vtopext-bunk-cell") || {}).textContent || null,
         };
       });
 
@@ -2400,11 +2400,11 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const state = () =>
       page.evaluate(() => ({
         reloads: window.__reloads,
-        counter: sessionStorage.getItem("vrevamp_login_reloads"),
+        counter: sessionStorage.getItem("vtopext_login_reloads"),
         blockHasImg: !!document.querySelector("#captchaBlock img[src^='data:image/']"),
       }));
     const resetCounter = () =>
-      page.evaluate(() => sessionStorage.removeItem("vrevamp_login_reloads"));
+      page.evaluate(() => sessionStorage.removeItem("vtopext_login_reloads"));
 
     // --- the role picker is left completely alone ---
     await page.goto("https://vtop.test/picker");
@@ -2729,7 +2729,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // 📅 one-tap template links need no OAuth at all — only the upcoming
     // exam with a published window gets one (past + no-time rows skipped)
     const gcalLinks = await page.evaluate(() =>
-      [...document.querySelectorAll(".vrevamp-gcal-link")].map((a) => a.href)
+      [...document.querySelectorAll(".vtopext-gcal-link")].map((a) => a.href)
     );
     ok(
       "📅 one-tap link only on the upcoming published exam",
@@ -2760,7 +2760,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       (gcalLinks[0] || "").slice(0, 180)
     );
 
-    const examCache = await page.evaluate(() => window.__storage.vrevamp_exam_schedule);
+    const examCache = await page.evaluate(() => window.__storage.vtopext_exam_schedule);
     const cachedFat = examCache && examCache.exams && examCache.exams.find((e) => e.type === "FAT" && e.code === "ECE2015");
     const cachedNoTime = examCache && examCache.exams && examCache.exams.find((e) => e.code === "PHY0000");
     ok(
@@ -2788,7 +2788,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(200);
     const dl = await page.evaluate(() => window.__downloads[0] || null);
     const note = await page.evaluate(
-      () => document.querySelector(".vrevamp-exam-note")?.textContent
+      () => document.querySelector(".vtopext-exam-note")?.textContent
     );
     ok("FAT export produced an ICS", !!dl && dl.includes("BEGIN:VCALENDAR"));
     ok(
@@ -2961,21 +2961,21 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // ✉️ is now mailed by the extension itself — no Google sign-in anywhere.
     // With no saved address the ONLY thing missing is where to write, so it asks.
     await page.evaluate(() => {
-      delete window.__storage.vrevamp_reminder_email;
+      delete window.__storage.vtopext_reminder_email;
       window.__sent = [];
       [...document.querySelectorAll("button")]
         .filter((b) => /email me/i.test(b.textContent))[0]
         .click();
     });
     await delay(400);
-    const askShown = await page.evaluate(() => !!document.querySelector(".vrevamp-mail-ask input"));
+    const askShown = await page.evaluate(() => !!document.querySelector(".vtopext-mail-ask input"));
     ok(
       "✉️ with no saved address asks where to send, and schedules nothing yet",
       askShown && !(window_reminders_for(await page.evaluate(() => window.__reminders || {}), "exam-mail:FAT")),
       `ask=${askShown}`
     );
-    await page.fill(".vrevamp-mail-ask input", "me@vitapstudent.ac.in");
-    await page.press(".vrevamp-mail-ask input", "Enter");
+    await page.fill(".vtopext-mail-ask input", "me@vitapstudent.ac.in");
+    await page.press(".vtopext-mail-ask input", "Enter");
     await delay(900);
     const scheduled = await page.evaluate(() => (window.__reminders || {})["exam-mail:FAT"] || []);
     ok(
@@ -3120,7 +3120,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // no repair. This is the click that used to do nothing at all.
       b.click();
       await new Promise((r) => setTimeout(r, 300));
-      const note = document.querySelector(".vrevamp-exam-note");
+      const note = document.querySelector(".vtopext-exam-note");
       return {
         action: b ? b.dataset.vrAction : null,
         type: b ? b.type : null,
@@ -3208,7 +3208,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.mouse.click(aim.x, aim.y);
     await delay(400);
     const pierced = await page.evaluate(() => {
-      const note = document.querySelector(".vrevamp-exam-note");
+      const note = document.querySelector(".vtopext-exam-note");
       return note ? note.textContent : null;
     });
     ok(
@@ -3220,7 +3220,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // and the piercing must stay narrow: an overlay click nowhere near one of
     // our buttons is still just a click on the overlay
     const stray = await page.evaluate(() => {
-      document.querySelectorAll(".vrevamp-exam-note").forEach((n) => n.remove());
+      document.querySelectorAll(".vtopext-exam-note").forEach((n) => n.remove());
       window.__reminders = {};
       return true;
     });
@@ -3231,7 +3231,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       stray &&
         (await page.evaluate(
           () =>
-            !document.querySelector(".vrevamp-exam-note") &&
+            !document.querySelector(".vtopext-exam-note") &&
             Object.keys(window.__reminders || {}).length === 0
         ))
     );
@@ -3278,7 +3278,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         const b = [...document.querySelectorAll("button")].find((x) => /notify me/i.test(x.textContent));
         b.click();
         await new Promise((r) => setTimeout(r, 300));
-        const note = document.querySelector(".vrevamp-exam-note");
+        const note = document.querySelector(".vtopext-exam-note");
         return { submits: window.__submits, note: note ? note.textContent : null };
       });
       ok(
@@ -3381,7 +3381,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok(
       "UID is stable — derived from exam content, not the export timestamp",
-      uids.every((u) => /^vrevamp-exam-CSE1005-\d{8}-\d{4}-/.test(u)),
+      uids.every((u) => /^vtopext-exam-CSE1005-\d{8}-\d{4}-/.test(u)),
       JSON.stringify(uids)
     );
     ok(
@@ -3562,7 +3562,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(800);
 
     const bar = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-da-summary");
+      const el = document.getElementById("vtopext-da-summary");
       if (!el) return null;
       return {
         text: el.textContent,
@@ -3674,7 +3674,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await delay(900);
 
     const seen = await page.evaluate(() => {
-      const bar = document.getElementById("vrevamp-da-summary");
+      const bar = document.getElementById("vtopext-da-summary");
       const cell = [...document.querySelectorAll("td")].find((t) =>
         /No dues|past due|d left/.test(t.textContent)
       );
@@ -3790,7 +3790,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // the transition: pending before, accepted now -> one notification
     {
       const seeded = {
-        vrevamp_leave_status: {
+        vtopext_leave_status: {
           fetchedAt: Date.now() - 1000,
           rows: [{ key: "12|2026-04-11", place: "Hyderabad", from: "2026-04-11", status: PENDING, accepted: false, hasPass: false }],
         },
@@ -3799,7 +3799,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const out = await p.evaluate(async () => {
         const rows = window.vrLeaveParse();
         const fresh = await window.vrLeaveRemember(rows);
-        return { fresh: fresh.length, notes: window.__notes, stored: window.__storage.vrevamp_leave_status.rows[0] };
+        return { fresh: fresh.length, notes: window.__notes, stored: window.__storage.vtopext_leave_status.rows[0] };
       });
       ok(
         "a row that moved from pending to accepted is announced once",
@@ -3891,7 +3891,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // a second pass over unchanged rows says nothing
     {
       const seeded = {
-        vrevamp_leave_status: {
+        vtopext_leave_status: {
           fetchedAt: Date.now() - 1000,
           rows: [{ key: "12|2026-04-11", place: "Hyderabad", from: "2026-04-11", status: OK, accepted: true, hasPass: true }],
         },
@@ -4121,10 +4121,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     // 🔔 local: Chrome notifications for the one un-submitted upcoming DA —
     // evening before (18:00) + due-day morning (08:00), no Google involved
-    await page.click(".vrevamp-da-remind");
+    await page.click(".vtopext-da-remind");
     await delay(300);
     const btnText = await page.evaluate(
-      () => document.querySelector(".vrevamp-da-remind").textContent
+      () => document.querySelector(".vtopext-da-remind").textContent
     );
     const daRems = await page.evaluate(
       () => (window.__reminders || {})["da:MGT1029"] || []
@@ -4145,15 +4145,15 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     // ✉ is mailed by the extension itself: no Google sign-in, no calendar event
     await page.evaluate(() => {
-      window.__storage.vrevamp_reminder_email = "me@vitapstudent.ac.in";
+      window.__storage.vtopext_reminder_email = "me@vitapstudent.ac.in";
       window.__sent = [];
     });
     await page.evaluate(() =>
-      document.querySelectorAll(".vrevamp-da-remind")[1].click()
+      document.querySelectorAll(".vtopext-da-remind")[1].click()
     );
     await delay(700);
     const mailText = await page.evaluate(
-      () => document.querySelectorAll(".vrevamp-da-remind")[1].textContent
+      () => document.querySelectorAll(".vtopext-da-remind")[1].textContent
     );
     const mailRems = await page.evaluate(() => {
       const all = window.__reminders || {};
@@ -4184,8 +4184,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const daLinks = await page.evaluate(() => {
       const t = document.querySelector("table.customTable");
       return {
-        total: document.querySelectorAll(".vrevamp-da-gcal").length,
-        row1: [...t.rows[1].cells[7].querySelectorAll(".vrevamp-da-gcal")].map(
+        total: document.querySelectorAll(".vtopext-da-gcal").length,
+        row1: [...t.rows[1].cells[7].querySelectorAll(".vtopext-da-gcal")].map(
           (a) => ({ t: a.textContent, href: a.href, target: a.target })
         ),
       };
@@ -4211,7 +4211,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
      * upload" alone reads like everything else is fine.
      */
     const barMixed = await page.evaluate(() => {
-      const bar = document.getElementById("vrevamp-da-summary");
+      const bar = document.getElementById("vtopext-da-summary");
       if (!bar) return null;
       return {
         text: bar.textContent,
@@ -4346,7 +4346,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         messages: window.__messages,
         reloads: window.__reloads,
         bounces: window.__bounces,
-        counter: sessionStorage.getItem("vrevamp_session_repairs"),
+        counter: sessionStorage.getItem("vtopext_session_repairs"),
       }));
 
     // live session on a dead URL: /vtop/content answers 200 with cookies →
@@ -4593,7 +4593,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
     await fire(4);
     const banner = await page.evaluate(() => {
-      const b = document.getElementById("vrevamp-session-banner");
+      const b = document.getElementById("vtopext-session-banner");
       return b && {
         text: b.textContent,
         buttons: [...b.querySelectorAll("button")].map((x) => ({
@@ -4619,7 +4619,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // second one to notice must not stack a second red bar
     await fire(9);
     const stacked = await page.evaluate(
-      () => document.querySelectorAll("#vrevamp-session-banner").length
+      () => document.querySelectorAll("#vtopext-session-banner").length
     );
     ok("a second warning does not stack a second banner", stacked === 1, `count=${stacked}`);
 
@@ -4729,7 +4729,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const r = await page.evaluate(() => window.__try(6));
       const state = await page.evaluate(() => ({
         fetches: window.__fetches.length,
-        banner: (document.getElementById("vrevamp-session-banner") || {}).textContent || null,
+        banner: (document.getElementById("vtopext-session-banner") || {}).textContent || null,
       }));
       ok(
         "three refusals in a row stop it — the other three are never sent",
@@ -4781,7 +4781,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await page.evaluate(() => window.__try(1, { probe: true }));
       const state = await page.evaluate(() => ({
         tripped: window.vrVtop.tripped,
-        banner: (document.getElementById("vrevamp-session-banner") || {}).textContent || null,
+        banner: (document.getElementById("vtopext-session-banner") || {}).textContent || null,
       }));
       ok(
         "but twelve, with nothing ever having worked, is a session refusing everything",
@@ -4879,7 +4879,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await shim(page, {
         fixedMs: now,
         storage: {
-          ["vrevamp_calendar_" + sem.toLowerCase()]: {
+          ["vtopext_calendar_" + sem.toLowerCase()]: {
             version: 2,
             semester: sem,
             fetchedAt: now,
@@ -4888,13 +4888,13 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             instructionalDays: [],
             lastInstructional: "2026-12-05",
           },
-          vrevamp_attendance_summary: { fetchedAt: now, semester: sem, subjects },
+          vtopext_attendance_summary: { fetchedAt: now, semester: sem, subjects },
         },
       });
       await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
       await delay(1200);
       const text = await page.evaluate(() => {
-        const el = document.getElementById("vrevamp-home-notices");
+        const el = document.getElementById("vtopext-home-notices");
         return el ? el.textContent : null;
       });
       await page.close();
@@ -4970,7 +4970,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await shim(page, {
         fixedMs: now,
         storage: {
-          vrevamp_attendance_summary: {
+          vtopext_attendance_summary: {
             fetchedAt: now,
             semester: sem,
             subjects: [
@@ -4981,14 +4981,14 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       });
       await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
       await delay(8000);
-      const earlyCard = await page.evaluate(() => !!document.getElementById("vrevamp-home-notices"));
+      const earlyCard = await page.evaluate(() => !!document.getElementById("vtopext-home-notices"));
       await page.evaluate(() => {
         const d = document.createElement("div");
         d.id = "main-section";
         document.body.appendChild(d);
       });
       await delay(2000);
-      const lateCard = await page.evaluate(() => !!document.getElementById("vrevamp-home-notices"));
+      const lateCard = await page.evaluate(() => !!document.getElementById("vtopext-home-notices"));
       ok(
         "a shell that takes 8s to arrive still gets the card",
         earlyCard === false && lateCard === true,
@@ -5042,8 +5042,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       ],
     };
     const storage = {
-      ["vrevamp_calendar_" + oldSem.toLowerCase()]: oldCalendar,
-      vrevamp_attendance_summary: oldSummary,
+      ["vtopext_calendar_" + oldSem.toLowerCase()]: oldCalendar,
+      vtopext_attendance_summary: oldSummary,
     };
 
     // heads-up card: stale note shown, at-risk/safe-skip lines suppressed
@@ -5053,7 +5053,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
     await delay(1200);
     let text = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-home-notices");
+      const el = document.getElementById("vtopext-home-notices");
       return el ? el.textContent : null;
     });
     ok("heads-up card rendered", !!text, text || "no card");
@@ -5070,7 +5070,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await inject(page, ["js/utils/chooseCurrentSem.js", "js/home_notices.js"]);
     await delay(1200);
     text = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-home-notices");
+      const el = document.getElementById("vtopext-home-notices");
       return el ? el.textContent : null;
     });
     ok("mid-semester: no stale note", !!text && !/looks over/.test(text), (text || "").slice(0, 160));
@@ -5098,8 +5098,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         subjects: oldSummary.subjects,
       };
       const staleStore = {
-        ["vrevamp_calendar_" + oldSem.toLowerCase()]: oldCalendar,
-        vrevamp_attendance_summary: stale,
+        ["vtopext_calendar_" + oldSem.toLowerCase()]: oldCalendar,
+        vtopext_attendance_summary: stale,
       };
 
       page = await newPage(browser);
@@ -5121,7 +5121,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           .addEventListener("click", () => (window.__menuClicks += 1));
       });
       const shown = await page.evaluate(() => {
-        const el = document.getElementById("vrevamp-home-notices");
+        const el = document.getElementById("vtopext-home-notices");
         return el ? el.textContent : null;
       });
       ok(
@@ -5165,7 +5165,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
             // the previous real visit: exam-dated fields this response cannot
             // reproduce, on a subject the response DOES carry, so "carried
             // forward" is a claim with something behind it
-            vrevamp_attendance_summary: {
+            vtopext_attendance_summary: {
               fetchedAt: during - 2 * 24 * 60 * 60 * 1000,
               semester: "Fall Semester 2026-27",
               subjects: [
@@ -5182,7 +5182,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
                 },
               ],
             },
-            vrevamp_attendance_request: {
+            vtopext_attendance_request: {
               path: "processViewStudentAttendance",
               params: { semesterSubId: "AP2026272" },
             },
@@ -5226,7 +5226,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           menuClicks: window.__menuClicks,
           posts: window.__posts.map((x) => x.url),
           body: (window.__posts[0] || {}).body || "",
-          cached: window.__storage.vrevamp_attendance_summary,
+          cached: window.__storage.vtopext_attendance_summary,
         }));
         ok(
           "it replays the student's own attendance POST instead of navigating",
@@ -5293,7 +5293,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       ]);
       await delay(1200);
       const noMenu = await page.evaluate(() => {
-        const el = document.getElementById("vrevamp-home-notices");
+        const el = document.getElementById("vtopext-home-notices");
         return {
           text: el ? el.textContent : null,
           button: !!document.querySelector('[data-vr-action="home-attendance-refresh"]'),
@@ -5499,7 +5499,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       {
         const p = await semPage({
           storage: {
-            vrevamp_attendance_summary: { semester: "Fall Semester 2026-27 - AMR" },
+            vtopext_attendance_summary: { semester: "Fall Semester 2026-27 - AMR" },
           },
         });
         await p.evaluate(async () => {
@@ -5600,7 +5600,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ]);
     await delay(1200);
     text = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-next-class");
+      const el = document.getElementById("vtopext-next-class");
       return el ? el.textContent : null;
     });
     ok("legacy timetable + finished sem → stale message", !!text && /last semester/.test(text), text || "no card");
@@ -5622,7 +5622,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ]);
     await delay(1200);
     text = await page.evaluate(() => {
-      const el = document.getElementById("vrevamp-next-class");
+      const el = document.getElementById("vtopext-next-class");
       return el ? el.textContent : null;
     });
     ok("current-sem timetable renders normally", !!text && /Done for the day/.test(text), text || "no card");
@@ -5650,7 +5650,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       ]);
       await delay(1200);
       text = await page.evaluate(() => {
-        const el = document.getElementById("vrevamp-next-class");
+        const el = document.getElementById("vtopext-next-class");
         return el ? el.textContent : null;
       });
       ok(label, !!text && /last semester/.test(text) === expectStale, text || "no card");
@@ -5695,7 +5695,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       await p.evaluate(() => window.__dispatch("nav_bar_change"));
       await delay(1200);
       const t = await p.evaluate(() => {
-        const el = document.getElementById("vrevamp-next-class");
+        const el = document.getElementById("vtopext-next-class");
         return el ? el.textContent : null;
       });
       await p.close();
@@ -5719,7 +5719,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   console.log("\n=== login OTP scanner (webmail tab) ===");
   {
     // Drives js/otp/mail_scan.js the way the service worker does: set the page
-    // text to what a webmail tab renders, send vrevamp_scan_otp, read the code.
+    // text to what a webmail tab renders, send vtopext_scan_otp, read the code.
     const scan = async (bodyText, ignore = []) => {
       const p = await newPage(browser);
       await p.setContent("<body></body>");
@@ -5730,7 +5730,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         (ig) =>
           new Promise((resolve) => {
             const l = window.__listeners[window.__listeners.length - 1];
-            l({ message: "vrevamp_scan_otp", ignore: ig }, {}, resolve);
+            l({ message: "vtopext_scan_otp", ignore: ig }, {}, resolve);
           }),
         ignore
       );
@@ -5748,7 +5748,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         (ig) =>
           new Promise((resolve) => {
             const l = window.__listeners[window.__listeners.length - 1];
-            l({ message: "vrevamp_scan_otp", ignore: ig }, {}, resolve);
+            l({ message: "vtopext_scan_otp", ignore: ig }, {}, resolve);
           }),
         ignore
       );
@@ -5930,7 +5930,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         () =>
           new Promise((resolve) => {
             const l = window.__listeners[window.__listeners.length - 1];
-            l({ message: "vrevamp_scan_otp", ignore: [] }, {}, resolve);
+            l({ message: "vtopext_scan_otp", ignore: [] }, {}, resolve);
           })
       );
       await p.close();
@@ -5993,7 +5993,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         (ao) =>
           new Promise((resolve) => {
             const l = window.__listeners[window.__listeners.length - 1];
-            l({ message: "vrevamp_scan_otp", ignore: [], autoOpen: ao }, {}, resolve);
+            l({ message: "vtopext_scan_otp", ignore: [], autoOpen: ao }, {}, resolve);
           }),
         autoOpen
       );
@@ -6065,7 +6065,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         );
         window.chrome.runtime.sendMessage = (m, cb) => {
           window.__asked.push(m);
-          if (m && m.message === "vrevamp_get_otp") {
+          if (m && m.message === "vtopext_get_otp") {
             cb(r);
             return;
           }
@@ -6089,7 +6089,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         note: document.querySelector("#lf div span")
           ? document.querySelector("#lf div span").textContent
           : "",
-        used: window.__storage["vrevamp_otp_used"],
+        used: window.__storage["vtopext_otp_used"],
       }));
       ok("fills the named OTP field", s.otp === "481920", JSON.stringify(s));
       ok("leaves the captcha and username alone", s.captcha === "" && s.user === "", JSON.stringify(s));
@@ -6120,7 +6120,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const s = await p.evaluate(() => ({
         otp: document.getElementById("otpValue").value,
         note: document.querySelector("#lf div span").textContent,
-        used: window.__storage["vrevamp_otp_used"],
+        used: window.__storage["vtopext_otp_used"],
         signInShown: [...document.querySelectorAll("#lf div button")].some(
           (b) => b.textContent.includes("Sign in to Gmail") && !b.hidden
         ),
@@ -6195,7 +6195,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const s = await p.evaluate(() => ({
         otp: document.getElementById("otpValue").value,
         note: document.querySelector("#lf div span").textContent,
-        used: window.__storage["vrevamp_otp_used"],
+        used: window.__storage["vtopext_otp_used"],
       }));
       ok("an undated code is NOT filled", s.otp === "", JSON.stringify(s));
       ok("says why, and what to do about it", /undated code/.test(s.note), s.note);
@@ -6271,7 +6271,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     {
       // a code filled earlier must not be auto-refilled from a stale mail...
-      const p = await boot(LOGIN_NAMED, { code: null }, { vrevamp_otp_used: ["111111"] });
+      const p = await boot(LOGIN_NAMED, { code: null }, { vtopext_otp_used: ["111111"] });
       const auto = await p.evaluate(() => window.__asked[0].ignore);
       ok("automatic run skips codes already used", JSON.stringify(auto) === '["111111"]', JSON.stringify(auto));
 
@@ -6340,9 +6340,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         window.__signins = 0;
         window.__signedIn = false;
         window.chrome.runtime.sendMessage = (m, cb) => {
-          if (m.message === "vrevamp_get_otp")
+          if (m.message === "vtopext_get_otp")
             return cb({ code: null, sawVtop: false, needsSignIn: !window.__signedIn });
-          if (m.message === "vrevamp_gmail_signin") {
+          if (m.message === "vtopext_gmail_signin") {
             window.__signins++;
             window.__signedIn = true;
             return cb({ ok: true });
@@ -6440,7 +6440,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       [...new Set(missing)].join(", ")
     );
 
-    const extract = ctx.__vrevampOtpFromMailText;
+    const extract = ctx.__vtopextOtpFromMailText;
     if (typeof extract !== "function") {
       ok("worker exposes the Gmail OTP extractor", false, "missing");
     } else {
@@ -6467,7 +6467,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     }
   }
 
-  console.log("\n=== service worker: vrevamp_get_otp message handling ===");
+  console.log("\n=== service worker: vtopext_get_otp message handling ===");
   {
     // The startup test above proves background.js LOADS. This one drives the
     // message it exists to answer, because every bug found on 2026-08-06 lived
@@ -6495,7 +6495,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         });
 
       const store = {};
-      if (opts.token) store.vrevamp_gmail_token = opts.token;
+      if (opts.token) store.vtopext_gmail_token = opts.token;
 
       const chromeStub = {
         runtime: nsProxy({
@@ -6604,7 +6604,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     //    was told "Extension error" instead.
     {
       const { ask } = bootWorker({ tabs: [] });
-      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      const r = await ask({ message: "vtopext_get_otp", ignore: [] });
       ok(
         "no mail tab open → 'no-mail-tab', not a ReferenceError",
         r && r.error === "no-mail-tab",
@@ -6628,7 +6628,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         fetch: () =>
           Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) }),
       });
-      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      const r = await ask({ message: "vtopext_get_otp", ignore: [] });
       ok(
         "signed in + no mail yet → keeps polling, no error",
         !!r && !r.error && r.code === null,
@@ -6649,7 +6649,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           return Promise.resolve({ code: "424242", ageMin: 1, sawVtop: true, host: "mail.google.com" });
         },
       });
-      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      const r = await ask({ message: "vtopext_get_otp", ignore: [] });
       ok(
         "orphaned mail tab is re-injected instead of being called stale",
         calls.executeScript.length === 1,
@@ -6675,7 +6675,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         tabs: [{ id: 9, url: "https://mail.google.com/mail/u/0/#inbox" }],
         sendMessage: () => Promise.reject(new Error("Receiving end does not exist")),
       });
-      const r = await ask({ message: "vrevamp_get_otp", ignore: [] });
+      const r = await ask({ message: "vtopext_get_otp", ignore: [] });
       ok(
         "unreachable mail tab still reports 'mail-tab-stale'",
         !!r && r.error === "mail-tab-stale",
@@ -6687,7 +6687,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       const { ask } = bootWorker({ tabs: [] });
       const r = await new Promise((resolve) => {
-        const listenersRan = ask({ message: "vrevamp_get_otp", ignore: [] });
+        const listenersRan = ask({ message: "vtopext_get_otp", ignore: [] });
         resolve(listenersRan);
       });
       ok("a VTOP sender is accepted", !!r && r.error !== "forbidden", JSON.stringify(r));
@@ -7085,7 +7085,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // Configured: a real token, from our own client, for every caller at once.
     {
       const { ask, calls, store } = bootAuth({
-        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com" },
+        store: { vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com" },
         // userinfo.email rides along in the merged grant purely so the worker
         // can learn WHICH account approved it — that address is what makes
         // every later refresh silent, so the mock has to answer it.
@@ -7114,10 +7114,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
       ok(
         "the token is cached with an expiry, so the next click is silent",
-        !!store.vrevamp_google_app_token &&
-          store.vrevamp_google_app_token.token === "CAL-TOKEN" &&
-          store.vrevamp_google_app_token.exp > Date.now(),
-        JSON.stringify(store.vrevamp_google_app_token)
+        !!store.vtopext_google_app_token &&
+          store.vtopext_google_app_token.token === "CAL-TOKEN" &&
+          store.vtopext_google_app_token.exp > Date.now(),
+        JSON.stringify(store.vtopext_google_app_token)
       );
 
       /*
@@ -7143,8 +7143,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
       ok(
         "the account that consented is remembered, so refreshes can be silent",
-        store.vrevamp_google_account === "student@vitapstudent.ac.in",
-        JSON.stringify(store.vrevamp_google_account)
+        store.vtopext_google_account === "student@vitapstudent.ac.in",
+        JSON.stringify(store.vtopext_google_account)
       );
     }
 
@@ -7159,8 +7159,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       const { ask, calls } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_google_account: "student@vitapstudent.ac.in",
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_google_account: "student@vitapstudent.ac.in",
         },
       });
       await ask({ message: "get_google_token" });
@@ -7189,8 +7189,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       const { ask, calls } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_google_account: "student@vitapstudent.ac.in",
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_google_account: "student@vitapstudent.ac.in",
         },
       });
       const r = await ask({ message: "get_google_token", interactive: true });
@@ -7230,8 +7230,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       let n = 0;
       const { ask, calls } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_google_account: "student@vitapstudent.ac.in",
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_google_account: "student@vitapstudent.ac.in",
         },
         webAuth: (url, details) =>
           details.interactive
@@ -7257,7 +7257,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // First run ever — nobody has chosen an account, so the chooser IS right.
     {
       const { ask, calls } = bootAuth({
-        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com" },
+        store: { vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com" },
         webAuth: (url, details) =>
           details.interactive
             ? Promise.resolve(
@@ -7280,8 +7280,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       const { ask, calls } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_google_granted: true,
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_google_granted: true,
         },
         webAuth: (url, details) =>
           details.interactive
@@ -7319,10 +7319,10 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
       const { ask, calls, store } = bootAuth({
         store: {
-          vrevamp_gmail_client_id: "999-gmail.apps.googleusercontent.com",
+          vtopext_gmail_client_id: "999-gmail.apps.googleusercontent.com",
           // everything the app flow leaves behind after a successful sign-in
-          vrevamp_google_account: "personal@gmail.com",
-          vrevamp_google_granted: true,
+          vtopext_google_account: "personal@gmail.com",
+          vtopext_google_granted: true,
         },
         fetch: gmailFetch,
         webAuth: (url, details) =>
@@ -7332,7 +7332,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
               )
             : Promise.reject(new Error("User interaction required.")),
       });
-      const r = await ask({ message: "vrevamp_gmail_signin" });
+      const r = await ask({ message: "vtopext_gmail_signin" });
       const loud = calls.webAuthFlows.filter((f) => f.interactive)[0] || {};
       ok(
         "the mailbox flow never names the app account (that scans the wrong inbox)",
@@ -7346,15 +7346,15 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
       ok(
         "the chosen mailbox is learned from Gmail itself, per flow, without widening the scope",
-        (store.vrevamp_google_accounts || {}).vrevamp_gmail_token ===
+        (store.vtopext_google_accounts || {}).vtopext_gmail_token ===
           "student@vitapstudent.ac.in" &&
           !/userinfo\.email/.test(loud.url || ""),
-        JSON.stringify(store.vrevamp_google_accounts)
+        JSON.stringify(store.vtopext_google_accounts)
       );
       ok(
         "and learning it leaves the app account alone",
-        store.vrevamp_google_account === "personal@gmail.com",
-        JSON.stringify(store.vrevamp_google_account)
+        store.vtopext_google_account === "personal@gmail.com",
+        JSON.stringify(store.vtopext_google_account)
       );
     }
 
@@ -7363,16 +7363,16 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       const { ask, calls } = bootAuth({
         store: {
-          vrevamp_gmail_client_id: "999-gmail.apps.googleusercontent.com",
-          vrevamp_google_granted: true,
-          vrevamp_google_accounts: { vrevamp_gmail_token: "student@vitapstudent.ac.in" },
+          vtopext_gmail_client_id: "999-gmail.apps.googleusercontent.com",
+          vtopext_google_granted: true,
+          vtopext_google_accounts: { vtopext_gmail_token: "student@vitapstudent.ac.in" },
         },
         webAuth: () =>
           Promise.resolve(
             "https://test-ext-id.chromiumapp.org/#access_token=GMAIL-TOKEN&expires_in=3600"
           ),
       });
-      await ask({ message: "vrevamp_gmail_signin" });
+      await ask({ message: "vtopext_gmail_signin" });
       const first = calls.webAuthFlows[0] || {};
       ok(
         "a remembered mailbox makes the next scan silent, naming that mailbox",
@@ -7394,26 +7394,26 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       const { ask, store } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_google_account: "student@vitapstudent.ac.in",
-          vrevamp_google_accounts: { vrevamp_gmail_token: "student@vitapstudent.ac.in" },
-          vrevamp_google_granted: true,
-          vrevamp_google_app_token: { token: "OLD", exp: Date.now() + 3600000 },
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_google_account: "student@vitapstudent.ac.in",
+          vtopext_google_accounts: { vtopext_gmail_token: "student@vitapstudent.ac.in" },
+          vtopext_google_granted: true,
+          vtopext_google_app_token: { token: "OLD", exp: Date.now() + 3600000 },
         },
       });
       await ask({ message: "google_sign_out" });
       ok(
         "sign-out forgets the token, the account AND the grant flag",
-        !store.vrevamp_google_app_token &&
-          !store.vrevamp_google_account &&
-          !store.vrevamp_google_granted,
+        !store.vtopext_google_app_token &&
+          !store.vtopext_google_account &&
+          !store.vtopext_google_granted,
         JSON.stringify(Object.keys(store))
       );
       ok(
         "…including the per-flow mailbox, or the next student lands in this one's inbox",
-        !store.vrevamp_google_accounts ||
-          !store.vrevamp_google_accounts.vrevamp_gmail_token,
-        JSON.stringify(store.vrevamp_google_accounts)
+        !store.vtopext_google_accounts ||
+          !store.vtopext_google_accounts.vtopext_gmail_token,
+        JSON.stringify(store.vtopext_google_accounts)
       );
     }
 
@@ -7423,7 +7423,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // window" sends someone hunting through Chrome instead of Cloud Console.
     {
       const { ask } = bootAuth({
-        store: { vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com" },
+        store: { vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com" },
         webAuth: () =>
           Promise.resolve(
             "https://test-ext-id.chromiumapp.org/#error=invalid_scope&error_description=Some+requested+scopes+were+invalid"
@@ -7442,9 +7442,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       let issued = 0;
       const { ask } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
           // the merged grant's key — Calendar and mail share one token now
-          vrevamp_google_app_token: { token: "OLD", exp: Date.now() + 3600000 },
+          vtopext_google_app_token: { token: "OLD", exp: Date.now() + 3600000 },
         },
         webAuth: () =>
           Promise.resolve(
@@ -7474,8 +7474,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
          * by storing a URL.
          */
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_mail_relay_url: "off",
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_mail_relay_url: "off",
           ...(o.store || {}),
         },
         webAuth: (url) => {
@@ -7544,7 +7544,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
       ok(
         "both a text/plain and a text/html part are sent, inside one boundary",
-        /^Content-Type: multipart\/alternative; boundary="(vrevamp-[a-z0-9]+)"$/mu.test(raw) &&
+        /^Content-Type: multipart\/alternative; boundary="(vtopext-[a-z0-9]+)"$/mu.test(raw) &&
           /Content-Type: text\/plain; charset="UTF-8"/u.test(raw) &&
           /Content-Type: text\/html; charset="UTF-8"/u.test(raw) &&
           raw.trimEnd().endsWith("--"),
@@ -7555,7 +7555,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // a remembered address wins over the signed-in mailbox: two Google
       // accounts is the norm, and the one Calendar runs under is often not the
       // one the student reads on their phone
-      const { ask, seen } = mailBoot({ store: { vrevamp_reminder_email: "me@personal.example" } });
+      const { ask, seen } = mailBoot({ store: { vtopext_reminder_email: "me@personal.example" } });
       const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
       ok(
         "a remembered reminder address overrides the signed-in mailbox",
@@ -7585,7 +7585,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     }
     {
       // relay off here too, or the send never reaches the no-client-id branch
-      const { ask } = bootAuth({ noClient: true, store: { vrevamp_mail_relay_url: "off" } });
+      const { ask } = bootAuth({ noClient: true, store: { vtopext_mail_relay_url: "off" } });
       const r = await ask({ message: "send_mail", subject: "s", text: "t" });
       ok(
         "with no client id it says so instead of opening a doomed consent window",
@@ -7594,14 +7594,14 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
     }
 
-    /* ---- relay mode: mail comes FROM vRevamp, not from the student ---- */
-    console.log("\n=== mail relay: sending from a vRevamp address, no server ===");
+    /* ---- relay mode: mail comes FROM VTOP Extension, not from the student ---- */
+    console.log("\n=== mail relay: sending from a VTOP Extension address, no server ===");
     const relayBoot = (o = {}) => {
       const seen = { auth: [], posts: [], gmail: 0 };
       const { ask } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_mail_relay_url: "https://script.google.com/macros/s/AKfy-test/exec",
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_mail_relay_url: "https://script.google.com/macros/s/AKfy-test/exec",
           ...(o.store || {}),
         },
         webAuth: (url) => {
@@ -7651,9 +7651,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const seen = { posts: [], gmail: 0 };
       const { ask, store } = bootAuth({
         store: {
-          vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-          vrevamp_mail_relay_url: "https://script.google.com/macros/s/AKfy-test/exec",
-          vrevamp_reminder_email: "me@vitapstudent.ac.in",
+          vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+          vtopext_mail_relay_url: "https://script.google.com/macros/s/AKfy-test/exec",
+          vtopext_reminder_email: "me@vitapstudent.ac.in",
         },
         webAuth: () =>
           Promise.resolve(
@@ -7677,8 +7677,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const cleared = await ask({ message: "set_mail_relay", url: "" });
       ok(
         "clearing the relay records a refusal, it does not forget the setting",
-        cleared && cleared.ok === true && store.vrevamp_mail_relay_url === "off",
-        JSON.stringify({ cleared, stored: store.vrevamp_mail_relay_url })
+        cleared && cleared.ok === true && store.vtopext_mail_relay_url === "off",
+        JSON.stringify({ cleared, stored: store.vtopext_mail_relay_url })
       );
 
       await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
@@ -7695,8 +7695,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         const seen = { posts: [], gmail: 0 };
         const { ask } = bootAuth({
           store: {
-            vrevamp_calendar_client_id: "999-cal.apps.googleusercontent.com",
-            vrevamp_reminder_email: "me@vitapstudent.ac.in",
+            vtopext_calendar_client_id: "999-cal.apps.googleusercontent.com",
+            vtopext_reminder_email: "me@vitapstudent.ac.in",
           },
           webAuth: () =>
             Promise.resolve("https://test-ext-id.chromiumapp.org/#access_token=T&expires_in=3600"),
@@ -7736,7 +7736,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const boot = (o = {}) => {
         const posts = [];
         const b = bootAuth({
-          store: { vrevamp_mail_relay_url: RELAY, vrevamp_reminder_email: "me@vitapstudent.ac.in", ...(o.store || {}) },
+          store: { vtopext_mail_relay_url: RELAY, vtopext_reminder_email: "me@vitapstudent.ac.in", ...(o.store || {}) },
           fetch: (url, init) => {
             posts.push({ url, body: JSON.parse((init && init.body) || "{}") });
             return Promise.resolve({
@@ -7825,7 +7825,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
       // 5. nowhere to send: the failure names the fix
       {
-        const b = boot({ store: { vrevamp_reminder_email: undefined } });
+        const b = boot({ store: { vtopext_reminder_email: undefined } });
         await b.ask({ message: "schedule_local_reminders", tag: "x", reminders: [mailReminder({ until: Date.now() + 30000 })] });
         await b.fireAlarm(names(b)[0]);
         ok(
@@ -7851,7 +7851,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
     }
     {
-      const { ask, seen } = relayBoot({ store: { vrevamp_reminder_email: "student@vitapstudent.ac.in" } });
+      const { ask, seen } = relayBoot({ store: { vtopext_reminder_email: "student@vitapstudent.ac.in" } });
       const r = await ask({ message: "send_mail", subject: "FAT — 6 upcoming", html: "<b>x</b>", interactive: true });
       ok(
         "a configured relay takes over, and Gmail's send API is never touched",
@@ -7893,7 +7893,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     }
     {
       // the script's own refusals are already written for a student to read
-      const { ask } = relayBoot({ store: { vrevamp_reminder_email: "student@vitapstudent.ac.in" }, relayError: "too many mails to this address today" });
+      const { ask } = relayBoot({ store: { vtopext_reminder_email: "student@vitapstudent.ac.in" }, relayError: "too many mails to this address today" });
       const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
       ok(
         "a relay refusal is surfaced in the relay's own words",
@@ -7902,7 +7902,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
     }
     {
-      const { ask } = relayBoot({ store: { vrevamp_reminder_email: "student@vitapstudent.ac.in" }, httpFail: 503 });
+      const { ask } = relayBoot({ store: { vtopext_reminder_email: "student@vitapstudent.ac.in" }, httpFail: 503 });
       const r = await ask({ message: "send_mail", subject: "s", text: "t", interactive: true });
       ok(
         "a relay that is down reports the status, and does NOT silently fall back to the student's Gmail",
@@ -7923,8 +7923,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const digestBoot = (subjects, extra = {}) =>
       relayBoot({
         store: {
-          vrevamp_reminder_email: "me@personal.example",
-          vrevamp_attendance_summary: { fetchedAt: Date.now(), subjects },
+          vtopext_reminder_email: "me@personal.example",
+          vtopext_attendance_summary: { fetchedAt: Date.now(), subjects },
           ...extra,
         },
       });
@@ -7985,7 +7985,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // Nothing cached at all: no mail, no notification, no error. A digest
       // that mails "I have nothing to tell you" every morning gets muted, and
       // then the one that matters is muted too.
-      const { ask, seen } = relayBoot({ store: { vrevamp_reminder_email: "me@personal.example" } });
+      const { ask, seen } = relayBoot({ store: { vtopext_reminder_email: "me@personal.example" } });
       const r = await ask({ message: "set_daily_digest", enabled: true });
       ok(
         "a day with nothing to report sends nothing at all",
@@ -7999,8 +7999,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // the home card had, in the surface a student reads before opening VTOP.
       const { ask, seen } = relayBoot({
         store: {
-          vrevamp_reminder_email: "me@personal.example",
-          vrevamp_attendance_summary: {
+          vtopext_reminder_email: "me@personal.example",
+          vtopext_attendance_summary: {
             fetchedAt: Date.now() - 40 * 86400000,
             subjects: [{ name: "CSE3009", code: "CSE3009", pct: 60, safeNow: 0, below75: true, recover: 5, canRecover: true, unit: "class(es)" }],
           },
@@ -8072,8 +8072,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok(
       "and it records the opt-in so the watcher may run from now on",
-      (await page.evaluate(() => (window.__storage.vrevamp_exam_mail_state || {}).optIn)) === true,
-      JSON.stringify(await page.evaluate(() => window.__storage.vrevamp_exam_mail_state || null))
+      (await page.evaluate(() => (window.__storage.vtopext_exam_mail_state || {}).optIn)) === true,
+      JSON.stringify(await page.evaluate(() => window.__storage.vtopext_exam_mail_state || null))
     );
 
     // Nothing has changed yet: re-rendering the same page must not re-send.
@@ -8172,7 +8172,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     await delay(400);
     const prompted = await page.evaluate(() => {
-      const box = document.querySelector(".vrevamp-exam-addr");
+      const box = document.querySelector(".vtopext-exam-addr");
       const save = box && box.querySelector("[data-vr-action='exam-addr']");
       return {
         hasInput: !!(box && box.querySelector("input")),
@@ -8189,28 +8189,28 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     // a typo is caught before anything is stored or sent
     await page.evaluate(() => {
-      const box = document.querySelector(".vrevamp-exam-addr");
+      const box = document.querySelector(".vtopext-exam-addr");
       box.querySelector("input").value = "nonsense";
       box.querySelector("[data-vr-action='exam-addr']").click();
     });
     await delay(300);
     ok(
       "a typo is refused in place, the prompt stays open, still nothing sent",
-      (await page.evaluate(() => !!document.querySelector(".vrevamp-exam-addr"))) &&
+      (await page.evaluate(() => !!document.querySelector(".vtopext-exam-addr"))) &&
         (await page.evaluate(() => (window.__mails || []).length)) === 0 &&
-        !(await page.evaluate(() => window.__storage.vrevamp_reminder_email)),
+        !(await page.evaluate(() => window.__storage.vtopext_reminder_email)),
       JSON.stringify(await page.evaluate(() => (window.__mails || []).length))
     );
 
     await page.evaluate(() => {
-      const box = document.querySelector(".vrevamp-exam-addr");
+      const box = document.querySelector(".vtopext-exam-addr");
       box.querySelector("input").value = "me@personal.example";
       box.querySelector("[data-vr-action='exam-addr']").click();
     });
     await delay(600);
     const after = await page.evaluate(() => ({
-      stored: window.__storage.vrevamp_reminder_email || null,
-      gone: !document.querySelector(".vrevamp-exam-addr"),
+      stored: window.__storage.vtopext_reminder_email || null,
+      gone: !document.querySelector(".vtopext-exam-addr"),
       mail: (window.__mails || [])[0] || null,
       note: (() => {
         const b = [...document.querySelectorAll("button")]
@@ -8551,7 +8551,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         },
       },
     });
-    const learned = store.vrevamp_exam_search_request;
+    const learned = store.vtopext_exam_search_request;
     ok(
       "the search request is learned from the student's own click",
       !!learned &&
@@ -8588,7 +8588,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         },
       },
     });
-    const att = store.vrevamp_attendance_request;
+    const att = store.vtopext_attendance_request;
     ok(
       "the attendance request is learned, credentials stripped",
       !!att &&
@@ -8608,9 +8608,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     });
     ok(
       "a per-subject detail POST never overwrites it",
-      store.vrevamp_attendance_request.path === "processViewStudentAttendance" &&
-        !("classId" in store.vrevamp_attendance_request.params),
-      JSON.stringify(store.vrevamp_attendance_request)
+      store.vtopext_attendance_request.path === "processViewStudentAttendance" &&
+        !("classId" in store.vtopext_attendance_request.params),
+      JSON.stringify(store.vtopext_attendance_request)
     );
   }
 
@@ -8725,18 +8725,18 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "</td><td>R3C1</td><td>5</td></tr></table></body></html>";
 
     const seed = (over = {}) => ({
-      vrevamp_exam_mail_state: {
+      vtopext_exam_mail_state: {
         optIn: true,
         // last mailed with no venue — so a real one reads as a change
         sent: { "FAT|ECE2015|2026-05-04": "" },
       },
-      vrevamp_exam_schedule: {
+      vtopext_exam_schedule: {
         fetchedAt: fixed - 86400000,
         semester: "Winter Semester 2025-26",
         semesterId: "AP2025264",
         exams: [{ type: "FAT", code: "ECE2015", dateIso: "2026-05-04", venue: "-" }],
       },
-      vrevamp_exam_search_request: {
+      vtopext_exam_search_request: {
         path: "examinations/doSearchExamScheduleForStudent",
         // a stale semester from an older search: the CACHE is the authority
         params: { semesterSubId: "AP2024OLD" },
@@ -8779,7 +8779,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         mails: (window.__mails || []).map((m) => ({
           subject: m.subject, html: m.html, interactive: m.interactive,
         })),
-        cache: window.__storage.vrevamp_exam_schedule,
+        cache: window.__storage.vtopext_exam_schedule,
       }));
       ok(
         "it asks VTOP itself, from a page with no schedule on it",
@@ -8827,7 +8827,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
     {
       // The opt-in guarantee still holds off the exam page: no press, no traffic.
-      const p = await elsewhere(seed({ vrevamp_exam_mail_state: { optIn: false, sent: {} } }));
+      const p = await elsewhere(seed({ vtopext_exam_mail_state: { optIn: false, sent: {} } }));
       await p.evaluate(() => window.__dispatch("nav_bar_change"));
       await delay(1000);
       const r = await p.evaluate(() => ({
@@ -8856,7 +8856,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // Exam season over: nothing ahead in the cache, so no reason to look.
       const p = await elsewhere(
         seed({
-          vrevamp_exam_schedule: {
+          vtopext_exam_schedule: {
             fetchedAt: fixed,
             semester: "Winter Semester 2025-26",
             semesterId: "AP2025264",
@@ -9027,8 +9027,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       p.evaluate(() => ({
         submitted: window.__submitted || [],
         reloadCalls: window.__reloads,
-        reloads: sessionStorage.getItem("vrevamp_login_reloads"),
-        picked: sessionStorage.getItem("vrevamp_role_autopick"),
+        reloads: sessionStorage.getItem("vtopext_login_reloads"),
+        picked: sessionStorage.getItem("vtopext_role_autopick"),
       }));
 
     {
@@ -9076,7 +9076,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
        * the feature works. The old cooldown failed this for two minutes.
        */
       const p = await chooser(PICKER, {
-        vrevamp_role_autopick: String(Date.now() - 1000), // advanced a second ago
+        vtopext_role_autopick: String(Date.now() - 1000), // advanced a second ago
       });
       const r = await readState(p);
       ok(
@@ -9092,7 +9092,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       // 2026-08-07 freeze was made of.
       // the budget is MAX_RELOADS, raised to 5 on 2026-08-22 when the captcha
       // hunt started drawing on the same counter
-      const p = await chooser(PICKER, { vrevamp_login_reloads: "5" });
+      const p = await chooser(PICKER, { vtopext_login_reloads: "5" });
       const r = await readState(p);
       ok(
         "with the reload budget spent it stops rather than ping-ponging",
@@ -9137,7 +9137,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
        * that this is a login form and not a chooser: Student is not pressed
        * and no role is recorded, whatever the captcha situation.
        */
-      const p = await chooser(LOGIN_RECAPTCHA, { vrevamp_login_reloads: "2" });
+      const p = await chooser(LOGIN_RECAPTCHA, { vtopext_login_reloads: "2" });
       const r = await readState(p);
       ok(
         "invisible reCAPTCHA: no role is pressed, and the hunt is counted",
@@ -9198,8 +9198,8 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "<td>R3C1</td><td>5</td></tr></table></body></html>";
 
     const baseStore = (over = {}) => ({
-      vrevamp_exam_mail_state: { optIn: true, sent: { "FAT|ECE2015|2026-05-04": "" } },
-      vrevamp_exam_schedule: {
+      vtopext_exam_mail_state: { optIn: true, sent: { "FAT|ECE2015|2026-05-04": "" } },
+      vtopext_exam_schedule: {
         fetchedAt: fixed - 86400000,
         semester: "Winter Semester 2025-26",
         semesterId: "AP2025264",
@@ -9241,7 +9241,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
      * NOTHING LEARNED YET — the state every student is in until they open the
      * exam schedule page once. The named endpoint is the fallback, and it must
      * be sent as a `probe` so that a wrong guess on some other VTOP deployment
-     * cannot trip the breaker and silence every other vRevamp feature.
+     * cannot trip the breaker and silence every other VTOP Extension feature.
      */
     {
       const p = await otherPage(baseStore(), { status: 200, body: SCHEDULE });
@@ -9271,7 +9271,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const r = await p.evaluate(() => ({
         posts: window.__posts.length,
         tripped: window.vrVtop.tripped,
-        banner: !!document.getElementById("vrevamp-session-banner"),
+        banner: !!document.getElementById("vtopext-session-banner"),
         mails: (window.__mails || []).length,
       }));
       ok(
@@ -9285,13 +9285,13 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     {
       /*
        * A RECORDED request that 404s is different — that is real news, and the
-       * breaker must count it. Three of them and vRevamp stops talking to VTOP.
+       * breaker must count it. Three of them and VTOP Extension stops talking to VTOP.
        * The rate-limit key is cleared between tries to stand in for three page
        * loads three hours apart.
        */
       const p = await otherPage(
         baseStore({
-          vrevamp_exam_search_request: {
+          vtopext_exam_search_request: {
             path: "examinations/doSearchExamScheduleForStudent",
             params: {},
           },
@@ -9300,7 +9300,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       );
       for (let i = 0; i < 4; i++) {
         await p.evaluate(() => {
-          delete window.__storage.vrevamp_exam_bg_check;
+          delete window.__storage.vtopext_exam_bg_check;
           window.__dispatch("nav_bar_change");
         });
         await delay(500);
@@ -9394,7 +9394,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     ]);
     await p.evaluate(() => window.__dispatch("exam_schedule"));
     await delay(1200);
-    const cache = await p.evaluate(() => window.__storage.vrevamp_exam_schedule);
+    const cache = await p.evaluate(() => window.__storage.vtopext_exam_schedule);
     ok(
       "opening the exam page records the semester ID the background check needs",
       !!cache &&
@@ -9439,7 +9439,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         w: document.querySelector("[name=password]").value,
         auto: document.querySelector("[name=password]").getAttribute("autocomplete"),
       }));
-    const creds = { vrevamp_vtop_login: { id: "24TEST0001", pass: "from-popup" } };
+    const creds = { vtopext_vtop_login: { id: "24TEST0001", pass: "from-popup" } };
 
     // 1. filled, and Chrome's late autofill is overwritten again
     let p = await open(creds, async (pg) => {
@@ -9496,7 +9496,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     await shim(p, {});
     await inject(p, ["js/popup_login.js"]);
-    const stored = () => p.evaluate(() => window.__storage.vrevamp_vtop_login || null);
+    const stored = () => p.evaluate(() => window.__storage.vtopext_vtop_login || null);
     await p.fill("#vr-login-id", "24TEST0001");
     await p.click("#vr-login-save");
     await delay(150);

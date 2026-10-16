@@ -42,7 +42,7 @@
 
   const log = (...args) => {
     try {
-      console.log("[vRevamp click]", ...args);
+      console.log("[VTOP Extension click]", ...args);
     } catch {
       /* console gone — never let logging break a click */
     }
@@ -121,7 +121,7 @@
     try {
       handler(el, event);
     } catch (error) {
-      console.warn("vRevamp click:", el.dataset.vrAction, error);
+      console.warn("VTOP Extension click:", el.dataset.vrAction, error);
     }
   };
 
@@ -179,7 +179,7 @@
   // no content script runs and nothing could service a click.
   window.vrStripActions = (root) => {
     root
-      .querySelectorAll("[data-vr-action], .vrevamp-exam-note, .vrevamp-tt-note")
+      .querySelectorAll("[data-vr-action], .vtopext-exam-note, .vtopext-tt-note")
       .forEach((el) => el.remove());
     return root;
   };

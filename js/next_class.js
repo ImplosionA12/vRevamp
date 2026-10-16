@@ -5,7 +5,7 @@
  * saved yet (the student hasn't opened the Timetable page) it stays silent.
  */
 (() => {
-  const CARD_ID = "vrevamp-next-class";
+  const CARD_ID = "vtopext-next-class";
 
   // Saved day cells are 3-letter codes ("MON"); tolerate full names too.
   const dayToNum = (name) =>
@@ -209,12 +209,12 @@
   let timetableStale = false;
 
   const getLatestCalendar = async () => {
-    const pointer = await chrome.storage.local.get("vrevamp_latest_calendar");
-    if (pointer.vrevamp_latest_calendar) return pointer.vrevamp_latest_calendar;
+    const pointer = await chrome.storage.local.get("vtopext_latest_calendar");
+    if (pointer.vtopext_latest_calendar) return pointer.vtopext_latest_calendar;
     // written by the attendance page; until it has run once, fall back to the scan
     const all = await chrome.storage.local.get(null);
     const calendars = Object.keys(all)
-      .filter((k) => k.startsWith("vrevamp_calendar_"))
+      .filter((k) => k.startsWith("vtopext_calendar_"))
       .map((k) => all[k]);
     calendars.sort((a, b) => (b.fetchedAt || 0) - (a.fetchedAt || 0));
     return calendars[0] || null;
@@ -274,12 +274,12 @@
     if (!timetableStale) {
       try {
         const iso = isoToday();
-        const cached = (await chrome.storage.local.get("vrevamp_exam_schedule"))
-          .vrevamp_exam_schedule;
+        const cached = (await chrome.storage.local.get("vtopext_exam_schedule"))
+          .vtopext_exam_schedule;
         const block = examBlockOn(cached, iso);
         if (block) examLine = describeExamDay(cached, block, iso);
       } catch (error) {
-        console.warn("vRevamp next-class:", error); // no schedule cached yet
+        console.warn("VTOP Extension next-class:", error); // no schedule cached yet
       }
     }
 
@@ -314,7 +314,7 @@
         done = await render();
       } catch (error) {
         done = true;
-        console.warn("vRevamp next-class:", error);
+        console.warn("VTOP Extension next-class:", error);
       }
       if (done || attempts >= 10) clearInterval(timer);
     }, 700);
@@ -323,7 +323,7 @@
   // live countdown: re-render once a minute while the card is on screen
   setInterval(() => {
     if (document.getElementById(CARD_ID))
-      render().catch((error) => console.warn("vRevamp next-class:", error));
+      render().catch((error) => console.warn("VTOP Extension next-class:", error));
   }, 60000);
 
   chrome.runtime.onMessage.addListener((request) => {

@@ -72,5 +72,4 @@ Changes are logged in [changes.md](changes.md); open work is in [ROADMAP.md](ROA
 
 ## Credits and licence
 
-Started from sanjay7178's [vRevamp](https://github.com/sanjay7178/vRevamp) and
-substantially reworked. Licensed under GPL-3.0, see [LICENSE](LICENSE).
+Licensed under GPL-3.0, see [LICENSE](LICENSE).

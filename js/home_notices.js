@@ -1,11 +1,11 @@
 /*
- * vRevamp home notices: a small card on the VTOP landing page (after login)
+ * VTOP Extension home notices: a small card on the VTOP landing page (after login)
  * showing exam countdowns, the next holiday, and subjects at risk — all from
  * data attendance_insights.js has already cached in chrome.storage.local.
  * Nothing is fetched here, so the card renders instantly.
  */
 (() => {
-  const CACHE_PREFIX = "vrevamp_calendar_";
+  const CACHE_PREFIX = "vtopext_calendar_";
   const DAY_MS = 24 * 60 * 60 * 1000;
 
   /*
@@ -179,19 +179,19 @@
   const refreshInPlace = async () => {
     if (!window.vrVtop || typeof window.vrVtop.post !== "function") return false;
     const stored = await chrome.storage.local.get([
-      "vrevamp_attendance_request",
-      "vrevamp_attendance_summary",
+      "vtopext_attendance_request",
+      "vtopext_attendance_summary",
     ]);
-    const request = stored.vrevamp_attendance_request;
+    const request = stored.vtopext_attendance_request;
     if (!request || !request.path) return false; // never recorded — nothing to replay
 
     const html = await window.vrVtop.post(request.path, request.params || {});
     const fresh = parseAttendanceHtml(html);
     if (!fresh) return false;
 
-    const previous = stored.vrevamp_attendance_summary || {};
+    const previous = stored.vtopext_attendance_summary || {};
     await chrome.storage.local.set({
-      vrevamp_attendance_summary: {
+      vtopext_attendance_summary: {
         ...previous,
         fetchedAt: Date.now(),
         subjects: mergeSubjects(previous.subjects, fresh),
@@ -210,14 +210,14 @@
       } catch (error) {
         // a tripped breaker or a refused request — vrVtop has already told the
         // student why, in its own banner. Opening the page is still worth a try.
-        console.warn("vRevamp home refresh:", error);
+        console.warn("VTOP Extension home refresh:", error);
       }
       if (!done) {
         navigateToAttendance(button);
         return;
       }
       // rebuild the card against the snapshot just written
-      const card = document.getElementById("vrevamp-home-notices");
+      const card = document.getElementById("vtopext-home-notices");
       if (card) card.remove();
       await tryRender();
     });
@@ -249,8 +249,8 @@
     });
 
   const getLatestCalendar = async () => {
-    const pointer = await chrome.storage.local.get("vrevamp_latest_calendar");
-    if (pointer.vrevamp_latest_calendar) return pointer.vrevamp_latest_calendar;
+    const pointer = await chrome.storage.local.get("vtopext_latest_calendar");
+    if (pointer.vtopext_latest_calendar) return pointer.vtopext_latest_calendar;
     // written by the attendance page; until it has run once, fall back to the scan
     const all = await chrome.storage.local.get(null);
     const calendars = Object.keys(all)
@@ -269,7 +269,7 @@
 
   const buildCard = (calendar, summary, collapsed) => {
     const card = document.createElement("div");
-    card.id = "vrevamp-home-notices";
+    card.id = "vtopext-home-notices";
     card.style.cssText =
       "margin:8px 10px;padding:8px 12px;background:#fff;border:1px solid #ccc;" +
       "border-left:4px solid rgb(60,141,188);border-radius:4px;" +
@@ -298,7 +298,7 @@
       const wasHidden = body.style.display === "none";
       body.style.display = wasHidden ? "" : "none";
       toggle.textContent = wasHidden ? "▾ hide" : "▸ show";
-      chrome.storage.local.set({ vrevamp_notices_collapsed: !wasHidden });
+      chrome.storage.local.set({ vtopext_notices_collapsed: !wasHidden });
     });
 
     let added = 0;
@@ -536,9 +536,9 @@
   };
 
   const tryRender = async () => {
-    if (document.getElementById("vrevamp-home-notices")) return true;
+    if (document.getElementById("vtopext-home-notices")) return true;
     // don't stack the card on top of the attendance page's own insights
-    if (document.getElementById("vrevamp-alert-head")) return true;
+    if (document.getElementById("vtopext-alert-head")) return true;
     const container =
       document.querySelector("#main-section") ||
       document.querySelector(".content-wrapper") ||
@@ -551,15 +551,15 @@
     if (!container) return false;
     const calendar = await getLatestCalendar();
     const stored = await chrome.storage.local.get([
-      "vrevamp_attendance_summary",
-      "vrevamp_notices_collapsed",
+      "vtopext_attendance_summary",
+      "vtopext_notices_collapsed",
     ]);
-    const summary = stored.vrevamp_attendance_summary || null;
-    const card = buildCard(calendar, summary, !!stored.vrevamp_notices_collapsed);
+    const summary = stored.vtopext_attendance_summary || null;
+    const card = buildCard(calendar, summary, !!stored.vtopext_notices_collapsed);
     // re-check after the awaits: two message-triggered renders can interleave
     // at the storage reads and both pass the guard at the top (seen live —
     // duplicated card on the 2026 home page)
-    if (card && !document.getElementById("vrevamp-home-notices"))
+    if (card && !document.getElementById("vtopext-home-notices"))
       container.insertBefore(card, container.firstChild);
     return true;
   };
@@ -589,7 +589,7 @@
         done = await tryRender();
       } catch (error) {
         done = true;
-        console.warn("vRevamp notices:", error);
+        console.warn("VTOP Extension notices:", error);
       }
       if (done || attempts >= 45) clearInterval(timer);
     }, 700);

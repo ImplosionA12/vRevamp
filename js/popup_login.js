@@ -7,7 +7,7 @@
  * once saved the field only says that one is stored.
  */
 (() => {
-  const KEY = "vrevamp_vtop_login";
+  const KEY = "vtopext_vtop_login";
   const $ = (id) => document.getElementById(id);
   const idBox = $("vr-login-id");
   const passBox = $("vr-login-pass");

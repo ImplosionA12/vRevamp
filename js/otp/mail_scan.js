@@ -9,7 +9,7 @@
 // consumed in `ignore`) rather than here.
 //
 // Nothing is read unless the VTOP login page asks: this script is inert until
-// it receives a vrevamp_scan_otp message, and it only ever returns the digits
+// it receives a vtopext_scan_otp message, and it only ever returns the digits
 // it matched — never the surrounding mail text.
 (() => {
   // The worker re-injects this file into a tab whose content script was
@@ -18,8 +18,8 @@
   // block the live copy forever — the exact failure it is meant to cure.
   // Instead every copy takes a sequence number and only the newest answers,
   // which is correct whether or not the copies share an isolated world.
-  const seq = (window.__vrevampMailScanSeq =
-    (window.__vrevampMailScanSeq || 0) + 1);
+  const seq = (window.__vtopextMailScanSeq =
+    (window.__vtopextMailScanSeq || 0) + 1);
 
   // The words a login OTP mail actually puts next to the number.
   const KEYWORDS =
@@ -238,15 +238,15 @@
   };
 
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (seq !== window.__vrevampMailScanSeq) return; // superseded by a newer copy
-    if (!request || request.message !== "vrevamp_scan_otp") return;
+    if (seq !== window.__vtopextMailScanSeq) return; // superseded by a newer copy
+    if (!request || request.message !== "vtopext_scan_otp") return;
     // sawVtop lets the caller tell three states apart: wrong mailbox, right
     // mailbox but the code isn't rendered (inbox list), and code in hand.
     let hit = NOTHING;
     try {
       hit = scan(request.ignore);
     } catch (error) {
-      console.warn("vRevamp OTP scan failed", error);
+      console.warn("VTOP Extension OTP scan failed", error);
     }
     // Asked for, and nothing readable here, but VTOP's mail is on the page:
     // open it so the next poll can read the body.

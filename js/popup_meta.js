@@ -53,7 +53,7 @@
       return {};
     }
   };
-  const CHECK_KEY = "vrevamp_update_check";
+  const CHECK_KEY = "vtopext_update_check";
   const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 
   const isNewer = (remote, local) => {

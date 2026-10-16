@@ -4369,3 +4369,14 @@ one page, as Chrome does at inject time:
     (they send or create things), leave watcher baseline, Faculty page, Course Page after picking a course.
   * Odd but not ours: Time Table has no MON row (VTOP's own data); SWE3004 Experiment-1 is dated
     31-Jul-2026, before the semester began - looks like a faculty typo.
+
+## Rebrand redone, fully: "VTOP Extension", no vRevamp left (2026-10-16)
+- Reverted the earlier revert (it was a misread of "do it completely").
+- Every remaining "vRevamp"/"vrevamp" in code is gone: display text -> "VTOP Extension", storage keys,
+  element ids, CSS classes, console prefixes, window globals -> "vtopext". package.json name is "vtopext".
+- Removed the upstream "Started from ..." line from the README and .github/FUNDING.yml.
+- Storage keys changed, so saved extension data (reminder email, Google sign-in, cached summaries)
+  starts fresh once after reloading; re-enter it.
+- Left alone on purpose: LICENSE (GPL-3.0 requires keeping the copyright notices), and the GitHub
+  repo URL (config.json, manifest homepage, README links) which still ends in /vRevamp until the repo itself is renamed.
+- Version is now 1 (manifest.json), and stays 1 from here on, by request.

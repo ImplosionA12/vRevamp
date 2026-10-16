@@ -12,7 +12,7 @@
  * It fills; it never submits. The captcha and the sign-in press stay theirs.
  */
 (() => {
-  const KEY = "vrevamp_vtop_login";
+  const KEY = "vtopext_vtop_login";
   const WINDOW_MS = 6000;
   const WAIT_FOR_FORM_MS = 30000;
   const TICK_MS = 250;

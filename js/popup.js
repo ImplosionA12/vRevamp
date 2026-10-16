@@ -10,7 +10,7 @@ viewOfflineButton.addEventListener("click", () => {
  * Reminders & mail panel.
  *
  * Every setting here already existed in chrome.storage.local and none of it
- * had a control. The account vRevamp signs in as, the address it mails, the
+ * had a control. The account VTOP Extension signs in as, the address it mails, the
  * daily digest and the relay URL were all things you could only change by
  * editing background.js and reloading the extension — which is why "it asks me
  * OAuth every time" had no answer a student could act on. Now the state is

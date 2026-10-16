@@ -9,9 +9,9 @@
  *    replaces the previous one instead of duplicating it.
  */
 (() => {
-  const BTN_ID = "vrevamp-timetable-ics";
-  const GCAL_BTN_ID = "vrevamp-timetable-gcal";
-  const CALENDAR_PREFIX = "vrevamp_calendar_";
+  const BTN_ID = "vtopext-timetable-ics";
+  const GCAL_BTN_ID = "vtopext-timetable-gcal";
+  const CALENDAR_PREFIX = "vtopext_calendar_";
   const GCAL_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
   // vrGoogleToken / vrGoogleAuthHint / vrGcalTemplateUrl live in
@@ -112,9 +112,9 @@
     )}00`;
 
   const getLatestCalendar = async () => {
-    const pointer = await chrome.storage.local.get("vrevamp_latest_calendar");
-    if (pointer.vrevamp_latest_calendar && pointer.vrevamp_latest_calendar.lastInstructional)
-      return pointer.vrevamp_latest_calendar;
+    const pointer = await chrome.storage.local.get("vtopext_latest_calendar");
+    if (pointer.vtopext_latest_calendar && pointer.vtopext_latest_calendar.lastInstructional)
+      return pointer.vtopext_latest_calendar;
     // written by the attendance page; until it has run once, fall back to the scan
     const all = await chrome.storage.local.get(null);
     const cals = Object.keys(all)
@@ -172,7 +172,7 @@
           // weekday + slot + start time identify a weekly class; no export
           // counter, so re-exporting produces the same UIDs and a re-import
           // updates the series instead of duplicating it
-          `UID:${vrIcs.uid("vrevamp-class", c.course, wd, c.slot, hms(c.start))}`,
+          `UID:${vrIcs.uid("vtopext-class", c.course, wd, c.slot, hms(c.start))}`,
           `DTSTAMP:${dtstamp}`,
           `DTSTART;TZID=Asia/Kolkata:${date}T${hms(c.start)}`,
           `DTEND;TZID=Asia/Kolkata:${date}T${hms(c.end)}`,
@@ -196,7 +196,7 @@
         .filter(Boolean)
         .join("\n");
       blocks.push([
-        `UID:${vrIcs.uid("vrevamp-exam", e.type, e.code, day, e.start)}`,
+        `UID:${vrIcs.uid("vtopext-exam", e.type, e.code, day, e.start)}`,
         `DTSTAMP:${dtstamp}`,
         `DTSTART;TZID=Asia/Kolkata:${day}T${e.start}00`,
         `DTEND;TZID=Asia/Kolkata:${day}T${e.end}00`,
@@ -218,9 +218,9 @@
 
   const tt_status = (button, text, good) => {
     let note = button.nextElementSibling;
-    if (!note || note.className !== "vrevamp-tt-note") {
+    if (!note || note.className !== "vtopext-tt-note") {
       note = document.createElement("span");
-      note.className = "vrevamp-tt-note";
+      note.className = "vtopext-tt-note";
       note.style.cssText = "margin-left:8px;font-size:12px;font-weight:normal;";
       button.insertAdjacentElement("afterend", note);
     }
@@ -232,9 +232,9 @@
   // (best-effort: the attendance snapshot only exists once the attendance
   // page has been opened; events fall back to the course code without it)
   const courseTitles = async () => {
-    const r = await chrome.storage.local.get(["vrevamp_attendance_summary"]);
+    const r = await chrome.storage.local.get(["vtopext_attendance_summary"]);
     const titles = {};
-    (((r || {}).vrevamp_attendance_summary || {}).subjects || []).forEach((s) => {
+    (((r || {}).vtopext_attendance_summary || {}).subjects || []).forEach((s) => {
       const parts = String(s.name || "").split(" - ");
       if (s.code && parts.length >= 2)
         titles[s.code] = parts.length >= 3 ? parts.slice(1, -1).join(" - ") : parts[1];
@@ -303,7 +303,7 @@
           start: { dateTime: `${isoOf(first)}T${hmsColon(c.start)}`, timeZone: "Asia/Kolkata" },
           end: { dateTime: `${isoOf(first)}T${hmsColon(c.end)}`, timeZone: "Asia/Kolkata" },
           recurrence,
-          extendedProperties: { private: { vrevamp: "timetable" } },
+          extendedProperties: { private: { vtopext: "timetable" } },
         });
       });
     });
@@ -313,8 +313,8 @@
   // upcoming CAT/FAT exams (raw rows) from the schedule cached by the Exam
   // Schedule page. Returns null when that page has never been opened.
   const upcomingCachedExams = async () => {
-    const r = await chrome.storage.local.get(["vrevamp_exam_schedule"]);
-    const cache = (r || {}).vrevamp_exam_schedule;
+    const r = await chrome.storage.local.get(["vtopext_exam_schedule"]);
+    const cache = (r || {}).vtopext_exam_schedule;
     if (!cache || !Array.isArray(cache.exams)) return null;
     const today = isoOf(new Date());
     return cache.exams.filter(
@@ -343,7 +343,7 @@
           .join("\n"),
         start: { dateTime: `${e.dateIso}T${hm(e.start)}`, timeZone: "Asia/Kolkata" },
         end: { dateTime: `${e.dateIso}T${hm(e.end)}`, timeZone: "Asia/Kolkata" },
-        extendedProperties: { private: { vrevamp: "timetable" } },
+        extendedProperties: { private: { vtopext: "timetable" } },
       }));
   };
 
@@ -353,7 +353,7 @@
     let removed = 0;
     try {
       const list = await fetch(
-        `${GCAL_API}?privateExtendedProperty=${encodeURIComponent("vrevamp=timetable")}&maxResults=250`,
+        `${GCAL_API}?privateExtendedProperty=${encodeURIComponent("vtopext=timetable")}&maxResults=250`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!list.ok) return removed;
@@ -368,7 +368,7 @@
         await tt_sleep(200);
       }
     } catch (error) {
-      console.warn("vRevamp timetable import: cleanup", error);
+      console.warn("VTOP Extension timetable import: cleanup", error);
     }
     return removed;
   };
@@ -453,7 +453,7 @@
     return { links, untilIso };
   };
 
-  const LINKS_ID = "vrevamp-tt-links";
+  const LINKS_ID = "vtopext-tt-links";
 
   const showLinksPanel = (btn, links) => {
     const old = document.getElementById(LINKS_ID);
@@ -501,7 +501,7 @@
       panel.appendChild(a);
     });
     // after the status note (btn's nextElementSibling) when it exists
-    const after = btn.nextElementSibling && btn.nextElementSibling.className === "vrevamp-tt-note"
+    const after = btn.nextElementSibling && btn.nextElementSibling.className === "vtopext-tt-note"
       ? btn.nextElementSibling
       : btn;
     after.insertAdjacentElement("afterend", panel);
@@ -625,7 +625,7 @@
    * status line already said "re-running adds everything AGAIN" — but only
    * AFTER the run that had just added it.
    */
-  const IMPORT_MARK = "vrevamp_tt_imported";
+  const IMPORT_MARK = "vtopext_tt_imported";
 
   const previousImport = async () => {
     try {
@@ -797,7 +797,7 @@
         done > 0
       );
     } catch (error) {
-      console.warn("vRevamp timetable → Google Calendar:", error);
+      console.warn("VTOP Extension timetable → Google Calendar:", error);
       // a chrome://extensions reload orphans this script in already-open
       // tabs: the button stays visible but every chrome.* call throws —
       // only a page refresh reattaches the new build
@@ -853,7 +853,7 @@
         true
       );
     } catch (error) {
-      console.warn("vRevamp timetable .ics:", error);
+      console.warn("VTOP Extension timetable .ics:", error);
       tt_status(btn, "export failed — refresh the page and try again", false);
     }
   };

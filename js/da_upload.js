@@ -425,8 +425,8 @@ let da_page_2026 = async () => {
       /class\s*nbr/i.test(t.rows[0].textContent) &&
       /dashboard/i.test(t.rows[0].textContent)
   );
-  if (!classTable || classTable.dataset.vrevampDues === "1") return;
-  classTable.dataset.vrevampDues = "1";
+  if (!classTable || classTable.dataset.vtopextDues === "1") return;
+  classTable.dataset.vtopextDues = "1";
 
   const iNbr = da_header_index(classTable.rows[0], /class\s*nbr/i);
   const th = document.createElement("td");
@@ -553,7 +553,7 @@ let da_page_2026 = async () => {
      * without it the three icons still wrap one per line in a narrow column.
      */
     const strip = document.createElement("div");
-    strip.className = "vrevamp-da-actions";
+    strip.className = "vtopext-da-actions";
     strip.style.cssText =
       "margin-top:3px;white-space:nowrap;line-height:1;font-size:13px;";
     cell.appendChild(strip);
@@ -561,7 +561,7 @@ let da_page_2026 = async () => {
     // 🔔 Chrome notifications for every upcoming due of this course — 6 PM
     // the evening before and 8 AM on the due day. No Google sign-in.
     const btn = window.vrButton("da-bell", "🔔", { vrDues: payload });
-    btn.className = "vrevamp-da-remind";
+    btn.className = "vtopext-da-remind";
     btn.title =
       `Remind me — Chrome notification the evening before (6 PM) and the morning of (8 AM) for each of the ${upcoming.length} upcoming due(s). No sign-in needed.`;
     btn.style.cssText =
@@ -570,7 +570,7 @@ let da_page_2026 = async () => {
 
     // ✉ an email from the extension the evening before each due
     const mailBtn = window.vrButton("da-mail", "✉", { vrDues: payload });
-    mailBtn.className = "vrevamp-da-remind";
+    mailBtn.className = "vtopext-da-remind";
     mailBtn.title = "Email me the evening before each upcoming due, from the extension's own address. No Google sign-in. Chrome must be open then.";
     mailBtn.style.cssText =
       "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
@@ -598,7 +598,7 @@ let da_page_2026 = async () => {
       if (!m || !DA_MONTHS[m[2]]) return;
       const day = `${m[3]}${DA_MONTHS[m[2]]}${m[1].padStart(2, "0")}`;
       const link = document.createElement("a");
-      link.className = "vrevamp-da-gcal";
+      link.className = "vtopext-da-gcal";
       link.textContent = "📅";
       link.title =
         `one tap: opens Google Calendar with ${a.title} (${a.due}) prefilled — ` +
@@ -638,7 +638,7 @@ let da_page_2026 = async () => {
    */
   try {
     await chrome.storage.local.set({
-      vrevamp_da_dues: { fetchedAt: Date.now(), courses: allDues },
+      vtopext_da_dues: { fetchedAt: Date.now(), courses: allDues },
     });
   } catch {
     /* storage full or unavailable — the on-page column still works */
@@ -655,7 +655,7 @@ let da_page_2026 = async () => {
  * pressing it eight times was not a feature.
  */
 const renderDaSummary = (classTable, courses) => {
-  document.getElementById("vrevamp-da-summary")?.remove();
+  document.getElementById("vtopext-da-summary")?.remove();
 
   /*
    * `title` on an assignment is the ASSIGNMENT's name ("Digital
@@ -691,7 +691,7 @@ const renderDaSummary = (classTable, courses) => {
   const overdue = overdueItems.length;
 
   const bar = document.createElement("div");
-  bar.id = "vrevamp-da-summary";
+  bar.id = "vtopext-da-summary";
   bar.style.cssText =
     "margin:10px 0;padding:8px 12px;border-radius:4px;font-size:13px;" +
     "background:#eef4fb;border:1px solid #c9dcf0;";

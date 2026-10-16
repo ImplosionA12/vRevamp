@@ -10,7 +10,7 @@ getExamSchedulePage((htmlDataAsStr) => {
   // this is an extension page with no VTOP content script — so they could only
   // ever look broken. Drop them from what we render.
   marksPageBody
-    .querySelectorAll('[data-vr-action], .vrevamp-exam-note, .vrevamp-gcal-link')
+    .querySelectorAll('[data-vr-action], .vtopext-exam-note, .vtopext-gcal-link')
     .forEach((el) => el.remove());
   marksPageBody.querySelectorAll('button').forEach((b) => {
     if (/notify me before|email me instead|to \.ics Format/i.test(b.textContent)) b.remove();

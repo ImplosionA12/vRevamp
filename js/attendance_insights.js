@@ -14,7 +14,7 @@
  */
 (() => {
   const ATTENDANCE_MIN = 0.75;
-  const CACHE_PREFIX = "vrevamp_calendar_";
+  const CACHE_PREFIX = "vtopext_calendar_";
 
   const MONTHS = {
     JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
@@ -243,8 +243,8 @@
       });
     // request captured live by the service worker when the user opened a
     // detail modal — the most reliable source
-    const stored = await chrome.storage.local.get("vrevamp_detail_request");
-    const rec = stored.vrevamp_detail_request;
+    const stored = await chrome.storage.local.get("vtopext_detail_request");
+    const rec = stored.vtopext_detail_request;
     if (rec && rec.path)
       attempts.push({
         path: normalizeEndpoint(rec.path),
@@ -296,7 +296,7 @@
         });
         resolvedAttempt = { path: attempt.path, params: template };
         chrome.storage.local.set({
-          vrevamp_detail_request: { path: attempt.path, params: template },
+          vtopext_detail_request: { path: attempt.path, params: template },
         });
         return history;
       }
@@ -470,7 +470,7 @@
             );
             parseMonthGrid(grid, monthDate, found);
           } catch (error) {
-            console.warn("vRevamp: calendar month failed", dateStr, error);
+            console.warn("VTOP Extension: calendar month failed", dateStr, error);
           }
         }
         return found;
@@ -550,7 +550,7 @@
       // duplicate-day dedupe (those could hold multiply-counted class days)
       if (cached[key] && cached[key].version === 4) {
         // readers on other pages look here instead of scanning all of storage
-        chrome.storage.local.set({ vrevamp_latest_calendar: cached[key] });
+        chrome.storage.local.set({ vtopext_latest_calendar: cached[key] });
         return withoutHolidays(cached[key]);
       }
       const calendar = await fetchCalendar(semesterName);
@@ -560,12 +560,12 @@
         (k) => k.startsWith(CACHE_PREFIX) && k !== key
       );
       if (stale.length) await chrome.storage.local.remove(stale);
-      await chrome.storage.local.set({ [key]: calendar, vrevamp_latest_calendar: calendar });
+      await chrome.storage.local.set({ [key]: calendar, vtopext_latest_calendar: calendar });
       calendarFailedAt = 0;
       return withoutHolidays(calendar);
     } catch (error) {
       calendarFailedAt = Date.now();
-      console.warn("vRevamp: academic calendar unavailable", error);
+      console.warn("VTOP Extension: academic calendar unavailable", error);
       lastCalendarError = String(error && error.message ? error.message : error);
       return null;
     }
@@ -717,8 +717,8 @@
 
   const loadExamBlockDays = async () => {
     try {
-      const cached = (await chrome.storage.local.get("vrevamp_exam_schedule"))
-        .vrevamp_exam_schedule;
+      const cached = (await chrome.storage.local.get("vtopext_exam_schedule"))
+        .vtopext_exam_schedule;
       const dates = (((cached || {}).exams) || [])
         .map((e) => e && e.dateIso)
         .filter(Boolean)
@@ -742,7 +742,7 @@
       });
       examBlockDays = days;
     } catch (error) {
-      console.warn("vRevamp insights: exam blocks unavailable", error);
+      console.warn("VTOP Extension insights: exam blocks unavailable", error);
     }
   };
 
@@ -839,7 +839,7 @@
 
   // Surfaces progress/failures on the page itself so DevTools isn't required
   const showStatus = (message, debugText, isError = true) => {
-    let box = document.getElementById("vrevamp-insights-status");
+    let box = document.getElementById("vtopext-insights-status");
     if (box && !box.isConnected) {
       // VTOP re-rendered the section and detached our box
       box.remove();
@@ -847,7 +847,7 @@
     }
     if (!box) {
       box = document.createElement("div");
-      box.id = "vrevamp-insights-status";
+      box.id = "vtopext-insights-status";
       const wrap = document.querySelector(".table-responsive");
       if (wrap) wrap.insertAdjacentElement("afterend", box);
       else document.body.appendChild(box);
@@ -872,7 +872,7 @@
   };
 
   const clearStatus = () => {
-    const box = document.getElementById("vrevamp-insights-status");
+    const box = document.getElementById("vtopext-insights-status");
     if (box) box.remove();
   };
 
@@ -882,7 +882,7 @@
   // 75% (and how many classes to attend to recover), which have no margin
   // before the next exam, and otherwise the tightest safe subject.
   const renderForecastBanner = (rowsData) => {
-    const old = document.getElementById("vrevamp-forecast-banner");
+    const old = document.getElementById("vtopext-forecast-banner");
     if (old) old.remove();
     const anchor = document.querySelector(".table-responsive");
     if (!anchor) return;
@@ -902,7 +902,7 @@
     const accent = below.length ? "#c0392b" : tight.length ? "#b8860b" : "#2e7d32";
 
     const banner = document.createElement("div");
-    banner.id = "vrevamp-forecast-banner";
+    banner.id = "vtopext-forecast-banner";
     banner.style.cssText =
       `margin:12px 0;padding:10px 14px;background:#fff;border:1px solid #ddd;` +
       `border-left:4px solid ${accent};border-radius:4px;font-size:13px;` +
@@ -989,8 +989,8 @@
    * counted weekdays would have been wrong by three days in one direction and
    * silently right for the wrong reason in the other.
    */
-  const PLANNER_ID = "vrevamp-skip-planner";
-  const PLANNER_OUT = "vrevamp-skip-result";
+  const PLANNER_ID = "vtopext-skip-planner";
+  const PLANNER_OUT = "vtopext-skip-result";
 
   // Classes this subject holds inside [fromIso, toIso], in HISTORY units
   // (hours for labs). Only real instructional days count, and exam-block days
@@ -1190,10 +1190,10 @@
       '<div style="font-weight:700;margin-bottom:6px;">' +
       "Planning to skip? Pick the dates</div>" +
       '<label style="margin-right:10px;">From ' +
-      `<input type="date" id="vrevamp-skip-from" value="${iso(today)}" ` +
+      `<input type="date" id="vtopext-skip-from" value="${iso(today)}" ` +
       'style="font-size:13px;padding:2px 4px;"></label>' +
       '<label style="margin-right:10px;">To ' +
-      `<input type="date" id="vrevamp-skip-to" value="${iso(weekOut)}" ` +
+      `<input type="date" id="vtopext-skip-to" value="${iso(weekOut)}" ` +
       'style="font-size:13px;padding:2px 4px;"></label>' +
       `<span id="${PLANNER_OUT}"></span>`;
     container.insertAdjacentElement("afterend", box);
@@ -1213,8 +1213,8 @@
 
     if (typeof window.vrDelegate === "function") {
       window.vrDelegate("skip-plan", () => {
-        const from = (document.getElementById("vrevamp-skip-from") || {}).value;
-        const to = (document.getElementById("vrevamp-skip-to") || {}).value;
+        const from = (document.getElementById("vtopext-skip-from") || {}).value;
+        const to = (document.getElementById("vtopext-skip-to") || {}).value;
         if (!from || !to) return;
         renderSkipResult(rowsData, calendar, from, to);
       });
@@ -1234,7 +1234,7 @@
   };
 
   const renderBunkTable = (rowsData) => {
-    const old = document.getElementById("vrevamp-bunk-table-container");
+    const old = document.getElementById("vtopext-bunk-table-container");
     if (old) old.remove();
     // re-query the anchor at render time — the one captured at the start of
     // the run may have been replaced by a VTOP re-render
@@ -1242,7 +1242,7 @@
     if (!anchor) return;
 
     const container = document.createElement("div");
-    container.id = "vrevamp-bunk-table-container";
+    container.id = "vtopext-bunk-table-container";
     container.style.cssText = "margin:15px 0;";
 
     const heading = document.createElement("p");
@@ -1333,7 +1333,7 @@
         subjCell.style.cursor = "pointer";
         subjCell.title = "Click to simulate skipping/attending";
         const sim = document.createElement("div");
-        sim.className = "vrevamp-whatif";
+        sim.className = "vtopext-whatif";
         sim.style.cssText = "display:none;margin-top:4px;font-size:12px;";
         let sk = 0;
         let at = 0;
@@ -1513,7 +1513,7 @@
   // attendance details…" wait. A register only changes when the table's own
   // attended/total counts change, so those counts are the cache key's
   // signature: same counts, same register, no request.
-  const PERSIST_KEY = "vrevamp_att_history";
+  const PERSIST_KEY = "vtopext_att_history";
   const encodeHistory = (h) => h.map((e) => [e.date.getTime(), e.attended ? 1 : 0]);
   const decodeHistory = (a) => a.map(([t, p]) => ({ date: new Date(t), attended: !!p }));
 
@@ -1592,7 +1592,7 @@
         }
         return history.length === 0 ? null : { s, history };
       } catch (error) {
-        console.warn("vRevamp: subject insight failed", error);
+        console.warn("VTOP Extension: subject insight failed", error);
         lastDetailError = String(error && error.message ? error.message : error);
         return null;
       }
@@ -1882,7 +1882,7 @@
     renderBunkTable(rowsData);
     // and the planner, under the bunk table it complements — that table
     // answers "up to CAT-2", this one answers "between these two dates"
-    const bunkBox = document.getElementById("vrevamp-bunk-table-container");
+    const bunkBox = document.getElementById("vtopext-bunk-table-container");
     if (bunkBox) renderSkipPlanner(rowsData, calendar, bunkBox);
 
     // stale registers also get a visible nudge on VTOP's own row, where the
@@ -1890,12 +1890,12 @@
     rowsData.forEach((r, i) => {
       if (!r.staleSince) return;
       const row = liveRowFor(collected[i].s);
-      if (!row || row.querySelector(".vrevamp-stale-flag")) return;
+      if (!row || row.querySelector(".vtopext-stale-flag")) return;
       const cell =
         row.cells && row.cells.length > 2 ? row.cells[2] : row.cells && row.cells[0];
       if (!cell) return;
       const flag = document.createElement("div");
-      flag.className = "vrevamp-stale-flag";
+      flag.className = "vtopext-stale-flag";
       flag.textContent = `⚠ not posted since ${r.staleSince}`;
       flag.title =
         "VTOP Extension: this register hasn't been updated — the percentage shown here is outdated";
@@ -1906,7 +1906,7 @@
 
     // snapshot for the home-page notices card and the marks-page flag
     chrome.storage.local.set({
-      vrevamp_attendance_summary: {
+      vtopext_attendance_summary: {
         fetchedAt: Date.now(),
         semester: semesterName,
         subjects: rowsData.map((r) => ({
@@ -1970,7 +1970,7 @@
       examBlocksReady = loadExamBlockDays();
       await doRun();
     } catch (error) {
-      console.warn("vRevamp: attendance insights failed", error);
+      console.warn("VTOP Extension: attendance insights failed", error);
       showStatus(
         "VTOP Extension: couldn't finish the attendance details " +
           `(${String((error && error.message) || error)}). Reopen this page to try again.`
@@ -1981,7 +1981,7 @@
         pendingRerun = false;
         setTimeout(() => {
           runInsights().catch((error) =>
-            console.warn("vRevamp: attendance insights failed", error)
+            console.warn("VTOP Extension: attendance insights failed", error)
           );
         }, 500);
       }
@@ -1993,7 +1993,7 @@
       // small delay so attendance.js finishes its own row edits first
       setTimeout(() => {
         runInsights().catch((error) =>
-          console.warn("vRevamp: attendance insights failed", error)
+          console.warn("VTOP Extension: attendance insights failed", error)
         );
       }, 400);
     }

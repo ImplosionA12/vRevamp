@@ -1,10 +1,10 @@
 /*
- * vRevamp mail relay — a free Google Apps Script web app.
+ * VTOP Extension mail relay — a free Google Apps Script web app.
  *
  * WHY THIS EXISTS
  * ---------------
- * vRevamp's 📧 button sends through the student's own Gmail, so the mail
- * arrives "from me, to me". To send from a dedicated vRevamp address instead,
+ * VTOP Extension's 📧 button sends through the student's own Gmail, so the mail
+ * arrives "from me, to me". To send from a dedicated VTOP Extension address instead,
  * something has to hold that mailbox's credential — and it cannot be the
  * extension, because everything shipped inside an extension is readable by
  * every user who installs it.
@@ -25,7 +25,7 @@
  *     Give the project a name you will recognise later.
  *
  *  3. Deploy → New deployment → gear icon → Web app.
- *       Description:      vRevamp mail relay
+ *       Description:      VTOP Extension mail relay
  *       Execute as:       Me (veramp.mailer@gmail.com)     <- must be "Me"
  *       Who has access:   Anyone                           <- must be "Anyone"
  *     "Anyone" here means unauthenticated callers, which is what the extension

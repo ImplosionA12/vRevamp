@@ -30,7 +30,7 @@
 (() => {
   const GRADE_POINTS = { S: 10, A: 9, B: 8, C: 7, D: 6, E: 5, F: 0 };
   const GRADES = ["S", "A", "B", "C", "D", "E", "F"];
-  const PANEL_ID = "vrevamp-cgpa-sim";
+  const PANEL_ID = "vtopext-cgpa-sim";
 
   const txt = (el) => (el ? el.textContent : "").replace(/\s+/g, " ").trim();
   const num = (s) => {
@@ -47,8 +47,8 @@
   let mode = "gpa";
 
   // credits + CGPA cached from the Grade History page / silent fetch
-  const STORE_CREDITS = "vrevamp_grade_credits";
-  const STORE_DETAILS = "vrevamp_cgpa_details";
+  const STORE_CREDITS = "vtopext_grade_credits";
+  const STORE_DETAILS = "vtopext_cgpa_details";
   let cachedCredits = {};
   let cachedDetails = null;
   let historyFetch = "idle"; // idle | pending | done | failed
@@ -307,7 +307,7 @@
       })
       .catch((e) => {
         historyFetch = "failed";
-        console.warn("vRevamp what-if simulator: grade-history fetch failed", e);
+        console.warn("VTOP Extension what-if simulator: grade-history fetch failed", e);
       });
   };
 
@@ -427,7 +427,7 @@
   const fmtDelta = (d) => (d > 0 ? "+" : "") + d.toFixed(2);
 
   const renderBody = () => {
-    const body = document.getElementById("vrevamp-sim-body");
+    const body = document.getElementById("vtopext-sim-body");
     if (!body) return;
     body.textContent = "";
 
@@ -629,7 +629,7 @@
       panel.appendChild(hint);
 
       const bodyWrap = document.createElement("div");
-      bodyWrap.id = "vrevamp-sim-body";
+      bodyWrap.id = "vtopext-sim-body";
       panel.appendChild(bodyWrap);
 
       const dbgBar = document.createElement("div");
@@ -648,7 +648,7 @@
           await navigator.clipboard.writeText(text);
           dbgMsg.textContent = "copied ✔ — paste it to the developer";
         } catch (e) {
-          console.log("[vRevamp what-if debug]\n" + text);
+          console.log("[VTOP Extension what-if debug]\n" + text);
           dbgMsg.textContent = "see console (F12) and copy from there";
         }
       });
@@ -697,7 +697,7 @@
       try {
         buildPanel();
       } catch (error) {
-        console.warn("vRevamp what-if simulator:", error);
+        console.warn("VTOP Extension what-if simulator:", error);
       }
     }, 400);
   };
