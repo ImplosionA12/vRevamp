@@ -235,7 +235,7 @@ const vr_da_mail_body = (info) => {
       `border:${B};font-size:14px;">` +
       `<thead><tr>${head}</tr></thead><tbody>${body.join("")}</tbody></table>` +
       `<p style="color:#666;font-size:12px;margin-top:16px;">` +
-      `Sent by vRevamp from your VTOP digital assignments page.</p></div>`,
+      `Sent by VTOP Extension from your VTOP digital assignments page.</p></div>`,
     text: text.join("\n"),
   };
 };
@@ -315,7 +315,7 @@ window.vrDelegate("da-mail", async (mailBtn) => {
     const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
     const dueEnd = new Date(`${iso}T21:00:00+05:30`).getTime();
     const title = `DA due: ${info.code} — ${a.title}`;
-    const text = `${title}\n${info.title}\nDue ${a.due} — not uploaded yet.\n\nSent by vRevamp.`;
+    const text = `${title}\n${info.title}\nDue ${a.due} — not uploaded yet.\n\nSent by VTOP Extension.`;
     reminders.push({
       when: dueEnd - 25 * 3600 * 1000,
       until: dueEnd,
@@ -327,7 +327,7 @@ window.vrDelegate("da-mail", async (mailBtn) => {
         `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px">` +
         `<h3 style="margin:0 0 8px">Tomorrow: ${da_escape(title)}</h3>` +
         `<div>${da_escape(info.title)}</div><div>Due ${da_escape(a.due)} — not uploaded yet</div>` +
-        `<p style="color:#666;font-size:12px;margin-top:16px">Sent by vRevamp from your VTOP digital assignments page.</p></div>`,
+        `<p style="color:#666;font-size:12px;margin-top:16px">Sent by VTOP Extension from your VTOP digital assignments page.</p></div>`,
     });
   });
   mailBtn.disabled = true;
@@ -368,7 +368,7 @@ window.vrDelegate("da-mailnow", async (btn) => {
   const result = await window.vrMailOrAsk(
     btn,
     {
-      subject: `vRevamp — ${info.dues.length} assignment(s) still to upload`,
+      subject: `VTOP Extension — ${info.dues.length} assignment(s) still to upload`,
       html: mail.html,
       text: mail.text,
     },
@@ -411,7 +411,7 @@ window.vrDelegate("da-digest", async (btn) => {
     : "Email me a daily digest";
   btn.title = reply.enabled
     ? `Sent every day around ${reply.hour}:00 to ${reply.to || "your reminder address"}`
-    : "Once a day, vRevamp mails you what's still to upload and where your attendance stands";
+    : "Once a day, VTOP Extension mails you what's still to upload and where your attendance stands";
 });
 
 // 2026 layout: class table is Sl.No / Class Nbr / Course Code / Course Title /
@@ -767,7 +767,7 @@ const renderDaSummary = (classTable, courses) => {
 
     const daily = window.vrButton("da-digest", "Email me a daily digest", {});
     daily.title =
-      "Once a day, vRevamp mails you what's still to upload and where your attendance stands";
+      "Once a day, VTOP Extension mails you what's still to upload and where your attendance stands";
     daily.style.cssText = "font-size:12px;cursor:pointer;";
     controls.appendChild(daily);
     // reflect the setting rather than always offering to switch it on — a

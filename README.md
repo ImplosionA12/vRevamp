@@ -1,4 +1,4 @@
-# vRevamp
+# VTOP Extension
 
 A Chrome extension that makes the VIT-AP VTOP portal faster and more useful.
 Works on `vtop.vitap.ac.in` (and `web.vitap.ac.in`).
@@ -41,7 +41,7 @@ Unpacked extensions never update themselves. The popup shows **"vX is available"
 when a newer version is on GitHub. To update:
 
 1. Download the new release and unzip it **over the old folder** (same location).
-2. Go to `chrome://extensions` and press the **reload** (circular arrow) button on vRevamp.
+2. Go to `chrome://extensions` and press the **reload** (circular arrow) button on VTOP Extension.
 3. Reload any open VTOP tab.
 
 If something stops working after you changed or re-downloaded files, step 2 is
@@ -72,5 +72,5 @@ Changes are logged in [changes.md](changes.md); open work is in [ROADMAP.md](ROA
 
 ## Credits and licence
 
-Started from [sanjay7178/vRevamp](https://github.com/sanjay7178/vRevamp) and
+Started from sanjay7178's [vRevamp](https://github.com/sanjay7178/vRevamp) and
 substantially reworked. Licensed under GPL-3.0, see [LICENSE](LICENSE).
