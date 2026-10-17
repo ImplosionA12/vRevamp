@@ -549,7 +549,15 @@
       document.querySelector("#b5wrapper") ||
       document.querySelector("#core-container");
     if (!container) return false;
-    const calendar = await getLatestCalendar();
+    let calendar = await getLatestCalendar();
+    if (!calendar && typeof window.vrAcademicCalendar === "function") {
+      // nothing cached yet: read it now rather than asking the student to visit Attendance
+      try {
+        calendar = await window.vrAcademicCalendar();
+      } catch (error) {
+        /* falls through to the instruction below */
+      }
+    }
     const stored = await chrome.storage.local.get([
       "vtopext_attendance_summary",
       "vtopext_notices_collapsed",

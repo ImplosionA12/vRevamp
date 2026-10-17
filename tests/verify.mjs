@@ -1745,6 +1745,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "js/store/store.js",
       "js/store/saveTimeTableDetails.js",
       "js/shared/vtop.js",
+      "js/utils/chooseCurrentSem.js",
       "js/attendance_insights.js",
     ]);
     await page.evaluate(() => window.__dispatch("view_attendance"));
@@ -1786,6 +1787,25 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       "banner warns about the stale subject",
       !!banner && /PHY1999[\s\S]*not posted since 29 Dec/.test(banner)
     );
+    // proactive load (home card): nothing cached, no semester name given -> it
+    // reads the newest started plain semester itself instead of asking the
+    // student to open Attendance first
+    await page.evaluate(() => {
+      Object.keys(window.__storage)
+        .filter((k) => /calendar/.test(k))
+        .forEach((k) => delete window.__storage[k]);
+    });
+    const auto = await page.evaluate(async () => {
+      const c = await window.vrAcademicCalendar();
+      return c ? { semester: c.semester, days: (c.instructionalDays || []).length } : null;
+    });
+    ok(
+      "home card can load the calendar with no semester name",
+      !!auto && auto.semester === "Winter Semester 2025-26",
+      JSON.stringify(auto)
+    );
+    const ptr = await page.evaluate(() => !!window.__storage.vtopext_latest_calendar);
+    ok("...and leaves the latest-calendar pointer the card reads", ptr);
     // remaining after 8 Jan = instructional days 9,12,14,16,18 -> 5 classes
     // by history; the stale Mondays-only timetable would say 1
     const cseRow = table && table.find((r) => /CSE1005/.test(r[0]));

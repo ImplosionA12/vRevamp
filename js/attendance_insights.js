@@ -405,10 +405,31 @@
       (o) => o.value && o.value.trim()
     );
     const want = normText(semesterName);
-    const opt =
-      options.find((o) => normText(o.textContent) === want) ||
-      options.find((o) => normText(o.textContent).includes(want)) ||
-      options.find((o) => want.includes(normText(o.textContent)));
+    let opt = want
+      ? options.find((o) => normText(o.textContent) === want) ||
+        options.find((o) => normText(o.textContent).includes(want)) ||
+        options.find((o) => want.includes(normText(o.textContent)))
+      : null;
+    // No semester name to go on (the home page, before Attendance has ever
+    // been opened): take the newest semester that has already begun and is not
+    // one of the odd variants, the same rule the semester pickers use.
+    if (!opt && !want && typeof parseSemesterStart === "function") {
+      const decoy = /freshers?|transport|fasts*track|cdc|pat|specials+arrear/i;
+      const now = Date.now();
+      let best = null;
+      for (const o of options) {
+        const text = (o.textContent || "").trim();
+        if (decoy.test(text)) continue;
+        const start = parseSemesterStart(text);
+        if (!start || start.getTime() > now) continue;
+        if (!best || start > best.start || (+start === +best.start && text.length < best.text.length))
+          best = { o, start, text };
+      }
+      if (best) {
+        opt = best.o;
+        semesterName = best.text;
+      }
+    }
     if (!opt) throw new Error("semester not found in calendar dropdown");
     const semSubId = opt.value;
     const cgOpt = landing.querySelector("#classGroupId option[value]");
@@ -541,7 +562,12 @@
   let calendarFailedAt = 0;
 
   const getAcademicCalendar = async (semesterName) => {
-    const key = CACHE_PREFIX + normText(semesterName);
+    if (!semesterName) {
+      const latest = (await chrome.storage.local.get("vtopext_latest_calendar"))
+        .vtopext_latest_calendar;
+      if (latest && latest.version === 4) return withoutHolidays(latest);
+    }
+    let key = CACHE_PREFIX + normText(semesterName);
     if (calendarFailedAt && Date.now() - calendarFailedAt < CALENDAR_RETRY_MS)
       return null;
     try {
@@ -554,6 +580,7 @@
         return withoutHolidays(cached[key]);
       }
       const calendar = await fetchCalendar(semesterName);
+      key = CACHE_PREFIX + normText(calendar.semester);
       // drop caches of other semesters, then store this one
       const all = await chrome.storage.local.get(null);
       const stale = Object.keys(all).filter(
@@ -572,6 +599,10 @@
   };
 
   let lastCalendarError = "";
+
+  // Lets the home card load the calendar itself instead of asking the student to
+  // open Attendance first. Resolves to null when it cannot be read.
+  window.vrAcademicCalendar = (semesterName) => getAcademicCalendar(semesterName || "");
 
   /* ---------------- schedule inference + bunk math ---------------- */
 

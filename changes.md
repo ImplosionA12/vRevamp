@@ -4380,3 +4380,16 @@ one page, as Chrome does at inject time:
 - Left alone on purpose: LICENSE (GPL-3.0 requires keeping the copyright notices), and the GitHub
   repo URL (config.json, manifest homepage, README links) which still ends in /vRevamp until the repo itself is renamed.
 - Version is now 1 (manifest.json), and stays 1 from here on, by request.
+
+## Home card reads the academic calendar itself (2026-10-18)
+- SEEN: the home "heads up" card said "Open the Attendance page once so VTOP Extension can read the
+  academic calendar". It was a side effect of renaming the storage keys (the cached calendar was
+  under the old key), but the nag was wrong anyway: the card can fetch it.
+- Fix: attendance_insights.js exposes window.vrAcademicCalendar(); with no semester name it picks the
+  newest already-started, non-decoy semester from the calendar dropdown (same rule as the pickers),
+  caches it under that semester and sets the latest-calendar pointer. home_notices.js calls it when
+  nothing is cached; the instruction text stays only as the fallback if the read fails.
+- Tests: 595 pass (2 new: no-name load picks the semester; pointer left for the card).
+- NOT checked live in Chrome. Reload the extension and open the VTOP home page.
+- Still on the user: the deployed Apps Script mail relay still says "vRevamp" as the sender name and
+  in its GET reply. Paste tools/mail-relay.gs into script.google.com and deploy a new version.
