@@ -1,10 +1,10 @@
-# vRevamp — what's left
+# VTOP Extension — what's left
 
 Open work as of **2026-08-20**. Ordered by what unblocks the most.
 Historical record of what was *done* lives in [changes.md](changes.md).
 
 The Cloud project is **`verammp`** (number `256000685922`, display name
-"VErammp"), owned by **ruthvikmrao@gmail.com** — *not* the account the browser
+"VErammp"), owned by **owner@example.com** — *not* the account the browser
 is usually signed in as, which is why every Console link needs `&authuser=…`.
 
 ---
@@ -35,7 +35,7 @@ On a logged-in session, against Fall 2026-27's newly published CAT1 schedule
 |---|---|
 | 🔔 | `✓ 11 Chrome notification(s) scheduled (1 day & 2 h before each exam)` |
 | ✉️ | `✓ 6 reminder(s) set — email 24 h before each exam` |
-| 📧 | `✓ emailed 6 exam(s) to ruthvik.24mic7198@vitapstudent.ac.in` |
+| 📧 | `✓ emailed 6 exam(s) to student@vitapstudent.ac.in` |
 
 So the **Calendar API is enabled** (six events written through it) and
 **`gmail.send` is on the consent screen** (Gmail returned 200 on
@@ -90,7 +90,7 @@ clear the duplicate-events problem in §2.
 
 ## 1b. ~~ONE STEP LEFT: deploy the mail relay~~ — DONE 2026-08-22
 
-Deployed under **vtopextention@gmail.com** (the club account) and live in
+Deployed under **<club-account>@gmail.com** (the club account) and live in
 `MAIL_RELAY_URL`. 📧 mail now sends from that address with **no Google sign-in
 and not one scope**.
 
@@ -100,7 +100,7 @@ even when "Who has access" is set wrong. An anonymous request is the only test
 that distinguishes them, and the extension is an anonymous caller:
 
 ```
-{"ok":true,"service":"vRevamp mail relay","quotaLeft":100}
+{"ok":true,"service":"VTOP Extension mail relay","quotaLeft":100}
 ```
 
 A student can decline it and send from their own Gmail instead: clearing the
@@ -121,7 +121,7 @@ The steps below are kept for whoever redeploys it.
 5. Paste the `/exec` URL into `MAIL_RELAY_URL`, reload the extension.
 
 Check it is alive by opening the `/exec` URL in a browser — a GET returns
-`{"ok":true,"service":"vRevamp mail relay","quotaLeft":N}`.
+`{"ok":true,"service":"VTOP Extension mail relay","quotaLeft":N}`.
 
 **Later edits: Deploy → Manage deployments → edit the EXISTING deployment.** A
 new deployment issues a new URL and breaks every installed copy.
@@ -151,9 +151,9 @@ Today 📧 sends through the student's own Gmail, so it arrives **from them, to
 them**. ✉️ reminders already arrive from *Google Calendar*, not from the student,
 so this only affects the instant summary.
 
-Sending as `vrevamp@…` **cannot be done from the extension alone** — anything
+Sending as `vtopext@…` **cannot be done from the extension alone** — anything
 shipped inside it is readable by every user, so a sender credential there would
-let anyone send as vRevamp. It needs a server holding the secret:
+let anyone send as VTOP Extension. It needs a server holding the secret:
 
 | piece | free options | catch |
 |---|---|---|
@@ -168,7 +168,7 @@ Calendar runs under.
 
 **Not needed** — §1b does the same job free, with no host and no domain, because
 a plain @gmail sender was acceptable. Kept only so the reasoning is not
-re-derived from scratch if vRevamp ever outgrows an Apps Script's quota.
+re-derived from scratch if VTOP Extension ever outgrows an Apps Script's quota.
 
 ## 2. Clean up the duplicate calendar events — manual, not code
 
@@ -176,7 +176,7 @@ Verified live 2026-08-09: the calendar holds **three copies of every class**
 (35 distinct classes in one week, most present 3×) from three TEMPLATE-route
 imports before the duplicate guard existed.
 
-In Google Calendar, search `vRevamp timetable import` and delete two of each.
+In Google Calendar, search `VTOP Extension timetable import` and delete two of each.
 Nothing in the extension will do this — the TEMPLATE route has no token and no
 extended property to find them by. Once §1 is done, `deleteOldImports` handles
 future runs.
@@ -220,7 +220,7 @@ with no relationship to the developer. Publishing needs **no review, no
 submission and no wait**; verification only removes the warning and the cap.
 
 So: **Publish app** in Cloud Console (project `verammp`, owner
-ruthvikmrao@gmail.com). No test users, ever. The 7-day re-consent problem is
+owner@example.com). No test users, ever. The 7-day re-consent problem is
 Testing-only and disappears with it.
 
 The cost, accepted knowingly: `gmail.readonly` is **restricted**, and Google
@@ -338,7 +338,7 @@ Read off the live login form the same day, not inferred:
 | `input[name=gResponse]` | present (hidden) |
 | `.grecaptcha-badge`, `g-recaptcha-response` | present |
 | `document.images.length` | 1 (the VIT-AP logo) |
-| `sessionStorage.vrevamp_login_reloads` | **null** — never set |
+| `sessionStorage.vtopext_login_reloads` | **null** — never set |
 | `performance…navigation[0].type` | `"navigate"`, not `"reload"` |
 
 So: the flip is real and goes both ways, the stand-down check
@@ -373,7 +373,7 @@ section asked for:
 | `window.grecaptcha` | loaded (`object`), one `[data-sitekey]` |
 | `document.images.length` | 1 (the VIT-AP logo) |
 | `#captchaStr` | absent |
-| `sessionStorage.vrevamp_login_reloads` | **null** — never set |
+| `sessionStorage.vtopext_login_reloads` | **null** — never set |
 | navigation type | `"navigate"`, not `"reload"` |
 
 `#vtopLoginForm` fields in full: `_csrf, username, password, basic-addon2,
@@ -404,7 +404,7 @@ with a scraped `_csrf`; this runs signed out, and there is no session to lose.
 And because Student and Employee post byte-identical bodies, it cannot pick the
 wrong role: the role is not in the request.
 
-Three guards: the shared `vrevamp_login_reloads` budget (no ping-pong), never
+Three guards: the shared `vtopext_login_reloads` budget (no ping-pong), never
 where a `#vtopLoginForm` exists (the login page ships a hidden `#stdForm`, and
 missing that caused the 2026-08-07 loop), and an escape hatch keyed on **how
 the chooser was reached** — `back_forward` navigation, or a `document.referrer`
@@ -421,10 +421,10 @@ it none of this runs, so the manifest itself carries an assertion.
 
 **LIVE-VERIFIED 2026-08-20** against `vtop.vitap.ac.in`, signed out, after an
 extension reload: `/vtop/open/page` lands on the login form; a second
-immediate visit does too, with a fresh `vrevamp_role_autopick` stamp (the case
+immediate visit does too, with a fresh `vtopext_role_autopick` stamp (the case
 the cooldown broke); "Go to Home Page" from the login card stays on the chooser
 with `#empForm`/`#parentForm` present; and typing the bare domain lands on the
-login form. `vrevamp_login_reloads` was null at every login landing.
+login form. `vtopext_login_reloads` was null at every login landing.
 
 ##### One thing that did NOT match the 2026-08-19 note
 
@@ -479,7 +479,7 @@ landing page is pre-login; a live session gets the dashboard from
 ### ~~Can automation click our buttons after all?~~ — ANSWERED 2026-08-16: YES
 
 A **CDP-level mouse click reaches the isolated-world handler.** Confirmed on the
-live exam page: `[vRevamp click] running exam-bell` and `running exam-mail` both
+live exam page: `[VTOP Extension click] running exam-bell` and `running exam-mail` both
 appear in the console and both handlers complete.
 
 The old rule was true only of `element.click()` and dispatched events, which run
@@ -597,7 +597,7 @@ the day before:
 
 | | attendance refresh (declined) | venue check (built) |
 |---|---|---|
-| the request | reconstructed by vRevamp | **recorded from the student's own Search**, by the worker, credentials stripped |
+| the request | reconstructed by VTOP Extension | **recorded from the student's own Search**, by the worker, credentials stripped |
 | rate | once a day, unconditional | once per 3 h, and only with an opt-in, a cached semester id and an exam still ahead |
 | failure handling | would need a new stop rule | `window.vrVtop.post` — existing circuit breaker, existing session-expired check |
 | clock | after the attempt | **written before the request**, so a failure costs one POST per window |
@@ -605,12 +605,12 @@ the day before:
 The named endpoint is used only until the worker has recorded a real one, and
 that guess is marked `probe`, so a wrong guess cannot trip the breaker.
 
-It also refreshes `vrevamp_exam_schedule` (now carrying `semesterId`, not just
+It also refreshes `vtopext_exam_schedule` (now carrying `semesterId`, not just
 the name) from what it fetched, so the `.ics` export, the Calendar import and
 the daily digest stop showing `-` for a venue published days ago.
 
 **Not yet seen live.** The failure mode to watch for is the opposite one:
-`[vRevamp exam] venue watcher (background): …` appearing on pages where it
+`[VTOP Extension exam] venue watcher (background): …` appearing on pages where it
 should have stayed quiet, or a mail for a venue that has not changed.
 
 ---

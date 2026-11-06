@@ -64,14 +64,14 @@ const exam_rows_of_group = (table, groupIndex, cols) => {
     const row = table.rows[i];
     if (row.children[0] && row.children[0].className === "panelHead-secondary")
       break; // next exam-type group
-    // read around vRevamp's own 📅 links — they live inside the date cell,
+    // read around VTOP Extension's own 📅 links — they live inside the date cell,
     // and their text must not pollute the parsed values
     const cell = (idx) => {
       if (idx < 0 || !row.cells[idx]) return "";
-      if (!row.cells[idx].querySelector(".vrevamp-gcal-link"))
+      if (!row.cells[idx].querySelector(".vtopext-gcal-link"))
         return row.cells[idx].textContent.trim();
       const clone = row.cells[idx].cloneNode(true);
-      clone.querySelectorAll(".vrevamp-gcal-link").forEach((n) => n.remove());
+      clone.querySelectorAll(".vtopext-gcal-link").forEach((n) => n.remove());
       return clone.textContent.trim();
     };
     const date = cell(cols.date);
@@ -106,7 +106,7 @@ const build_exam_ics = (exams) => {
       // date + start + slot keep a course's THEORY and LAB exams apart: a UID
       // of just the course code made them the same event, and importing the
       // file silently dropped one of the two.
-      `UID:${vrIcs.uid("vrevamp-exam", exam.code, day, start, exam.slot)}`,
+      `UID:${vrIcs.uid("vtopext-exam", exam.code, day, start, exam.slot)}`,
       `DTSTAMP:${dtstamp}`,
       `DTSTART;TZID=Asia/Kolkata:${day}T${start}00`,
       `DTEND;TZID=Asia/Kolkata:${day}T${end}00`,
@@ -127,18 +127,10 @@ const build_exam_ics = (exams) => {
 };
 
 /*
- * When Google mails the reminder, in minutes before the exam starts.
- *
- * TWO of them, matching the 🔔 button exactly. A single 24 h mail was the
- * original design and it is the wrong shape: a day out you note it and forget
- * it; two hours out is when you need the venue and the reporting time in front
- * of you. Reported 2026-08-16 — "i asked you to send it when 24 hours before
- * the exam and also 2 hours before".
- *
- * Google caps an event at 5 reminder overrides. Two emails plus one popup on
- * the near one leaves room and does not bury the student in popups.
+ * The reminders mailed by the extension are 24 h and 2 h before each exam,
+ * matching the 🔔 button: a day out you note it, two hours out you need the
+ * venue and reporting time in front of you (asked 2026-08-16).
  */
-const EXAM_REMINDER_LEADS_MIN = [24 * 60, 2 * 60];
 
 const exam_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -163,99 +155,11 @@ const exam_start_ms = (exam) => {
   return new Date(`${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30`).getTime();
 };
 
-// One calendar event per exam, at the exam's own start-end window, with an
-// email (+popup) reminder — the same mechanism as the DA page's 🔔 button.
-const exam_email_reminder = (exam, exam_type, token) => {
-  const iso = exam_date_iso(exam.date);
-  const times = exam.time.split("-");
-  const start = exam_time_to_24h(times[0] || "");
-  const end = exam_time_to_24h(times[1] || "");
-  if (!iso || !start || !end) return Promise.resolve({ ok: false, status: 0 });
-  return fetch(
-    "https://www.googleapis.com/calendar/v3/calendars/primary/events?alt=json",
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + token,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        summary: `${exam_type} exam: ${exam.code} — ${exam.title}`,
-        description:
-          `📚 ${exam.code} — ${exam.title}\n` +
-          `🪑 Slot: ${exam.slot || "-"}   Session: ${exam.session || "-"}\n` +
-          `⏰ Reporting time: ${exam.reporting || "-"} (exam ${exam.time})\n` +
-          `📍 Venue: ${exam.venue || "not published yet"}   Seat: ${exam.seatLoc || "-"} · No. ${exam.seatNo || "-"}\n\n` +
-          `VTOP Extension reminder — email ${EXAM_REMINDER_LEADS_MIN.map((m) => `${m / 60} h`).join(" and ")} before`,
-        // Google's reminder email quotes the event's title and LOCATION, and
-        // nothing else — so the venue has to live here, not only in the
-        // description, or the 2 h mail arrives without the one fact it is for.
-        // VTOP publishes venue/seat late (they read "-" until a few days out),
-        // so re-run ✉️ closer to the exam to refresh them.
-        location: exam.venue || "",
-        // Tagged so a re-run can REPLACE this instead of adding a second copy —
-        // the same mechanism js/timetable_ics.js uses. Without it every extra
-        // click silently doubles the exam events, which is exactly what
-        // happened to the timetable import (66 events in one week, 35 distinct,
-        // most present three times). Re-running ✉️ is normal here: venue and
-        // seat read "-" until VTOP publishes them a few days out.
-        extendedProperties: { private: { vrevamp: "exam" } },
-        start: { dateTime: `${iso}T${start.slice(0, 2)}:${start.slice(2)}:00+05:30` },
-        end: { dateTime: `${iso}T${end.slice(0, 2)}:${end.slice(2)}:00+05:30` },
-        reminders: {
-          useDefault: false,
-          overrides: [
-            ...EXAM_REMINDER_LEADS_MIN.map((minutes) => ({ method: "email", minutes })),
-            // one popup, on the near lead only — a popup a day early is noise
-            { method: "popup", minutes: EXAM_REMINDER_LEADS_MIN[EXAM_REMINDER_LEADS_MIN.length - 1] },
-          ],
-        },
-      }),
-    }
-  )
-    .then((r) => ({ ok: r.status === 200, status: r.status }))
-    .catch(() => ({ ok: false, status: 0 }));
-};
-
-const EXAM_GCAL_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-
-// Drop the events a previous ✉️ run created, so this run replaces them rather
-// than doubling them. Only ever touches events carrying our own
-// `vrevamp=exam` private property — an exam the student added by hand, or the
-// timetable import's `vrevamp=timetable` events, are invisible to this query.
-// Returns how many went, for the status line; failures are non-fatal because a
-// failed cleanup must not stop the reminders from being created.
-const exam_delete_old_reminders = async (token) => {
-  let removed = 0;
-  try {
-    const list = await fetch(
-      `${EXAM_GCAL_API}?privateExtendedProperty=${encodeURIComponent("vrevamp=exam")}&maxResults=250`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!list.ok) return removed;
-    const data = await list.json().catch(() => null);
-    for (const item of (data && data.items) || []) {
-      if (!item || !item.id) continue;
-      const r = await fetch(`${EXAM_GCAL_API}/${encodeURIComponent(item.id)}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      // 410 = already gone, which is the outcome we wanted anyway
-      if (r.ok || r.status === 410) removed++;
-      await exam_sleep(200);
-    }
-  } catch (error) {
-    console.warn("vRevamp exam schedule: cleanup", error);
-  }
-  return removed;
-};
-
 const exam_status = (button, text, good) => {
   let note = button.nextElementSibling;
-  if (!note || note.className !== "vrevamp-exam-note") {
+  if (!note || note.className !== "vtopext-exam-note") {
     note = document.createElement("span");
-    note.className = "vrevamp-exam-note";
+    note.className = "vtopext-exam-note";
     note.style.cssText = "margin-left:6px;font-size:12px;font-weight:normal;";
     button.insertAdjacentElement("afterend", note);
   }
@@ -279,7 +183,7 @@ const exam_status = (button, text, good) => {
 // The two earlier designs each got one half of this wrong. A `dataset` guard
 // over an `onclick` handler was too durable: the flag came back on dead clones
 // and blocked the re-injection that would have repaired them. Swapping in a JS
-// property (`__vrevampExamBound`) fixed the detection but not the repair — it
+// property (`__vtopextExamBound`) fixed the detection but not the repair — it
 // only re-ran on the `exam_schedule` webRequest message, which fires at
 // onCompleted, i.e. *before* VTOP writes the response into the DOM, with no
 // retry behind it. Neither survived contact with the real page.
@@ -307,7 +211,7 @@ const VR_BTN_SEL = VR_ACTIONS.map((a) => `[data-vr-action="${a}"]`).join(",");
 // innerText has no layout to work from.
 const vr_group_type = (head) => {
   const copy = head.cloneNode(true);
-  copy.querySelectorAll(`${VR_BTN_SEL},.vrevamp-exam-note`).forEach((el) => el.remove());
+  copy.querySelectorAll(`${VR_BTN_SEL},.vtopext-exam-note`).forEach((el) => el.remove());
   return copy.textContent.replace(/\s+/gu, " ").trim();
 };
 
@@ -349,7 +253,7 @@ const vr_exam_context = (button) => {
 // into an exact stage number without asking anyone to describe symptoms.
 const vr_log = (...args) => {
   try {
-    console.log("[vRevamp exam]", ...args);
+    console.log("[VTOP Extension exam]", ...args);
   } catch {
     /* console gone — never let logging break the feature */
   }
@@ -407,7 +311,7 @@ window.vrDelegate("exam-ics", (button) => {
     document.body.removeChild(a);
     exam_status(button, `✓ ${events} exam(s) exported`, true);
   } catch (error) {
-    console.warn("vRevamp exam schedule:", error);
+    console.warn("VTOP Extension exam schedule:", error);
     exam_status(button, "export failed — refresh and try again", false);
   }
 });
@@ -450,7 +354,7 @@ window.vrDelegate("exam-bell", async (bell) => {
       n > 0
     );
   } catch (error) {
-    console.warn("vRevamp exam schedule:", error);
+    console.warn("VTOP Extension exam schedule:", error);
     bell.disabled = false;
     exam_status(bell, "failed — refresh and try again", false);
   }
@@ -468,51 +372,58 @@ window.vrDelegate("exam-mail", async (mail) => {
       exam_status(mail, "no upcoming exams with a published time in this group", false);
       return;
     }
-    let token = await window.vrGoogleToken({});
-    // never consented yet — one interactive consent window, right now
-    if (!token) token = await window.vrGoogleToken({ interactive: true });
-    if (!token) {
-      exam_status(mail, window.vrGoogleAuthHint(), false);
-      return;
-    }
-    mail.disabled = true;
-    // replace, never duplicate: clear anything a previous ✉️ run left behind
-    // before writing this one
-    exam_status(mail, "checking for a previous run…", true);
-    const replaced = await exam_delete_old_reminders(token);
-    let done = 0;
-    let refreshed = false;
-    for (let i = 0; i < upcoming.length; i++) {
-      const r = await exam_email_reminder(upcoming[i], ctx.examType, token);
-      if (r.status === 401 && !refreshed) {
-        // token died mid-flight — invalidate it, mint a fresh one, retry
-        refreshed = true;
-        token = await window.vrGoogleToken({ stale: token });
-        if (token) {
-          i--; // redo this exam with the fresh token
-          continue;
-        }
-      }
-      if (r.status === 401) {
-        exam_status(mail, "Google session expired — click again to re-consent", false);
-        mail.disabled = false;
-        return;
-      }
-      if (r.ok) done++;
-      await exam_sleep(400);
-    }
-    mail.disabled = false;
+    // One email 24 h before and one 2 h before each exam, sent by the
+    // extension's own mail: no Google sign-in, nothing written to a calendar.
+    // Pressing again replaces the previous run (same tag), which is also how
+    // venue and seat get refreshed once VTOP publishes them.
+    const reminders = [];
+    upcoming.forEach((exam) => {
+      const startMs = exam_start_ms(exam);
+      if (!Number.isFinite(startMs)) return;
+      const title = `${ctx.examType} exam: ${exam.code}${exam.title ? ` — ${exam.title}` : ""}`;
+      const lines = [
+        `${exam.date} · ${exam.time}  (report by ${exam.reporting || "-"})`,
+        `Venue: ${exam.venue || "not published yet"}`,
+        `Seat: ${exam.seatLoc || "-"} · No. ${exam.seatNo || "-"}`,
+        `Slot ${exam.slot || "-"} · Session ${exam.session || "-"}`,
+      ];
+      [
+        [24 * 3600 * 1000, "Tomorrow"],
+        [2 * 3600 * 1000, "In 2 hours"],
+      ].forEach(([lead, label]) => {
+        reminders.push({
+          when: startMs - lead,
+          until: startMs,
+          title: `${label} — ${title}`,
+          body: lines.slice(0, 3).join("\n"),
+          subject: `${label}: ${title}`,
+          text: `${title}\n\n${lines.join("\n")}\n\nSent by VTOP Extension.`,
+          html:
+            `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px">` +
+            `<h3 style="margin:0 0 8px">${exam_html_escape(label)}: ${exam_html_escape(title)}</h3>` +
+            lines.map((l) => `<div>${exam_html_escape(l)}</div>`).join("") +
+            `<p style="color:#666;font-size:12px;margin-top:16px">Sent by VTOP Extension from your VTOP exam schedule.</p></div>`,
+        });
+      });
+    });
+    const r = await window.vrScheduleMailReminders(
+      mail,
+      `exam-mail:${ctx.examType}`,
+      reminders,
+      (text, good) => exam_status(mail, text, good)
+    );
+    if (r.error === "need_address") return; // the address field is showing
     exam_status(
       mail,
-      done > 0
-        ? `✓ ${done} exam(s) — Google will email you 24 h and 2 h before each one` +
-          (replaced ? ` (replaced ${replaced} from an earlier run)` : "")
-        : "couldn't create the reminders — try again",
-      done > 0
+      r.ok
+        ? `✓ ${r.n} email(s) scheduled to ${r.to} — 24 h and 2 h before each exam (Chrome must be open then)`
+        : !r.error
+          ? "every exam here is under 2 h away — nothing left to schedule"
+          : "couldn't schedule — reload the extension (chrome://extensions) and retry",
+      r.ok
     );
   } catch (error) {
-    console.warn("vRevamp exam schedule:", error);
-    mail.disabled = false;
+    console.warn("VTOP Extension exam schedule:", error);
     exam_status(mail, "failed — refresh and try again", false);
   }
 });
@@ -587,7 +498,7 @@ const exam_mail_body = (exams, examType, semester, opts) => {
 };
 
 /*
- * The parsed schedule, cached under `vrevamp_exam_schedule`.
+ * The parsed schedule, cached under `vtopext_exam_schedule`.
  *
  * Written from two places now — the page itself, and the background venue
  * check below, which holds a FRESHER copy of exactly this table than the page
@@ -629,7 +540,7 @@ const exam_schedule_cache = (table, cols, semester, semesterId) => {
     const sem = document.querySelector("#semesterSubId");
     const onPage = sem && sem.selectedIndex >= 0 ? sem.options[sem.selectedIndex] : null;
     chrome.storage.local.set({
-      vrevamp_exam_schedule: {
+      vtopext_exam_schedule: {
         fetchedAt: Date.now(),
         semester: semester || (onPage ? onPage.innerText.trim() : ""),
         semesterId: semesterId || (sem ? sem.value : "") || "",
@@ -637,7 +548,7 @@ const exam_schedule_cache = (table, cols, semester, semesterId) => {
       },
     });
   } catch (error) {
-    console.warn("vRevamp exam schedule: cache", error);
+    console.warn("VTOP Extension exam schedule: cache", error);
   }
 };
 
@@ -668,13 +579,13 @@ const exam_schedule_cache = (table, cols, semester, semesterId) => {
  *     so a page load can never throw up a Google consent window. If the silent
  *     token has lapsed the send is skipped and retried on the next visit.
  *
- * State lives in `vrevamp_exam_mail_state`: `{ optIn, sent: { key: venue } }`.
+ * State lives in `vtopext_exam_mail_state`: `{ optIn, sent: { key: venue } }`.
  * Keying the record by the VENUE, not by a boolean, is what makes this fire on
  * a *change* — a venue corrected from CB-324 to CB-101 mails again, and an
  * unchanged one never does.
  */
 
-const EXAM_MAIL_STATE_KEY = "vrevamp_exam_mail_state";
+const EXAM_MAIL_STATE_KEY = "vtopext_exam_mail_state";
 
 // "-", "", "--", whitespace — VTOP's several ways of writing "not yet"
 const exam_venue_of = (exam) => {
@@ -807,7 +718,7 @@ const exam_venue_watch = async (table, cols, semesterName, opts) => {
       return null;
     }
   } catch (error) {
-    console.warn("vRevamp exam schedule: venue watch", error);
+    console.warn("VTOP Extension exam schedule: venue watch", error);
   } finally {
     if (!holdsLock) exam_venue_watch_busy = false;
   }
@@ -840,7 +751,7 @@ const exam_venue_watch = async (table, cols, semesterName, opts) => {
  *     404 from it cannot trip the session breaker.
  *  2. **Through window.vrVtop.post**, so it inherits the circuit breaker, the
  *     single non-empty _csrf, and the "200 carrying a session-expired page"
- *     check. Three refusals and vRevamp stops talking to VTOP entirely.
+ *     check. Three refusals and VTOP Extension stops talking to VTOP entirely.
  *  3. **Once every three hours at most**, and the clock is written BEFORE the
  *     request, so a failure costs one POST per window rather than one per page
  *     load. Compare the attendance refresh, which was declined as "a once-a-day
@@ -852,11 +763,11 @@ const exam_venue_watch = async (table, cols, semesterName, opts) => {
  *     semester id, and at least one exam still ahead. Out of exam season this
  *     costs one storage read per page and never touches the network.
  *
- * It also refreshes `vrevamp_exam_schedule` from what it fetched, so the .ics
+ * It also refreshes `vtopext_exam_schedule` from what it fetched, so the .ics
  * export, the Calendar import and the daily digest stop showing "-" for a
  * venue that VTOP published days ago.
  */
-const EXAM_BG_CHECK_KEY = "vrevamp_exam_bg_check";
+const EXAM_BG_CHECK_KEY = "vtopext_exam_bg_check";
 const EXAM_BG_MIN_GAP_MS = 3 * 3600 * 1000;
 // only used when the worker has never recorded a real one — see (1)
 const EXAM_BG_SEARCH_PATH = "examinations/doSearchExamScheduleForStudent";
@@ -883,11 +794,11 @@ const exam_venue_background_check = async () => {
     if (!state.optIn) return null; // 📧 has never been pressed — stay silent
 
     const store = await chrome.storage.local.get([
-      "vrevamp_exam_schedule",
-      "vrevamp_exam_search_request",
+      "vtopext_exam_schedule",
+      "vtopext_exam_search_request",
       EXAM_BG_CHECK_KEY,
     ]);
-    const cache = store.vrevamp_exam_schedule;
+    const cache = store.vtopext_exam_schedule;
     // no semester id means the exam page has not been opened since this
     // version shipped — the next visit records one, and this starts working
     if (!cache || !cache.semesterId) return null;
@@ -907,7 +818,7 @@ const exam_venue_background_check = async () => {
     // read the same "not mailed yet" state while this one is deciding to mail.
     exam_venue_watch_busy = true;
 
-    const learned = store.vrevamp_exam_search_request;
+    const learned = store.vtopext_exam_search_request;
     const html = await window.vrVtop.post(
       (learned && learned.path) || EXAM_BG_SEARCH_PATH,
       { ...((learned && learned.params) || {}), semesterSubId: cache.semesterId },
@@ -953,7 +864,7 @@ const exam_venue_background_check = async () => {
  * the extension used.
  */
 /*
- * "where should vRevamp mail you?" — the whole cost of the mail feature when a
+ * "where should VTOP Extension mail you?" — the whole cost of the mail feature when a
  * relay is configured. One text field, in place, instead of a Google consent
  * screen: it works for a student with no Google account, and it lets them
  * choose the inbox they actually read on their phone rather than whichever
@@ -963,13 +874,13 @@ const exam_venue_background_check = async () => {
  * so nobody who has already answered ever sees it again.
  */
 const exam_ask_address = (btn, onSaved) => {
-  let box = btn.parentElement.querySelector(".vrevamp-exam-addr");
+  let box = btn.parentElement.querySelector(".vtopext-exam-addr");
   if (box) {
     box.querySelector("input").focus();
     return;
   }
   box = document.createElement("span");
-  box.className = "vrevamp-exam-addr";
+  box.className = "vtopext-exam-addr";
   box.style.cssText =
     "margin-left:6px;font-size:12px;font-weight:normal;white-space:nowrap;" +
     "display:inline-flex;align-items:center;gap:4px;";
@@ -979,8 +890,9 @@ const exam_ask_address = (btn, onSaved) => {
   input.placeholder = "you@example.com";
   input.setAttribute("aria-label", "Email address for VTOP Extension reminders");
   // VTOP's own form control, so it matches the portal's inputs
-  input.className = "form-control form-control-sm";
-  input.style.cssText = "width:220px;display:inline-block;";
+  // both spellings: the portal's logged-in pages use an older Bootstrap
+  input.className = "form-control input-sm form-control-sm";
+  input.style.cssText = "width:220px;display:inline-block;height:30px;padding:2px 8px;font-size:13px;";
 
   // type=button, like every other injected control: these sit inside VTOP's own
   // <form id="examSchedule"> and a default-type button submits it
@@ -1072,7 +984,7 @@ window.vrDelegate("exam-send", async (btn) => {
     }
     exam_status(btn, window.vrSendMailHint(r && r.error), false);
   } catch (error) {
-    console.warn("vRevamp exam schedule:", error);
+    console.warn("VTOP Extension exam schedule:", error);
     btn.disabled = false;
     exam_status(btn, "failed — refresh and try again", false);
   }
@@ -1132,10 +1044,10 @@ let exam_schedule_sync = () => {
       const end = exam_time_to_24h(times[1] || "");
       if (!iso || !start || !end || iso < todayIso) continue; // past / no time
       const dateCell = row.cells[cols.date];
-      if (!dateCell || dateCell.querySelector(".vrevamp-gcal-link")) continue;
+      if (!dateCell || dateCell.querySelector(".vtopext-gcal-link")) continue;
       const day = iso.replace(/-/g, "");
       const link = document.createElement("a");
-      link.className = "vrevamp-gcal-link";
+      link.className = "vtopext-gcal-link";
       link.textContent = "📅 add";
       link.title =
         "one tap: opens Google Calendar with this exam prefilled — just press Save (no sign-in setup)";
@@ -1156,7 +1068,7 @@ let exam_schedule_sync = () => {
       dateCell.appendChild(link);
     }
   } catch (error) {
-    console.warn("vRevamp exam schedule: gcal links", error);
+    console.warn("VTOP Extension exam schedule: gcal links", error);
   }
 
   for (let i = 0; i < table.rows.length; i++) {
@@ -1175,21 +1087,21 @@ let exam_schedule_sync = () => {
     const bell = window.vrButton("exam-bell", "Notify me before each exam", {
       vrExamType: exam_type,
     });
-    bell.className = "btn btn-outline-primary btn-sm";
+    window.vrOutline(bell);
     bell.title =
       "Chrome notification 1 day and 2 h before each exam — no sign-in needed";
     head.appendChild(bell);
 
-    // ✉️ one Google Calendar event per upcoming exam, with email reminders 24 h
-    // AND 2 h before. Sent by Google's servers, so they arrive on a phone with
-    // Chrome closed — and they come from Google Calendar, not from the student.
+    // ✉️ one email 24 h and one 2 h before each upcoming exam, sent by the
+    // extension's own mail address: no Google sign-in. Chrome has to be
+    // running when they fall due (a closed one catches up when it reopens).
     const mail = window.vrButton("exam-mail", "Email me 24 h & 2 h before", {
       vrExamType: exam_type,
     });
-    mail.className = "btn btn-outline-primary btn-sm";
+    window.vrOutline(mail);
     mail.title =
-      "One Google Calendar event per exam; Google emails you 24 h and 2 h before each. " +
-      "Sent by Google's servers, so it arrives even with Chrome closed. Needs one-time Google consent.";
+      "The extension emails you 24 h and 2 h before each exam, from its own address. " +
+      "No Google sign-in. Chrome must be open at those times.";
     head.appendChild(mail);
 
     // 📧 the whole list, mailed now, from the student's own Gmail. The ✉️
@@ -1197,7 +1109,7 @@ let exam_schedule_sync = () => {
     const send = window.vrButton("exam-send", "Mail me the list now", {
       vrExamType: exam_type,
     });
-    send.className = "btn btn-outline-primary btn-sm";
+    window.vrOutline(send);
     send.title =
       "Sends the upcoming exams of this group to your own inbox straight away — needs one-time Google consent";
     head.appendChild(send);
@@ -1237,7 +1149,7 @@ const exam_schedule_sync_with_retries = () => {
       if (done) exam_schedule_snapshot();
       if (done || attempts >= 10) return;
     } catch (error) {
-      console.warn("vRevamp exam schedule:", error);
+      console.warn("VTOP Extension exam schedule:", error);
     }
     setTimeout(tick, 700);
   };

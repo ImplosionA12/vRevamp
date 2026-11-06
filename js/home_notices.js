@@ -1,11 +1,11 @@
 /*
- * vRevamp home notices: a small card on the VTOP landing page (after login)
+ * VTOP Extension home notices: a small card on the VTOP landing page (after login)
  * showing exam countdowns, the next holiday, and subjects at risk — all from
  * data attendance_insights.js has already cached in chrome.storage.local.
  * Nothing is fetched here, so the card renders instantly.
  */
 (() => {
-  const CACHE_PREFIX = "vrevamp_calendar_";
+  const CACHE_PREFIX = "vtopext_calendar_";
   const DAY_MS = 24 * 60 * 60 * 1000;
 
   /*
@@ -177,47 +177,120 @@
   };
 
   const refreshInPlace = async () => {
-    if (!window.vrVtop || typeof window.vrVtop.post !== "function") return false;
+    if (!window.vrVtop || typeof window.vrVtop.post !== "function")
+      return { ok: false, reason: "VTOP helper not loaded — refresh the page" };
     const stored = await chrome.storage.local.get([
-      "vrevamp_attendance_request",
-      "vrevamp_attendance_summary",
+      "vtopext_attendance_request",
+      "vtopext_attendance_summary",
     ]);
-    const request = stored.vrevamp_attendance_request;
-    if (!request || !request.path) return false; // never recorded — nothing to replay
+    const request = stored.vtopext_attendance_request;
+    if (!request || !request.path)
+      return { ok: false, reason: "open the Attendance page once so I can learn the request" };
 
-    const html = await window.vrVtop.post(request.path, request.params || {});
+    const params = { ...(request.params || {}) };
+    const summary = stored.vtopext_attendance_summary || {};
+    // An empty recorded body made VTOP answer with a header-only table (0 rows).
+    if (!params.semesterSubId && summary.semesterSubId) params.semesterSubId = summary.semesterSubId;
+    if (!params.semesterSubId)
+      return { ok: false, reason: "open the Attendance page once so I can learn the semester" };
+    const html = await window.vrVtop.post(request.path, params);
     const fresh = parseAttendanceHtml(html);
-    if (!fresh) return false;
+    if (!fresh) {
+      // Say what actually came back. "Session expired?" was a guess, and it hid
+      // the real cases: a login page, a semester picker, an empty semester, or a
+      // table whose headers no longer contain "attended"/"total".
+      const text = String(html || "");
+      let tables = 0;
+      let headers = "";
+      let rows = 0;
+      let firstRow = "";
+      try {
+        const doc = new DOMParser().parseFromString(text, "text/html");
+        const all = Array.from(doc.querySelectorAll("table"));
+        tables = all.length;
+        const first = all[0] && (all[0].querySelector("thead tr") || all[0].rows[0]);
+        if (first)
+          headers = Array.from(first.cells)
+            .map((c) => (c.textContent || "").trim())
+            .join("|")
+            .slice(-60); // the tail is what the parser needs; the head was already seen
+        const body = all[0] ? Array.from(all[0].querySelectorAll("tbody tr")) : [];
+        rows = body.length;
+        if (body[0])
+          firstRow = (body[0].textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      } catch {
+        /* diagnostics only */
+      }
+      const glimpse = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 70);
+      await chrome.storage.local.set({
+        vtopext_attendance_refresh_debug: { at: Date.now(), path: request.path, params, length: text.length, tables, headers, glimpse },
+      });
+      return {
+        ok: false,
+        reason:
+          `VTOP's reply had no usable attendance table (${text.length} chars, ${tables} table(s)` +
+          (headers ? `, last headers: ${headers}` : "") +
+          `, ${rows} row(s)` +
+          (firstRow ? `, first row: "${firstRow}"` : "") +
+          `, sent: ${JSON.stringify(params).slice(0, 80)}` +
+          (glimpse ? `; starts: "${glimpse}"` : "") +
+          ")",
+      };
+    }
 
-    const previous = stored.vrevamp_attendance_summary || {};
+    const previous = stored.vtopext_attendance_summary || {};
     await chrome.storage.local.set({
-      vrevamp_attendance_summary: {
+      vtopext_attendance_summary: {
         ...previous,
         fetchedAt: Date.now(),
         subjects: mergeSubjects(previous.subjects, fresh),
       },
     });
-    return true;
+    return { ok: true };
   };
 
   if (typeof window.vrDelegate === "function") {
+    // Opening the Attendance page is now a deliberate second button, not what
+    // a failed "Refresh now" does behind the student's back.
+    window.vrDelegate("home-attendance-open", (button) => navigateToAttendance(button));
     window.vrDelegate("home-attendance-refresh", async (button) => {
       button.disabled = true;
       button.textContent = "refreshing…";
-      let done = false;
+      let result = { ok: false, reason: "unknown error" };
       try {
-        done = await refreshInPlace();
+        result = await refreshInPlace();
       } catch (error) {
-        // a tripped breaker or a refused request — vrVtop has already told the
-        // student why, in its own banner. Opening the page is still worth a try.
-        console.warn("vRevamp home refresh:", error);
+        console.warn("VTOP Extension home refresh:", error);
+        const msg = String((error && error.message) || error);
+        result = {
+          ok: false,
+          reason: /context invalidated/i.test(msg)
+            ? "the extension was reloaded - refresh this VTOP tab (F5) and try again"
+            : msg,
+        };
       }
-      if (!done) {
-        navigateToAttendance(button);
+      if (!result.ok) {
+        // Stay on the home page and say why. Used to jump straight to the
+        // Attendance page, which read as the button doing the wrong thing.
+        button.textContent = "Refresh now";
+        button.disabled = false;
+        const note = document.createElement("span");
+        note.style.cssText = "display:block;margin-top:4px;font-size:13px;color:#c62828;";
+        note.textContent = `Couldn't refresh here: ${result.reason}. `;
+        if (typeof window.vrButton === "function") {
+          const open = window.vrButton("home-attendance-open", "Open Attendance");
+          open.style.cssText =
+            "padding:0 8px;font-size:13px;line-height:22px;background:rgb(73,117,182);border:none;border-radius:3px;color:#fff;";
+          note.appendChild(open);
+        }
+        const prior = button.parentElement && button.parentElement.querySelector("[data-vtopext-refresh-note]");
+        if (prior) prior.remove();
+        note.setAttribute("data-vtopext-refresh-note", "1");
+        if (button.parentElement) button.parentElement.appendChild(note);
         return;
       }
       // rebuild the card against the snapshot just written
-      const card = document.getElementById("vrevamp-home-notices");
+      const card = document.getElementById("vtopext-home-notices");
       if (card) card.remove();
       await tryRender();
     });
@@ -249,8 +322,8 @@
     });
 
   const getLatestCalendar = async () => {
-    const pointer = await chrome.storage.local.get("vrevamp_latest_calendar");
-    if (pointer.vrevamp_latest_calendar) return pointer.vrevamp_latest_calendar;
+    const pointer = await chrome.storage.local.get("vtopext_latest_calendar");
+    if (pointer.vtopext_latest_calendar) return pointer.vtopext_latest_calendar;
     // written by the attendance page; until it has run once, fall back to the scan
     const all = await chrome.storage.local.get(null);
     const calendars = Object.keys(all)
@@ -263,13 +336,13 @@
   const line = (text, color) => {
     const p = document.createElement("p");
     p.textContent = text;
-    p.style.cssText = `margin:2px 0;font-size:13px;${color ? `color:${color};` : "color:#333;"}`;
+    p.style.cssText = `margin:2px 0;font-size:15px;line-height:1.4;${color ? `color:${color};` : "color:#333;"}`;
     return p;
   };
 
   const buildCard = (calendar, summary, collapsed) => {
     const card = document.createElement("div");
-    card.id = "vrevamp-home-notices";
+    card.id = "vtopext-home-notices";
     card.style.cssText =
       "margin:8px 10px;padding:8px 12px;background:#fff;border:1px solid #ccc;" +
       "border-left:4px solid rgb(60,141,188);border-radius:4px;" +
@@ -283,22 +356,22 @@
     const title = document.createElement("p");
     title.textContent = "VTOP Extension — heads up";
     title.style.cssText =
-      "font-weight:bold;margin:0;font-size:13px;color:rgb(60,141,188);";
+      "font-weight:bold;margin:0;font-size:15px;color:rgb(60,141,188);";
     const toggle = document.createElement("span");
     toggle.textContent = collapsed ? "▸ show" : "▾ hide";
-    toggle.style.cssText = "font-size:11px;color:#888;";
+    toggle.style.cssText = "font-size:13px;color:#888;";
     head.appendChild(title);
     head.appendChild(toggle);
     card.appendChild(head);
 
     const body = document.createElement("div");
-    body.style.cssText = `max-height:96px;overflow-y:auto;margin-top:4px;${collapsed ? "display:none;" : ""}`;
+    body.style.cssText = `max-height:60vh;overflow-y:auto;margin-top:4px;${collapsed ? "display:none;" : ""}`;
     card.appendChild(body);
     head.addEventListener("click", () => {
       const wasHidden = body.style.display === "none";
       body.style.display = wasHidden ? "" : "none";
       toggle.textContent = wasHidden ? "▾ hide" : "▸ show";
-      chrome.storage.local.set({ vrevamp_notices_collapsed: !wasHidden });
+      chrome.storage.local.set({ vtopext_notices_collapsed: !wasHidden });
     });
 
     let added = 0;
@@ -519,7 +592,7 @@
         if (canRefresh && typeof window.vrButton === "function") {
           const refresh = window.vrButton("home-attendance-refresh", "Refresh now");
           refresh.style.cssText =
-            "margin-left:6px;padding:0 6px;font-size:11px;line-height:18px;" +
+            "margin-left:6px;padding:0 8px;font-size:13px;line-height:22px;" +
             "background:rgb(73,117,182);border:none;border-radius:3px;color:#fff;";
           row.appendChild(refresh);
         } else {
@@ -536,9 +609,9 @@
   };
 
   const tryRender = async () => {
-    if (document.getElementById("vrevamp-home-notices")) return true;
+    if (document.getElementById("vtopext-home-notices")) return true;
     // don't stack the card on top of the attendance page's own insights
-    if (document.getElementById("vrevamp-alert-head")) return true;
+    if (document.getElementById("vtopext-alert-head")) return true;
     const container =
       document.querySelector("#main-section") ||
       document.querySelector(".content-wrapper") ||
@@ -549,17 +622,25 @@
       document.querySelector("#b5wrapper") ||
       document.querySelector("#core-container");
     if (!container) return false;
-    const calendar = await getLatestCalendar();
+    let calendar = await getLatestCalendar();
+    if (!calendar && typeof window.vrAcademicCalendar === "function") {
+      // nothing cached yet: read it now rather than asking the student to visit Attendance
+      try {
+        calendar = await window.vrAcademicCalendar();
+      } catch (error) {
+        /* falls through to the instruction below */
+      }
+    }
     const stored = await chrome.storage.local.get([
-      "vrevamp_attendance_summary",
-      "vrevamp_notices_collapsed",
+      "vtopext_attendance_summary",
+      "vtopext_notices_collapsed",
     ]);
-    const summary = stored.vrevamp_attendance_summary || null;
-    const card = buildCard(calendar, summary, !!stored.vrevamp_notices_collapsed);
+    const summary = stored.vtopext_attendance_summary || null;
+    const card = buildCard(calendar, summary, !!stored.vtopext_notices_collapsed);
     // re-check after the awaits: two message-triggered renders can interleave
     // at the storage reads and both pass the guard at the top (seen live —
     // duplicated card on the 2026 home page)
-    if (card && !document.getElementById("vrevamp-home-notices"))
+    if (card && !document.getElementById("vtopext-home-notices"))
       container.insertBefore(card, container.firstChild);
     return true;
   };
@@ -589,7 +670,7 @@
         done = await tryRender();
       } catch (error) {
         done = true;
-        console.warn("vRevamp notices:", error);
+        console.warn("VTOP Extension notices:", error);
       }
       if (done || attempts >= 45) clearInterval(timer);
     }, 700);

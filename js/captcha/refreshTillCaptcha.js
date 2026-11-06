@@ -127,9 +127,9 @@
  *     either. So this cannot pick the wrong role by accident — the role is not
  *     in the request at all, and is settled later by the credentials.
  *
- * Guarded twice over. `vrevamp_login_reloads` is shared with the reload cap, so
+ * Guarded twice over. `vtopext_login_reloads` is shared with the reload cap, so
  * a picker that keeps coming back can never ping-pong; and a SECOND arrival at
- * the picker in the same tab is left alone (`vrevamp_role_autopick`), because
+ * the picker in the same tab is left alone (`vtopext_role_autopick`), because
  * somebody who navigates back to the chooser after being advanced past it is
  * asking for Employee or Parent, and must be able to get there.
  *
@@ -137,7 +137,7 @@
  * note exists because it was nearly broken twice in one day.
  */
 (() => {
-  const RELOAD_KEY = "vrevamp_login_reloads";
+  const RELOAD_KEY = "vtopext_login_reloads";
   /*
    * A breadcrumb, not a gate: the timestamp of the last auto-advance in this
    * tab, so "did it run?" can be answered from the console without guessing.
@@ -149,7 +149,7 @@
    * then hit it again on every retry. A guard whose failure mode is "looks
    * broken precisely when you test it" is the wrong guard.
    */
-  const ROLE_KEY = "vrevamp_role_autopick";
+  const ROLE_KEY = "vtopext_role_autopick";
   /*
    * One budget for every action in this file — the captcha-hunt reload, the
    * dead-load reload, and the chooser's Student press — so no two of them can
@@ -190,7 +190,7 @@
   // same isolated world, so a plain CustomEvent on document is enough and
   // nothing in the page can see it.
   const announce = () => {
-    document.dispatchEvent(new CustomEvent("vrevamp:captcha-changed"));
+    document.dispatchEvent(new CustomEvent("vtopext:captcha-changed"));
   };
 
   const fetchNewCaptcha = async () => {

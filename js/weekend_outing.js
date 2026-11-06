@@ -37,9 +37,9 @@ let weekend_outings = () => {
   );
 
   // Inject into the page context so the script can use the page's jQuery
-  if (!document.getElementById("vrevamp-outing-store")) {
+  if (!document.getElementById("vtopext-outing-store")) {
     var scriptElement = document.createElement("script");
-    scriptElement.id = "vrevamp-outing-store";
+    scriptElement.id = "vtopext-outing-store";
     scriptElement.src = chrome.runtime.getURL("js/outing/store.js");
     document.body.appendChild(scriptElement);
   }

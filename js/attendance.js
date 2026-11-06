@@ -17,9 +17,9 @@ let view_attendance_page = () => {
   if (attendedCol === -1 || totalCol === -1) return;
 
   //Working of the calculator
-  if (!document.getElementById("vrevamp-attendance-note")) {
+  if (!document.getElementById("vtopext-attendance-note")) {
     const note = document.createElement("p");
-    note.id = "vrevamp-attendance-note";
+    note.id = "vtopext-attendance-note";
     note.style.color = "red";
     note.textContent =
       "*Note: This calculator doesn't calculate the attendance till the end of the sem, It only calculates the attendance to the 75% debar limit";
@@ -27,9 +27,9 @@ let view_attendance_page = () => {
   }
 
   //Footer legend
-  if (!document.getElementById("vrevamp-attendance-legend")) {
+  if (!document.getElementById("vtopext-attendance-legend")) {
     let color_detail = document.createElement("div");
-    color_detail.id = "vrevamp-attendance-legend";
+    color_detail.id = "vtopext-attendance-legend";
     color_detail.innerHTML = `
     <p style='color:RGB(34 144 62);'>*Green: comfortable buffer above 75%</p>
     <p style='color:rgb(238, 75, 43); margin-top:-10px'>*Red: at or near the 75% limit &mdash; attend, don't skip</p>
@@ -38,9 +38,9 @@ let view_attendance_page = () => {
   }
 
   //Head edit
-  if (!document.getElementById("vrevamp-alert-head")) {
+  if (!document.getElementById("vtopext-alert-head")) {
     const th = document.createElement("th");
-    th.id = "vrevamp-alert-head";
+    th.id = "vtopext-alert-head";
     th.textContent = "75% Attendance Alert";
     th.style.cssText =
       "vertical-align: middle; text-align: center; border-right: 1px solid #b2b2b2; padding: 5px;";
@@ -49,7 +49,7 @@ let view_attendance_page = () => {
 
   //Body Edit
   table.querySelectorAll("tbody tr").forEach((row) => {
-    if (row.querySelector(".vrevamp-bunk-cell")) return;
+    if (row.querySelector(".vtopext-bunk-cell")) return;
     const cells = row.cells;
     if (!cells || cells.length <= Math.max(attendedCol, totalCol)) return;
     const attended_classes = parseFloat(cells[attendedCol].innerText);
@@ -61,7 +61,7 @@ let view_attendance_page = () => {
     const unit = is_lab ? "lab(s)" : "class(es)";
 
     const td = document.createElement("td");
-    td.className = "vrevamp-bunk-cell";
+    td.className = "vtopext-bunk-cell";
     td.style.cssText =
       "vertical-align: middle; border: 1px solid #b2b2b2; padding: 5px;";
     const msg = document.createElement("p");

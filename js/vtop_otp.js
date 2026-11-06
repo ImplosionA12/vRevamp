@@ -19,7 +19,7 @@
   const GIVE_UP_MS = 300000;
   const OTP_LIFETIME_MIN = 3; // VTOP's own wording: "Valid for 3 minute"
   const REOPEN_EVERY_MS = 30000; // retry an auto-open now and then, not once
-  const USED_KEY = "vrevamp_otp_used";
+  const USED_KEY = "vtopext_otp_used";
 
   let panel = null;
   let note = null;
@@ -112,7 +112,7 @@
     new Promise((resolve) => {
       try {
         chrome.runtime.sendMessage(
-          { message: "vrevamp_get_otp", ignore, autoOpen: !!autoOpen },
+          { message: "vtopext_get_otp", ignore, autoOpen: !!autoOpen },
           (reply) => {
             const err = chrome.runtime.lastError;
             if (err) resolve({ error: err.message || "no detail" });
@@ -130,7 +130,7 @@
   const askSignIn = () =>
     new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ message: "vrevamp_gmail_signin" }, (reply) => {
+        chrome.runtime.sendMessage({ message: "vtopext_gmail_signin" }, (reply) => {
           if (chrome.runtime.lastError) resolve({ error: "worker" });
           else resolve(reply || { error: "worker" });
         });

@@ -301,7 +301,7 @@ function myMain(evt) {
     // Both signals, because neither alone is reliable: the CustomEvent covers
     // refreshTillCaptcha.js's in-place swap, and the observer covers VTOP's own
     // refresh button (and fires even if this script loaded after the swap).
-    document.addEventListener("vrevamp:captcha-changed", solveNow);
+    document.addEventListener("vtopext:captcha-changed", solveNow);
     /*
      * Same fix as refreshTillCaptcha.js, for the same reason and found the same
      * morning: /vtop/login can serve the four-role landing page, and the login

@@ -1,9 +1,13 @@
 name: Upload to Web Store
 
+# MANUAL ONLY. This used to run on every tag and push to the Chrome Web Store
+# under the extension id inherited from the upstream project. This project is
+# distributed from GitHub (unpacked), so a tag must never try to publish
+# anywhere: it failed on 2026-10-10 only because no credentials are configured
+# here. Run it by hand from the Actions tab if a Web Store listing is ever
+# created, after replacing extensionID with this project's own.
 on:
-  push:
-    tags:
-      - '*'
+  workflow_dispatch:
 
 jobs:
   upload-extension:

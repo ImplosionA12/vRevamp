@@ -47,9 +47,9 @@
  * announcing it on first install would cry wolf about a trip taken months ago.
  */
 (() => {
-  const SNAPSHOT_KEY = "vrevamp_leave_status";
-  const REQUEST_KEY = "vrevamp_leave_request";
-  const CHECKED_KEY = "vrevamp_leave_checked_at";
+  const SNAPSHOT_KEY = "vtopext_leave_status";
+  const REQUEST_KEY = "vtopext_leave_request";
+  const CHECKED_KEY = "vtopext_leave_checked_at";
   // Same budget the exam venue watcher uses, and for the same reason: this
   // runs on ordinary page arrivals, so it must be rare enough that browsing
   // VTOP normally never turns into a stream of requests.
@@ -255,7 +255,7 @@
       const rows = parseLeaveTable(findLeaveTable(doc));
       if (rows) await remember(rows);
     } catch (error) {
-      console.warn("vRevamp leave watcher:", error);
+      console.warn("VTOP Extension leave watcher:", error);
     } finally {
       running = false;
     }
@@ -275,7 +275,7 @@
     if (!request) return;
     // The leave page itself just opened — read it directly.
     if (request.message === "leave_page") {
-      readFromPage().catch((error) => console.warn("vRevamp leave watcher:", error));
+      readFromPage().catch((error) => console.warn("VTOP Extension leave watcher:", error));
       return;
     }
     // Any other arrival on VTOP is a chance to check quietly, rate-limited.

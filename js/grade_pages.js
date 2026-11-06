@@ -32,15 +32,15 @@ let creditsByCode = () => {
 };
 
 let modify_grade_page = () => {
-  if (document.getElementById("vrevamp-sem-gpa-row")) return; // already added
+  if (document.getElementById("vtopext-sem-gpa-row")) return; // already added
   const root = document.querySelector("#studentGradeView");
   if (!root) return;
   // credits live on the Grade History page, cached there by the what-if
-  // simulator (vrevamp_grade_credits); same-page tables win if present
-  chrome.storage.local.get("vrevamp_grade_credits", (stored) => {
-    if (document.getElementById("vrevamp-sem-gpa-row")) return;
+  // simulator (vtopext_grade_credits); same-page tables win if present
+  chrome.storage.local.get("vtopext_grade_credits", (stored) => {
+    if (document.getElementById("vtopext-sem-gpa-row")) return;
     const credits = {
-      ...((stored && stored.vrevamp_grade_credits) || {}),
+      ...((stored && stored.vtopext_grade_credits) || {}),
       ...creditsByCode(),
     };
     addGpaRow(root, credits);
@@ -69,7 +69,7 @@ let addGpaRow = (root, credits) => {
   if (!tbody || sum <= 0) return; // couldn't resolve credits — stay silent
   const gpa = (points / sum).toFixed(2);
   const row = document.createElement("tr");
-  row.id = "vrevamp-sem-gpa-row";
+  row.id = "vtopext-sem-gpa-row";
   row.className = "tableContent-level1";
   row.style.background = "rgb(170, 255, 0, 0.6)";
   row.innerHTML = `<td colspan="${colspan}" style="text-align:center">Your Semester Wise GPA : ${gpa}</td>`;
@@ -93,7 +93,7 @@ chrome.runtime.onMessage.addListener((request) => {
 // the simulator may finish its silent grade-history fetch after our message
 // fired — retry when the cached credits land
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.vrevamp_grade_credits) {
+  if (area === "local" && changes.vtopext_grade_credits) {
     try {
       modify_grade_page();
     } catch (error) {

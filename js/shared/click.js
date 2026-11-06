@@ -42,7 +42,7 @@
 
   const log = (...args) => {
     try {
-      console.log("[vRevamp click]", ...args);
+      console.log("[VTOP Extension click]", ...args);
     } catch {
       /* console gone — never let logging break a click */
     }
@@ -121,7 +121,7 @@
     try {
       handler(el, event);
     } catch (error) {
-      console.warn("vRevamp click:", el.dataset.vrAction, error);
+      console.warn("VTOP Extension click:", el.dataset.vrAction, error);
     }
   };
 
@@ -155,12 +155,31 @@
     return button;
   };
 
+  /*
+   * The quiet variant, for secondary actions beside a primary one.
+   *
+   * NOT `btn-outline-primary`: that class exists in Bootstrap 4/5 only. VTOP's
+   * login page is Bootstrap 5 but its logged-in pages are an older Bootstrap
+   * (the portal's own primary is #337ab7, Bootstrap 3's), where the class does
+   * not exist and the button rendered as bare text with no outline at all. It
+   * was previewed on the login page, which is why that went unseen. The border
+   * and colour are therefore set inline, in the portal's own blue, and work on
+   * any Bootstrap (or none).
+   */
+  window.vrOutline = (button) => {
+    button.className = "btn btn-default btn-sm";
+    button.style.background = "#fff";
+    button.style.color = "#337ab7";
+    button.style.border = "1px solid #337ab7";
+    return button;
+  };
+
   // Buttons we injected, as they appear in restored markup. Used both to find
   // our own leftovers and to strip them from snapshots shown offline, where
   // no content script runs and nothing could service a click.
   window.vrStripActions = (root) => {
     root
-      .querySelectorAll("[data-vr-action], .vrevamp-exam-note, .vrevamp-tt-note")
+      .querySelectorAll("[data-vr-action], .vtopext-exam-note, .vtopext-tt-note")
       .forEach((el) => el.remove());
     return root;
   };

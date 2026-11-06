@@ -89,8 +89,8 @@
  *
  * Three tiers, in order, first hit wins:
  *
- *   1. the semester vRevamp has already SEEN the student registered in —
- *      `vrevamp_attendance_summary.semester` / `vrevamp_exam_schedule.semester`,
+ *   1. the semester VTOP Extension has already SEEN the student registered in —
+ *      `vtopext_attendance_summary.semester` / `vtopext_exam_schedule.semester`,
  *      both written off registration-scoped dropdowns. Exact match after the
  *      campus tag is stripped, never fuzzy, so "Freshers" cannot survive it.
  *   2. failing that, the newest already-started option that is NOT one of the
@@ -204,17 +204,17 @@
   const DECOY_SEMESTER =
     /\bfreshers?\b|\btransport\b|\bfast\s*track\b|\bcdc\b|\bpat\b|\bspecial\s+arrear\b/i;
 
-  // The semester vRevamp has already seen this student registered in, named by
+  // The semester VTOP Extension has already seen this student registered in, named by
   // a page whose dropdown lists only their own. Read-only.
   const knownSemesterNames = async () => {
     try {
       const store = await chrome.storage.local.get([
-        "vrevamp_attendance_summary",
-        "vrevamp_exam_schedule",
+        "vtopext_attendance_summary",
+        "vtopext_exam_schedule",
       ]);
       return [
-        store.vrevamp_attendance_summary && store.vrevamp_attendance_summary.semester,
-        store.vrevamp_exam_schedule && store.vrevamp_exam_schedule.semester,
+        store.vtopext_attendance_summary && store.vtopext_attendance_summary.semester,
+        store.vtopext_exam_schedule && store.vtopext_exam_schedule.semester,
       ]
         .filter(Boolean)
         .map(normaliseSemester)
@@ -360,7 +360,7 @@
     try {
       submit();
     } catch (error) {
-      console.warn("vRevamp auto-semester:", name, error);
+      console.warn("VTOP Extension auto-semester:", name, error);
       return false;
     }
     return true;
@@ -447,7 +447,7 @@
     trace(request.page, "msg");
     window
       .vrAutoSemesterFor(request.page, { waitMs: SELECT_WAIT_MS })
-      .catch((error) => console.warn("vRevamp auto-semester:", request.page, error));
+      .catch((error) => console.warn("VTOP Extension auto-semester:", request.page, error));
   });
 
   // The two submit shapes, so callers do not each re-derive them.

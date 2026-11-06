@@ -33,9 +33,9 @@
 (() => {
   const GRADE_POINTS = { S: 10, A: 9, B: 8, C: 7, D: 6, E: 5, F: 0 };
   const GRADES = ["S", "A", "B", "C", "D", "E", "F"];
-  const PANEL_ID = "vrevamp-gradehist-calc";
-  const BODY_ID = "vrevamp-gradehist-body";
-  const FITTED = "data-vrevamp-gh"; // marks a row that already has a select
+  const PANEL_ID = "vtopext-gradehist-calc";
+  const BODY_ID = "vtopext-gradehist-body";
+  const FITTED = "data-vtopext-gh"; // marks a row that already has a select
 
   const txt = (el) => (el ? el.textContent : "").replace(/\s+/g, " ").trim();
   const num = (s) => {
@@ -253,7 +253,7 @@
 
   const gradeSelect = (c) => {
     const sel = document.createElement("select");
-    sel.className = "vrevamp-gh-select";
+    sel.className = "vtopext-gh-select";
     sel.style.cssText =
       "margin-left:6px;padding:1px 4px;font-size:12px;vertical-align:middle;";
     // A course VTOP did not grade S-F (P/N, audited, withdrawn) has no place
@@ -300,7 +300,7 @@
     Object.keys(overrides).forEach((k) => delete overrides[k]);
     courses.forEach((c) => {
       c.rowEl.style.background = "";
-      const sel = c.rowEl.querySelector("select.vrevamp-gh-select");
+      const sel = c.rowEl.querySelector("select.vtopext-gh-select");
       if (sel) sel.value = c.grade;
     });
     renderBody();
@@ -332,7 +332,7 @@
    * 62px of bubble + 25px of its own inset + a gap.
    */
   const BAR_BOTTOM_PX = 100;
-  const BAR_ID = "vrevamp-gh-bar";
+  const BAR_ID = "vtopext-gh-bar";
 
   const clearBar = () => {
     const old = document.getElementById(BAR_ID);
@@ -554,7 +554,7 @@
       try {
         buildPanel();
       } catch (error) {
-        console.warn("vRevamp grade calculator:", error);
+        console.warn("VTOP Extension grade calculator:", error);
       }
     }, 400);
   };

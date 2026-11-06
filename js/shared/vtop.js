@@ -38,7 +38,7 @@
   if (window.vrVtop) return;
 
   const TRIP_AFTER = 3; // consecutive hard failures before we stop entirely
-  const BANNER_ID = "vrevamp-session-banner";
+  const BANNER_ID = "vtopext-session-banner";
 
   /*
    * PROBES vs REAL REQUESTS — the distinction the breaker lives or dies on.
@@ -58,6 +58,11 @@
    *     about. One success anywhere clears that suspicion for good.
    */
   const PROBE_TRIP_AFTER = 12;
+
+  // A request that never answers used to leave "reading…" on screen forever.
+  // A timeout is VTOP having a bad minute, not a refused session, so it does
+  // not count toward the breaker.
+  const REQUEST_TIMEOUT_MS = 25000;
 
   const state = {
     consecutiveFailures: 0,
@@ -91,7 +96,7 @@
   /*
    * The one stale-session banner. Deliberately ONE, keyed on BANNER_ID: two
    * things can now conclude the session is gone — this breaker, from the
-   * requests vRevamp itself sends, and js/session_repair.js, from the 404s
+   * requests VTOP Extension itself sends, and js/session_repair.js, from the 404s
    * VTOP's own menu clicks get (the service worker sees those; no content
    * script can). Both routes describe the same broken session, so the second
    * one to arrive must not stack a second red bar on top of the first.
@@ -164,8 +169,11 @@
     });
 
     let res;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
     try {
       res = await fetch(`${location.origin}/vtop/${path}`, {
+        signal: abort.signal,
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -175,7 +183,11 @@
         credentials: "same-origin",
       });
     } catch (error) {
+      if (error && error.name === "AbortError")
+        throw new Error(`network: ${path} timed out`);
       throw new Error(`network: ${String((error && error.message) || error)}`);
+    } finally {
+      clearTimeout(timer);
     }
 
     const countFailure = (status) => {

@@ -4,7 +4,7 @@
 // an 8-column table.
 let modify_marks_page = () => {
   document.querySelectorAll(".customTable-level1 > tbody").forEach((table) => {
-    if (table.querySelector(".vrevamp-marks-total")) return; // already added
+    if (table.querySelector(".vtopext-marks-total")) return; // already added
     const rows = Array.from(table.querySelectorAll("tr"));
     const headRow = rows.find((r) => r.querySelector("th")) || rows[0];
     if (!headRow) return;
@@ -43,7 +43,7 @@ let modify_marks_page = () => {
     if (!counted) return;
 
     const tr = document.createElement("tr");
-    tr.className = "tableContent-level1 vrevamp-marks-total";
+    tr.className = "tableContent-level1 vtopext-marks-total";
     tr.style.cssText = "background:rgb(60,141,188,0.8);font-weight:bold;";
     for (let i = 0; i < colCount; i++) {
       const td = document.createElement("td");
@@ -66,8 +66,8 @@ let modify_marks_page = () => {
 // red flag beside their course row, from the snapshot attendance_insights
 // cached on the Attendance page. Purely additive — no fetches.
 const flagAttendanceRisk = async () => {
-  const stored = await chrome.storage.local.get("vrevamp_attendance_summary");
-  const subjects = (stored.vrevamp_attendance_summary || {}).subjects || [];
+  const stored = await chrome.storage.local.get("vtopext_attendance_summary");
+  const subjects = (stored.vtopext_attendance_summary || {}).subjects || [];
   // theory + lab share a course code — keep the worse of the two
   const byCode = {};
   subjects.forEach((s) => {
@@ -76,7 +76,7 @@ const flagAttendanceRisk = async () => {
     if (!byCode[s.code] || s.pct < byCode[s.code].pct) byCode[s.code] = s;
   });
   Object.values(byCode).forEach((s) => {
-    if (document.querySelector(`[data-vrevamp-att-flag="${s.code}"]`)) return;
+    if (document.querySelector(`[data-vtopext-att-flag="${s.code}"]`)) return;
     // the course row lives OUTSIDE the nested per-course marks table
     const cell = Array.from(document.querySelectorAll("td")).find(
       (td) =>
@@ -86,7 +86,7 @@ const flagAttendanceRisk = async () => {
     );
     if (!cell) return;
     const badge = document.createElement("div");
-    badge.dataset.vrevampAttFlag = s.code;
+    badge.dataset.vtopextAttFlag = s.code;
     badge.textContent =
       s.pct < 75
         ? `⚠ attendance ${s.pct}%`
@@ -110,7 +110,7 @@ chrome.runtime.onMessage.addListener((request) => {
         window.vrAutoSemesterFor("mark_view");
       modify_marks_page();
       flagAttendanceRisk().catch((error) =>
-        console.warn("vRevamp attendance flag:", error)
+        console.warn("VTOP Extension attendance flag:", error)
       );
       // .box-body is absent on some layouts; dereferencing it unguarded threw
       // past the catch below into console.error on every marks message

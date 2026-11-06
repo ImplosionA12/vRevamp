@@ -2,44 +2,9 @@ const DA_MONTHS = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
   Jul: "07", Aug: "08", Sep: "09", Sept: "09", Oct: "10", Nov: "11", Dec: "12",
 };
-const DA_REMINDER_LEAD_MIN = 24 * 60; // email lands this long before the due
 
 // vrGoogleToken / vrGoogleAuthHint / vrLocalReminders / vrGcalTemplateUrl all
 // live in js/shared/google_auth.js, loaded before this file by the manifest.
-
-// One calendar event per assignment with an email (+popup) reminder — unlike
-// calendar() below this needs no calendar-notification defaults to be set up.
-function create_email_reminder(date_due, course_code, assign_title, course_title, token) {
-  const m = date_due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/);
-  if (!m || !DA_MONTHS[m[2]]) return Promise.resolve({ ok: false, status: 0 });
-  const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
-  return fetch(
-    "https://www.googleapis.com/calendar/v3/calendars/primary/events?alt=json",
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + token,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        summary: `DA due: ${course_code} — ${assign_title}`,
-        description: `${course_title} (VTOP Extension reminder, email ${DA_REMINDER_LEAD_MIN / 60} h before)`,
-        start: { dateTime: `${iso}T20:00:00+05:30` },
-        end: { dateTime: `${iso}T21:00:00+05:30` },
-        reminders: {
-          useDefault: false,
-          overrides: [
-            { method: "email", minutes: DA_REMINDER_LEAD_MIN },
-            { method: "popup", minutes: DA_REMINDER_LEAD_MIN },
-          ],
-        },
-      }),
-    }
-  )
-    .then((r) => ({ ok: r.status === 200, status: r.status }))
-    .catch(() => ({ ok: false, status: 0 }));
-}
 
 const da_header_index = (row, re) =>
   [...row.cells].findIndex((c) => re.test(c.textContent));
@@ -329,52 +294,65 @@ window.vrDelegate("da-bell", async (btn) => {
   btn.disabled = n > 0;
 });
 
+const da_escape = (v) =>
+  String(v == null ? "" : v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
 window.vrDelegate("da-mail", async (mailBtn) => {
   const info = vr_da_payload(mailBtn);
   if (!info) {
     mailBtn.textContent = "couldn't read this row — refresh";
     return;
   }
-  // fresh token at click time — a stored one expires in ~1 h
-  let token = await window.vrGoogleToken({});
-  if (!token) token = await window.vrGoogleToken({ interactive: true });
-  if (!token) {
-    // never alert(): a modal dialog blocks the page's event loop, and this one
-    // fires on a button the student may be clicking once per course
-    mailBtn.textContent = "sign-in needed";
-    mailBtn.title = window.vrGoogleAuthHint();
-    return;
-  }
+  // One email the evening before each due date (20:00 IST, 24 h before the
+  // end of the due day), sent by the extension's own mail: no Google sign-in.
+  const reminders = [];
+  info.dues.forEach((a) => {
+    const m = a.due.trim().match(/^(\d{1,2})-([A-Za-z]{3,4})-(\d{4})$/u);
+    if (!m || !DA_MONTHS[m[2]]) return;
+    const iso = `${m[3]}-${DA_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
+    const dueEnd = new Date(`${iso}T21:00:00+05:30`).getTime();
+    const title = `DA due: ${info.code} — ${a.title}`;
+    const text = `${title}\n${info.title}\nDue ${a.due} — not uploaded yet.\n\nSent by VTOP Extension.`;
+    reminders.push({
+      when: dueEnd - 25 * 3600 * 1000,
+      until: dueEnd,
+      title: `Tomorrow — ${title}`,
+      body: `${info.title}\nDue ${a.due} — not uploaded yet`,
+      subject: `Tomorrow: ${title}`,
+      text,
+      html:
+        `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px">` +
+        `<h3 style="margin:0 0 8px">Tomorrow: ${da_escape(title)}</h3>` +
+        `<div>${da_escape(info.title)}</div><div>Due ${da_escape(a.due)} — not uploaded yet</div>` +
+        `<p style="color:#666;font-size:12px;margin-top:16px">Sent by VTOP Extension from your VTOP digital assignments page.</p></div>`,
+    });
+  });
   mailBtn.disabled = true;
   mailBtn.textContent = "…";
-  let done = 0;
-  let refreshed = false;
-  for (let i = 0; i < info.dues.length; i++) {
-    const a = info.dues[i];
-    const r = await create_email_reminder(a.due, info.code, a.title, info.title, token);
-    if (r.status === 401 && !refreshed) {
-      // token died mid-flight — invalidate it, mint a fresh one, retry
-      refreshed = true;
-      token = await window.vrGoogleToken({ stale: token });
-      if (token) {
-        i--; // redo this assignment with the fresh token
-        continue;
-      }
-    }
-    if (r.status === 401) {
-      mailBtn.textContent = "sign-in expired — click again";
-      mailBtn.disabled = false;
-      return;
-    }
-    if (r.ok) done++;
-    await sleep(400);
+  const r = await window.vrScheduleMailReminders(
+    mailBtn,
+    `da-mail:${info.key}`,
+    reminders,
+    () => {}
+  );
+  mailBtn.disabled = false;
+  if (r.error === "need_address") {
+    mailBtn.textContent = "✉";
+    return; // the address field is showing next to the button
   }
-  mailBtn.textContent = done > 0 ? `✓ ${done} email(s)` : "failed — retry";
-  mailBtn.disabled = done > 0;
+  mailBtn.textContent = r.ok
+    ? `✓ ${r.n} email(s) to ${r.to}`
+    : r.n === 0 && !r.error
+      ? "already due"
+      : "failed — retry";
+  mailBtn.disabled = r.ok;
 });
 
-// The list, in an inbox, now. Distinct from ✉ above: that schedules Calendar
-// events which mail you later, this one is "just send me the list".
+// The list, in an inbox, now. Distinct from ✉ above: that schedules emails
+// which mail you later, this one is "just send me the list".
 window.vrDelegate("da-mailnow", async (btn) => {
   const info = vr_da_payload(btn);
   if (!info) {
@@ -429,8 +407,8 @@ window.vrDelegate("da-digest", async (btn) => {
   }
   btn.dataset.vrOn = reply.enabled ? "1" : "0";
   btn.textContent = reply.enabled
-    ? "📬 daily digest is ON — click to stop"
-    : "📬 mail me a daily digest";
+    ? "Daily digest is on - click to stop"
+    : "Email me a daily digest";
   btn.title = reply.enabled
     ? `Sent every day around ${reply.hour}:00 to ${reply.to || "your reminder address"}`
     : "Once a day, VTOP Extension mails you what's still to upload and where your attendance stands";
@@ -447,8 +425,8 @@ let da_page_2026 = async () => {
       /class\s*nbr/i.test(t.rows[0].textContent) &&
       /dashboard/i.test(t.rows[0].textContent)
   );
-  if (!classTable || classTable.dataset.vrevampDues === "1") return;
-  classTable.dataset.vrevampDues = "1";
+  if (!classTable || classTable.dataset.vtopextDues === "1") return;
+  classTable.dataset.vtopextDues = "1";
 
   const iNbr = da_header_index(classTable.rows[0], /class\s*nbr/i);
   const th = document.createElement("td");
@@ -496,6 +474,12 @@ let da_page_2026 = async () => {
     }
     const now = new Date().getTime();
     const dueMs = (d) => new Date(d.replace(/-/g, " ")).getTime();
+    // A due date is about the future. A missed one is reported for a week, then
+    // dropped: after that it is history, and nagging about it forever buries the
+    // dues that can still be acted on.
+    const GRACE_MS = 7 * 86400000;
+    const recentlyMissed = (a) =>
+      !a.uploaded && dueMs(a.due) + 86399000 < now && dueMs(a.due) + 86399000 >= now - GRACE_MS;
     const upcoming = meta.items
       .filter((a) => !a.uploaded && dueMs(a.due) + 86399000 >= now)
       .sort((a, b) => dueMs(a.due) - dueMs(b.due));
@@ -511,12 +495,12 @@ let da_page_2026 = async () => {
       title: meta.course_title,
       upcoming: upcoming.map((a) => ({ due: a.due, title: a.title })),
       overdue: meta.items
-        .filter((a) => !a.uploaded && dueMs(a.due) + 86399000 < now)
+        .filter(recentlyMissed)
         .map((a) => ({ due: a.due, title: a.title })),
     });
 
     if (upcoming.length === 0) {
-      const missed = meta.items.filter((a) => !a.uploaded).length;
+      const missed = meta.items.filter(recentlyMissed).length;
       if (meta.items.length === 0) cell.textContent = "No DAs posted";
       else if (missed > 0) {
         cell.textContent = `⚠ ${missed} past due (not uploaded)`;
@@ -534,6 +518,19 @@ let da_page_2026 = async () => {
     span.textContent = `${upcoming[0].due} · ${days}d left`;
     span.title = `${upcoming[0].title} — due ${upcoming[0].due}`;
     cell.appendChild(span);
+    // The cell used to show only the next due date, so a course with one DA
+    // coming up and another already missed looked clean here while the bar
+    // above counted the missed one. Say so in the cell too.
+    const missedToo = meta.items.filter(
+      (a) => !a.uploaded && dueMs(a.due) + 86399000 < now
+    ).length;
+    if (missedToo > 0) {
+      const late = document.createElement("div");
+      late.style.cssText = "font-size:11px;white-space:nowrap;color:#b00;";
+      late.textContent = `⚠ ${missedToo} past due`;
+      late.title = "Not uploaded and the due date has passed";
+      cell.appendChild(late);
+    }
     // Everything both buttons need, written onto the buttons themselves. See
     // the handlers above for why this is an attribute and not a closure.
     const payload = JSON.stringify({
@@ -562,7 +559,7 @@ let da_page_2026 = async () => {
      * without it the three icons still wrap one per line in a narrow column.
      */
     const strip = document.createElement("div");
-    strip.className = "vrevamp-da-actions";
+    strip.className = "vtopext-da-actions";
     strip.style.cssText =
       "margin-top:3px;white-space:nowrap;line-height:1;font-size:13px;";
     cell.appendChild(strip);
@@ -570,17 +567,17 @@ let da_page_2026 = async () => {
     // 🔔 Chrome notifications for every upcoming due of this course — 6 PM
     // the evening before and 8 AM on the due day. No Google sign-in.
     const btn = window.vrButton("da-bell", "🔔", { vrDues: payload });
-    btn.className = "vrevamp-da-remind";
+    btn.className = "vtopext-da-remind";
     btn.title =
       `Remind me — Chrome notification the evening before (6 PM) and the morning of (8 AM) for each of the ${upcoming.length} upcoming due(s). No sign-in needed.`;
     btn.style.cssText =
       "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
     strip.appendChild(btn);
 
-    // ✉ optional Google Calendar events with an email 24 h before each due
+    // ✉ an email from the extension the evening before each due
     const mailBtn = window.vrButton("da-mail", "✉", { vrDues: payload });
-    mailBtn.className = "vrevamp-da-remind";
-    mailBtn.title = `Email me — a Google Calendar event per upcoming due, mailed ${DA_REMINDER_LEAD_MIN / 60} h before. Needs one-time Google consent.`;
+    mailBtn.className = "vtopext-da-remind";
+    mailBtn.title = "Email me the evening before each upcoming due, from the extension's own address. No Google sign-in. Chrome must be open then.";
     mailBtn.style.cssText =
       "border:none;background:none;padding:0 3px;font-size:13px;cursor:pointer;line-height:1;";
     strip.appendChild(mailBtn);
@@ -598,7 +595,7 @@ let da_page_2026 = async () => {
      * actual table off the screen.
      *
      * Nothing is lost by showing one. 🔔 already schedules a notification for
-     * every due, ✉ creates a calendar event for every due, and this is the
+     * every due, ✉ schedules an email for every due, and this is the
      * no-sign-in shortcut for the next one — which is the only one a student
      * is acting on today. The rest are named in the tooltip.
      */
@@ -607,7 +604,7 @@ let da_page_2026 = async () => {
       if (!m || !DA_MONTHS[m[2]]) return;
       const day = `${m[3]}${DA_MONTHS[m[2]]}${m[1].padStart(2, "0")}`;
       const link = document.createElement("a");
-      link.className = "vrevamp-da-gcal";
+      link.className = "vtopext-da-gcal";
       link.textContent = "📅";
       link.title =
         `one tap: opens Google Calendar with ${a.title} (${a.due}) prefilled — ` +
@@ -647,7 +644,7 @@ let da_page_2026 = async () => {
    */
   try {
     await chrome.storage.local.set({
-      vrevamp_da_dues: { fetchedAt: Date.now(), courses: allDues },
+      vtopext_da_dues: { fetchedAt: Date.now(), courses: allDues },
     });
   } catch {
     /* storage full or unavailable — the on-page column still works */
@@ -664,7 +661,7 @@ let da_page_2026 = async () => {
  * pressing it eight times was not a feature.
  */
 const renderDaSummary = (classTable, courses) => {
-  document.getElementById("vrevamp-da-summary")?.remove();
+  document.getElementById("vtopext-da-summary")?.remove();
 
   /*
    * `title` on an assignment is the ASSIGNMENT's name ("Digital
@@ -700,7 +697,7 @@ const renderDaSummary = (classTable, courses) => {
   const overdue = overdueItems.length;
 
   const bar = document.createElement("div");
-  bar.id = "vrevamp-da-summary";
+  bar.id = "vtopext-da-summary";
   bar.style.cssText =
     "margin:10px 0;padding:8px 12px;border-radius:4px;font-size:13px;" +
     "background:#eef4fb;border:1px solid #c9dcf0;";
@@ -754,7 +751,7 @@ const renderDaSummary = (classTable, courses) => {
     // that has already passed can never fire, and offering it would be a
     // button that silently does nothing.
     if (upcoming.length) {
-      const bell = window.vrButton("da-bell", "🔔 remind me about all of them", {
+      const bell = window.vrButton("da-bell", "Remind me about all of them", {
         vrDues: payload,
       });
       bell.title =
@@ -766,7 +763,7 @@ const renderDaSummary = (classTable, courses) => {
     if (listed.length) {
       const mail = window.vrButton(
         "da-mailnow",
-        upcoming.length ? "📧 email me this list" : "📧 email me what I still owe",
+        upcoming.length ? "Email me this list now" : "Email me what I still owe",
         { vrDues: payload }
       );
       mail.title = "Sends the whole list to your reminder address right now";
@@ -774,7 +771,7 @@ const renderDaSummary = (classTable, courses) => {
       controls.appendChild(mail);
     }
 
-    const daily = window.vrButton("da-digest", "📬 mail me a daily digest", {});
+    const daily = window.vrButton("da-digest", "Email me a daily digest", {});
     daily.title =
       "Once a day, VTOP Extension mails you what's still to upload and where your attendance stands";
     daily.style.cssText = "font-size:12px;cursor:pointer;";
@@ -785,7 +782,7 @@ const renderDaSummary = (classTable, courses) => {
       chrome.runtime.sendMessage({ message: "google_status" }, (status) => {
         if (chrome.runtime.lastError || !status || !status.digest) return;
         daily.dataset.vrOn = "1";
-        daily.textContent = "📬 daily digest is ON — click to stop";
+        daily.textContent = "Daily digest is on - click to stop";
         daily.title = `Sent every day around ${status.digestHour}:00`;
       });
     } catch {

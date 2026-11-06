@@ -85,7 +85,7 @@ were supposed to be at the gate.
 ## Mail sends from the club address now (2026-08-22)
 
 `MAIL_RELAY_URL` is no longer blank. The Apps Script relay is deployed under
-**vtopextention@gmail.com**, the club account, and the `/exec` URL ships in the
+**<club-account>@gmail.com**, the club account, and the `/exec` URL ships in the
 build — so nobody pastes anything. The popup's relay field stays what it always
 was: a per-user override for someone running their own.
 
@@ -1935,7 +1935,7 @@ session, real mouse clicks, notes read straight off the page:
 |---|---|
 | 🔔 notify me before each exam | `✓ 11 Chrome notification(s) scheduled (1 day & 2 h before each exam) — no sign-in needed` |
 | ✉️ email me instead (Google) | `✓ 6 reminder(s) set — email 24 h before each exam` |
-| 📧 mail me the list now | `✓ emailed 6 exam(s) to ruthvik.24mic7198@vitapstudent.ac.in` |
+| 📧 mail me the list now | `✓ emailed 6 exam(s) to student@vitapstudent.ac.in` |
 
 Three things that were open questions until this run are now answered:
 
@@ -3708,7 +3708,7 @@ one page, as Chrome does at inject time:
 
 ## Bunk table on old semesters + insight-noise fixes (2026-07-07, live)
 - User report: bunk calculator "doesn't work properly" on old semesters.
-  Live probing (real session, 24MIC7198): Winter 2024-25 Freshers works
+  Live probing (real session, 24TEST0001): Winter 2024-25 Freshers works
   fully; **Short Summer 2024-25 showed "--" for CAT-1/CAT-2** (its calendar
   genuinely has no CATs — the display just looked broken), and EVERY
   semester load logged ~10× "subject insight failed …
@@ -4297,3 +4297,153 @@ one page, as Chrome does at inject time:
   (labs divided by their 2-hour session) matches the plain definition over
   14,762 attended/total cases with no mismatch, and matched VTOP's own "can be
   skipped" column on the live page.
+
+## 4.7.0 - reminder emails come from the extension, not Google Calendar (2026-10-11)
+- **"Email me 24 h & 2 h before" (exams) and the assignment ✉** no longer create
+  Google Calendar events or need a Google sign-in. Each reminder is scheduled in
+  the extension (`chrome.alarms`) and mailed through the extension's own mail
+  address (the relay in `config.json`) when it falls due: 24 h and 2 h before an
+  exam, the evening before an assignment is due. Re-pressing replaces the
+  previous run.
+- A reminder carries `until`: if Chrome was closed and the alarm fires after the
+  exam has started, nothing is mailed. A failed send is retried 10 minutes later
+  (up to four tries) and then reported with a notification; "no address saved"
+  says to add one in the popup.
+- The address is asked for in place, once, with the same field as "Mail me the
+  list now" (now in VTOP's own form style).
+- Limit, stated on the buttons: Chrome has to be open when a reminder falls due
+  (a closed one catches up on the next start). Google Calendar's own reminder
+  emails arrived even with Chrome closed; that is the price of needing no sign-in.
+- Old Google Calendar events created by earlier versions are NOT removed
+  (nothing can find them without Google access); delete them in Calendar by
+  searching "exam:" / "DA due:" if you want them gone.
+- The inherited "Upload to Web Store" workflow is now manual-only. It ran on the
+  v4.6.1 tag, tried to publish under the upstream author's extension id and
+  failed only because no credentials exist here.
+- Process note: while checking the mail code I switched the live extension folder
+  to `master`, which made Chrome load the pre-redesign popup. Work now happens on
+  the branch the folder is on; nothing switches it for a read.
+
+## 4.7.0 follow-up - found on the real portal (2026-10-11)
+- The three secondary exam buttons rendered as BARE TEXT on the logged-in pages:
+  `btn-outline-primary` exists in Bootstrap 4/5, but the logged-in portal uses an
+  older Bootstrap (its primary is #337ab7). It had been previewed only on the
+  Bootstrap 5 login page. They now carry their own border and colour
+  (`window.vrOutline`), and a test asserts the border on the element itself.
+- The address fields use `input-sm form-control-sm`, so they size correctly on
+  either Bootstrap.
+- Lesson: preview injected UI on the page it will live on, not on a page that
+  merely looks similar.
+- DA summary bar: dropped the emoji prefixes (they render as tiny mismatched icons) and
+  made the wording consistent: "Remind me about all of them", "Email me this list now",
+  "Email me a daily digest". Checked on the real page first.
+- Skip planner "counted Dussehra Tuesday" report was NOT a bug: the range was 16-27 Oct and
+  27 Oct is a Tuesday (labs run that day). The live calendar shows 20 Oct as a plain
+  "Holiday (Vijaya Dashami / Dussehra)" cell, which the planner already excluded. An
+  attempted holiday-filter/cache-bump change was reverted. Check the range end date first.
+- Attendance "keeps loading" / sudden delay / holidays (found by reading, NOT yet verified live):
+  * js/shared/vtop.js: every VTOP POST now has a 25s timeout (AbortController). A hung request
+    used to leave "reading the academic calendar…" on screen forever. Timeouts don't trip the breaker.
+  * attendance_insights.js: runInsights now catches a failed run and shows a red message instead of
+    leaving the grey "reading…" status up; a failed calendar fetch isn't retried for 90s (each retry
+    was ~15 serial requests + 200ms sleeps per month, repeated on every re-run).
+  * Holidays: dates flagged Holiday are removed from instructionalDays on read (cached and fresh),
+    so a date labelled both Instructional and Holiday no longer counts as a class day.
+    Still open: with NO calendar, missedPostings can't see holidays (already documented there).
+- Attendance load speed (attendance_insights.js), same session, not yet timed live:
+  * Calendar months fetched 3 at a time via vrVtop.pool (was serial + 200ms sleep per month).
+  * Subject histories: cached ones cost nothing; the first miss runs alone to learn the endpoint,
+    the rest 3 at a time (was serial + 250ms sleep each).
+  * Endpoint guesses (script mining downloads every site <script src>) are now lazy: only after the
+    stored/learned endpoint fails. Previously they ran before the first request.
+  * Timetable read overlaps the calendar fetch; exam-block load overlaps phase 1.
+  * Removed unused sleepMs. npm test: 593 passed, 0 failed.
+- Live walkthrough 2026-10-14 (extension 4.7.0 reloaded, real VTOP, signed in):
+  * WORKS live: home card + next-class, Attendance (table/forecast/bunk calc agree, loads in ~3s from
+    cache, semester auto-picked), Marks View, DA Upload, Time Table (+ .ics/GCal buttons), Exam Schedule
+    (CAT buttons present, past exams say "no upcoming"), Grade History simulator (S->F on 4 credits:
+    8.68 -> 8.27, hand-checked; bar clears on reset), General Outing page loads.
+  * FIXED: DA Upload course cell hid a past-due DA whenever another DA was still upcoming, while the
+    summary bar counted it (SWE3004 showed clean, bar said 2 past due). The cell now adds "warning N past due".
+  * NOT checked: popup (chrome-extension:// pages are blocked for me), every mail/reminder/GCal button
+    (they send or create things), leave watcher baseline, Faculty page, Course Page after picking a course.
+  * Odd but not ours: Time Table has no MON row (VTOP's own data); SWE3004 Experiment-1 is dated
+    31-Jul-2026, before the semester began - looks like a faculty typo.
+
+## Rebrand redone, fully: "VTOP Extension", no vRevamp left (2026-10-16)
+- Reverted the earlier revert (it was a misread of "do it completely").
+- Every remaining "vRevamp"/"vrevamp" in code is gone: display text -> "VTOP Extension", storage keys,
+  element ids, CSS classes, console prefixes, window globals -> "vtopext". package.json name is "vtopext".
+- Removed the upstream "Started from ..." line from the README and .github/FUNDING.yml.
+- Storage keys changed, so saved extension data (reminder email, Google sign-in, cached summaries)
+  starts fresh once after reloading; re-enter it.
+- Left alone on purpose: LICENSE (GPL-3.0 requires keeping the copyright notices), and the GitHub
+  repo URL (config.json, manifest homepage, README links) which still ends in /vRevamp until the repo itself is renamed.
+- Version is now 1 (manifest.json), and stays 1 from here on, by request.
+
+## Home card reads the academic calendar itself (2026-10-18)
+- SEEN: the home "heads up" card said "Open the Attendance page once so VTOP Extension can read the
+  academic calendar". It was a side effect of renaming the storage keys (the cached calendar was
+  under the old key), but the nag was wrong anyway: the card can fetch it.
+- Fix: attendance_insights.js exposes window.vrAcademicCalendar(); with no semester name it picks the
+  newest already-started, non-decoy semester from the calendar dropdown (same rule as the pickers),
+  caches it under that semester and sets the latest-calendar pointer. home_notices.js calls it when
+  nothing is cached; the instruction text stays only as the fallback if the read fails.
+- Tests: 595 pass (2 new: no-name load picks the semester; pointer left for the card).
+- NOT checked live in Chrome. Reload the extension and open the VTOP home page.
+- Still on the user: the deployed Apps Script mail relay still says "vRevamp" as the sender name and
+  in its GET reply. Paste tools/mail-relay.gs into script.google.com and deploy a new version.
+
+## 2026-11-05 - reminder/digest mail fixes, stale-calendar warning
+- background.js: relay send now flags `ambiguous` failures (fetch threw while online, or 200 with unreadable body). Reminder alarms no longer retry those (was up to 4 duplicate mails); they notify "may have been sent".
+- background.js: daily digest now retries transient mail failures 3x (10 min apart) and notifies on final failure / missing address. Retry does not re-raise the notification.
+- timetable_ics.js: calendar import stores a timetable fingerprint (API path too, previously only the template path marked imports). On the timetable page a button warning appears when the saved timetable differs from the last import. NOT auto-sync: Calendar is still updated only by clicking the button.
+- Not live-verified; reload the unpacked extension to test.
+
+- timetable_ics.js AUTO-SYNC: on the timetable page, if the saved timetable differs from the last import AND that import was via the tagged API path, silently re-imports (delete-by-tag + recreate). Silent = no consent window, no template fallback. Max one attempt/hour. Template-route imports only get the warning (cannot be cleaned up). Needs a prior Google consent; otherwise falls back to the warning. Not live-verified.
+
+## 2026-11-05 home card
+- home_notices.js: card text 13->15px, header 15px, body cap 96px -> 60vh (was a tiny scroll box). "Refresh now" no longer jumps to Attendance on failure: it stays on home, shows the reason, and offers a separate "Open Attendance" button. Root cause of the failure itself (no recorded request / unparsed reply / session) is not known until the reason text is seen live.
+
+## 2026-11-05 security pass
+- google_auth.js: removed dead chrome.storage.sync token fallback.
+- js/utils/safe_html.js (new) + offline.html + js/offline/render*Page.js: saved VTOP HTML is sanitized before innerHTML in extension pages. weekend_outing.js deliberately NOT changed (markup needs VTOP inline handlers; page-origin localStorage is already page-controlled).
+- background.js: onMessage ignores senders that are not this extension; cookie/OTP sender.url regexes now require a real subdomain boundary.
+- npm audit fix (dev deps): 0 vulnerabilities.
+- tests/verify.mjs: two expectations updated for the earlier import-mark and Refresh-now changes. 597 passed, 0 failed.
+- extension-review-report.md written (verdict NEEDS FIXES for Web Store: privacy policy, disclosure, description).
+
+## 2026-11-05 - Store-readiness docs
+- Added `PRIVACY.md` (draft policy: local storage incl. unencrypted saved logins, relay/Calendar/Gmail flows, webmail OTP scan, cookies). Still needs a public URL and a contact line before Web Store submission.
+- manifest.json: description rewritten to the real feature set, name now says VIT-AP/Unofficial, version `1` -> `1.0.0`.
+
+## 2026-11-06 - Refresh diagnostics, relay scheduling groundwork
+- Home card 'Refresh now' failed with 'VTOP's reply had no attendance table (session expired?)'. The reason now reports what came back (length, table count, header row, first words) and saves it to `vtopext_attendance_refresh_debug`, so the real cause can be read instead of guessed.
+- `tools/mail-relay.gs`: added scheduled send (`sendAt` + `key`, `cancelPrefix`, 5-minute `dispatchDue` trigger, `setup()`), so reminder mail can arrive while Chrome is closed. Additive: requests without `sendAt` behave as before. NOT deployed and NOT yet called by the extension.
+
+## 2026-11-06 - Missed dues are shown for a week, then dropped; attendance refresh fix
+- js/da_upload.js: an un-uploaded assignment is reported as past due for 7 days after its due date (column, summary bar, digest, mail), then ignored. Previously it nagged forever.
+- tests/verify.mjs: a fixture's 24-Jun-2026 due became 02-Jul-2026 so it stays inside the 7-day window under the test clock (06-Jul-2026). No test yet proves the drop after 7 days.
+- Refresh now: the recorded attendance request arrived with an empty body (`sent: {}`), so VTOP returned a header-only table. The snapshot now stores `semesterSubId` and the refresh uses it; without one it asks for a visit to Attendance. Error text now reports rows/params.
+- Friendly message for 'Extension context invalidated' (reloaded extension, stale tab).
+
+## 2026-11-06 - Login fill: the extension's saved ID/password keeps winning over Chrome autofill
+- js/login_fill.js: the guard window was 6 s, so Chrome's password manager (Google) won whenever it filled later (on click/focus), and any keystroke anywhere (Tab, captcha) stood the script down. Now it guards for 5 minutes and only real typing/paste inside the ID or password field hands control back (Tab/Shift/Enter etc. ignored).
+- Needs the popup pair to be saved; with nothing saved the fields are left alone by design.
+
+## 2026-11-06 - Store pre-review fixes
+- manifest.json: removed the unused `oauth2` block (upstream's dead client id + broad `calendar` scope; no code calls getAuthToken, sign-in uses launchWebAuthFlow). Description now mentions captcha and login autofill.
+- PRIVACY.md: added the captcha/login-autofill disclosure.
+
+## 2026-11-06 - Popup login save no longer lies
+- js/popup_login.js: Save said 'Saved.' unconditionally, even if the storage write failed, so a new ID could silently not replace the old pair. It now reports chrome.runtime.lastError and reads the value back before saying Saved.
+- Live probe on the login page showed the stored pair persisting and being enforced (lowercase ID), so storage was not being wiped; the cause of 'not saving' is still unconfirmed until the popup shows a message.
+
+## 2026-11-06 - Rolled back the VTOP sign-in code
+- js/login_fill.js and js/popup_login.js restored to the last committed versions (6 s guard; Save without read-back). Today's versions (5-minute guard, error-checked Save) are kept only in the session scratchpad, not in the project.
+- Reason: the user reported the saved ID no longer sticking after today's changes. Cause not found in code; rolled back to remove those files as a suspect.
+
+## 2026-11-06 - Login fill: shield the fields from Chrome's autofill
+- js/login_fill.js: restored the 5-minute guard + focus re-fill + error-checked popup Save (earlier rollback undone), and added a 400 ms read-only shield on the ID/password fields the moment the form appears (Chrome does not fill read-only fields), plus a MutationObserver so it acts before the next poll tick.
+- manifest.json: the login_fill content-script entry now runs at document_start so it is in place before Chrome's load-time fill.
+- Evidence that prompted it: a photo of the login page showed the ID in capitals (24TEST0001) with Chrome's blue autofill tint, while the extension's stored ID read back lowercase earlier. Not yet verified live against Chrome's real autofill.
