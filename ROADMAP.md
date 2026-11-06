@@ -4,7 +4,7 @@ Open work as of **2026-08-20**. Ordered by what unblocks the most.
 Historical record of what was *done* lives in [changes.md](changes.md).
 
 The Cloud project is **`verammp`** (number `256000685922`, display name
-"VErammp"), owned by **ruthvikmrao@gmail.com** — *not* the account the browser
+"VErammp"), owned by **owner@example.com** — *not* the account the browser
 is usually signed in as, which is why every Console link needs `&authuser=…`.
 
 ---
@@ -35,7 +35,7 @@ On a logged-in session, against Fall 2026-27's newly published CAT1 schedule
 |---|---|
 | 🔔 | `✓ 11 Chrome notification(s) scheduled (1 day & 2 h before each exam)` |
 | ✉️ | `✓ 6 reminder(s) set — email 24 h before each exam` |
-| 📧 | `✓ emailed 6 exam(s) to ruthvik.24mic7198@vitapstudent.ac.in` |
+| 📧 | `✓ emailed 6 exam(s) to student@vitapstudent.ac.in` |
 
 So the **Calendar API is enabled** (six events written through it) and
 **`gmail.send` is on the consent screen** (Gmail returned 200 on
@@ -90,7 +90,7 @@ clear the duplicate-events problem in §2.
 
 ## 1b. ~~ONE STEP LEFT: deploy the mail relay~~ — DONE 2026-08-22
 
-Deployed under **vtopextention@gmail.com** (the club account) and live in
+Deployed under **<club-account>@gmail.com** (the club account) and live in
 `MAIL_RELAY_URL`. 📧 mail now sends from that address with **no Google sign-in
 and not one scope**.
 
@@ -220,7 +220,7 @@ with no relationship to the developer. Publishing needs **no review, no
 submission and no wait**; verification only removes the warning and the cap.
 
 So: **Publish app** in Cloud Console (project `verammp`, owner
-ruthvikmrao@gmail.com). No test users, ever. The 7-day re-consent problem is
+owner@example.com). No test users, ever. The 7-day re-consent problem is
 Testing-only and disappears with it.
 
 The cost, accepted knowingly: `gmail.readonly` is **restricted**, and Google
