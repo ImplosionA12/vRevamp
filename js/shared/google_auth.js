@@ -43,8 +43,9 @@ if (typeof window.vrGoogleToken !== "function") {
   window.vrGoogleAuthError = null;
   window.vrGoogleToken = (opts) =>
     new Promise((resolve) => {
-      const fallback = () =>
-        chrome.storage.sync.get(["token"], (r) => resolve(r.token || null));
+      // No chrome.storage.sync fallback: it synced a token to Google's servers
+      // and nothing writes one any more. No token is simply no token.
+      const fallback = () => resolve(null);
       try {
         chrome.runtime.sendMessage(
           {

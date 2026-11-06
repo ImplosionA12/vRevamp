@@ -1940,6 +1940,9 @@
       vtopext_attendance_summary: {
         fetchedAt: Date.now(),
         semester: semesterName,
+        // the id the Attendance page was showing: the background refresh needs
+        // it, because the recorded request can arrive with an empty body
+        semesterSubId: semEl && semEl.value ? semEl.value : undefined,
         subjects: rowsData.map((r) => ({
           name: r.name,
           code: r.code,

@@ -775,9 +775,22 @@ async function sendMailViaRelay(url, { subject, html, text, to }) {
       ok: false,
       to: address,
       error: (out && out.error) || `relay returned HTTP ${r.status}`,
+      // 200 with an unreadable body: the relay may well have sent it.
+      ambiguous: r.ok && !out,
     };
   } catch (error) {
-    return { ok: false, to: address, error: `relay unreachable: ${String((error && error.message) || error)}` };
+    // A thrown fetch is two different things. Offline: nothing was sent, so a
+    // retry is safe. Online: the request probably reached the relay and only the
+    // REPLY was lost (another extension intercepting fetch on VTOP pages does
+    // exactly this), so the mail may already be in the inbox and a retry would
+    // send a duplicate. Callers must not retry an `ambiguous` failure.
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+    return {
+      ok: false,
+      to: address,
+      error: `relay unreachable: ${String((error && error.message) || error)}`,
+      ambiguous: !offline,
+    };
   }
 }
 
@@ -1689,14 +1702,14 @@ function dueIsoOf(due) {
   return `${m[3]}-${mm}-${m[1].padStart(2, "0")}`;
 }
 
-async function runDigest() {
+async function runDigest({ retry = false } = {}) {
   const digest = await buildDigest();
   if (!digest) return { sent: false, reason: "nothing to report" };
 
   // The notification goes out first and unconditionally: it needs no account,
   // no scope and no network, so a failed mail must never cost the student the
-  // reminder itself.
-  chrome.notifications.create(`vrdigest|${Date.now()}`, {
+  // reminder itself. A retry must not raise it a second time.
+  if (!retry) chrome.notifications.create(`vrdigest|${Date.now()}`, {
     type: "basic",
     iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
     title: digest.urgent ? "VTOP Extension — needs attention today" : "VTOP Extension — today's summary",
@@ -1714,13 +1727,39 @@ async function runDigest() {
     text: digest.text,
     interactive: false,
   });
-  return { sent: mail.ok, reason: mail.error || null, to: mail.to };
+  return { sent: mail.ok, reason: mail.error || null, to: mail.to, ambiguous: !!mail.ambiguous };
 }
 
+const DIGEST_RETRY_PREFIX = "vtopext|digest-retry|";
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === DIGEST_ALARM) {
+  const isRetry = alarm.name.startsWith(DIGEST_RETRY_PREFIX);
+  if (alarm.name === DIGEST_ALARM || isRetry) {
+    const tries = isRetry ? Number(alarm.name.slice(DIGEST_RETRY_PREFIX.length)) || 1 : 0;
     try {
-      await runDigest();
+      const run = await runDigest({ retry: isRetry });
+      // Retry only a definite, transient failure. need_address / not_configured
+      // won't fix themselves, and an ambiguous one may already be delivered.
+      const permanent = /need_address|not_configured|nothing to report/.test(run.reason || "");
+      if (!run.sent && run.reason && !run.ambiguous && !permanent) {
+        if (tries < 3) {
+          chrome.alarms.create(`${DIGEST_RETRY_PREFIX}${tries + 1}`, { when: Date.now() + 10 * 60 * 1000 });
+        } else {
+          chrome.notifications.create(`vrdigest-fail|${Date.now()}`, {
+            type: "basic",
+            iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
+            title: "Couldn't email your daily summary",
+            message: String(run.reason).slice(0, 200),
+          });
+        }
+      } else if (!run.sent && run.reason === "need_address") {
+        chrome.notifications.create(`vrdigest-fail|${Date.now()}`, {
+          type: "basic",
+          iconUrl: chrome.runtime.getURL("assets/icons/img_128.png"),
+          title: "Daily summary not emailed",
+          message: "No email address saved — add one in the popup.",
+        });
+      }
     } catch (error) {
       console.warn("VTOP Extension digest", error);
     }
@@ -1749,7 +1788,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     } catch (error) {
       sent = { ok: false, error: String((error && error.message) || error) };
     }
-    if (!sent.ok) {
+    if (!sent.ok && sent.ambiguous) {
+      // The send may have gone through; retrying could mail it again. Say so
+      // once instead of guessing.
+      notify(
+        "Reminder email may have been sent",
+        `${reminder.title}\nCouldn't confirm delivery — check your inbox before resending.`
+      );
+    } else if (!sent.ok) {
       // Retry a few times, ten minutes apart, while the reminder is still
       // useful. After that say so out loud: a reminder that silently never
       // arrives is worse than none, because the student stops checking.
@@ -1874,6 +1920,8 @@ const waitGcalSaved = async (tabId, timeoutMs) => {
 
 //Routes the messages from content scripts and the popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // Only this extension's own scripts may drive the worker.
+  if (sender && sender.id && sender.id !== chrome.runtime.id) return false;
   const msg = request && request.message;
 
   // Download request from course_page: { course, faculty_slot, link_data }
@@ -2234,7 +2282,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       (async () => {
         try {
           const url = sender && sender.url;
-          if (!url || !/^https:\/\/[^/]*(vitap|vit)\.ac\.in\//.test(url)) {
+          if (!url || !/^https:\/\/([^/]*\.)?(vitap|vit)\.ac\.in\//.test(url)) {
             sendResponse(false);
             return;
           }
@@ -2260,7 +2308,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           // over http is still the VTOP page, and nothing but our own content
           // scripts can reach this listener in the first place.
           const from = (sender && sender.url) || "";
-          if (!/^https?:\/\/[^/]*(vitap|vit)\.ac\.in\/vtop\//.test(from)) {
+          if (!/^https?:\/\/([^/]*\.)?(vitap|vit)\.ac\.in\/vtop\//.test(from)) {
             sendResponse({ error: "forbidden" });
             return;
           }
@@ -2388,7 +2436,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       (async () => {
         try {
           const from = (sender && sender.url) || "";
-          if (!/^https?:\/\/[^/]*(vitap|vit)\.ac\.in\/vtop\//.test(from)) {
+          if (!/^https?:\/\/([^/]*\.)?(vitap|vit)\.ac\.in\/vtop\//.test(from)) {
             sendResponse({ error: "forbidden" });
             return;
           }

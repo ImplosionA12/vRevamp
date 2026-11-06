@@ -81,6 +81,9 @@ function doPost(e) {
 
     var req = JSON.parse(raw);
     var to = String(req.to || "").trim();
+
+    // Scheduled mail: see the SCHEDULING section below.
+    if (req.cancelPrefix) return reply(cancelQueued_(to, String(req.cancelPrefix)));
     var subject = String(req.subject || "VTOP Extension").slice(0, MAX_SUBJECT);
     var html = String(req.html || "").slice(0, MAX_BODY);
     var text = String(req.text || "").slice(0, MAX_BODY);
@@ -90,7 +93,9 @@ function doPost(e) {
       return reply({ ok: false, error: "invalid recipient" });
     if (!html && !text) return reply({ ok: false, error: "empty body" });
 
-    var gate = withinLimits_(to);
+    if (req.sendAt) return reply(queueMail_(req, to, subject, html, text));
+
+    var gate = withinLimits_(to, new Date());
     if (!gate.ok) return reply(gate);
 
     if (MailApp.getRemainingDailyQuota() < 1)
@@ -112,7 +117,16 @@ function doPost(e) {
 
 // A GET is handy for checking the deployment is alive without sending anything.
 function doGet() {
-  return reply({ ok: true, service: "VTOP Extension mail relay", quotaLeft: MailApp.getRemainingDailyQuota() });
+  return reply({
+    ok: true,
+    service: "VTOP Extension mail relay",
+    quotaLeft: MailApp.getRemainingDailyQuota(),
+    // The extension only hands over scheduled mail when BOTH are true. An old
+    // relay would ignore `sendAt` and mail it immediately, so the capability
+    // has to be announced, never assumed.
+    scheduling: true,
+    schedulerInstalled: schedulerInstalled_(),
+  });
 }
 
 /*
@@ -121,7 +135,7 @@ function doGet() {
  * opening VTOP at once genuinely do run this concurrently, and read-then-write
  * without one would undercount.
  */
-function withinLimits_(to) {
+function withinLimits_(to, when) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(5000);
@@ -130,7 +144,7 @@ function withinLimits_(to) {
   }
   try {
     var props = PropertiesService.getScriptProperties();
-    var day = Utilities.formatDate(new Date(), "UTC", "yyyy-MM-dd");
+    var day = Utilities.formatDate(when || new Date(), "UTC", "yyyy-MM-dd");
     var totalKey = "n:" + day;
     var toKey = "r:" + day + ":" + to.toLowerCase();
 
@@ -153,4 +167,135 @@ function reply(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
     ContentService.MimeType.JSON
   );
+}
+
+/*
+ * SCHEDULING — mail that arrives even when Chrome is closed
+ * ---------------------------------------------------
+ * A chrome.alarms reminder only fires while the browser is running. A student
+ * who closes Chrome the evening before an exam used to get the mail at the next
+ * launch at best, and nothing at all once the exam had started. Google's servers
+ * are always on, so the extension hands the mail over here with a `sendAt` time
+ * and a time-driven trigger delivers it.
+ *
+ * ONE-TIME SETUP, after pasting this version and redeploying: open the script
+ * editor, choose `setup` in the function dropdown and press Run. It asks for
+ * one extra permission (managing this script's own triggers).
+ *
+ * Keys are idempotent: queueing the same (to, key) again REPLACES the earlier
+ * entry, so a retried request cannot send twice. Counters are charged to the
+ * day the mail will be SENT, not the day it was queued.
+ */
+var MAX_QUEUE_AHEAD_MS = 120 * 24 * 3600 * 1000;
+var STALE_AFTER_MS = 6 * 3600 * 1000; // a mail this late is yesterday's news
+var MAX_QUEUED_BODY = 8000; // script properties cap a value at ~9 KB
+
+function queuedProp_(to, key) {
+  var d = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    to.toLowerCase() + "|" + key
+  );
+  return "q:" + Utilities.base64EncodeWebSafe(d).slice(0, 32);
+}
+
+function queueMail_(req, to, subject, html, text) {
+  var key = String(req.key || "").slice(0, 100);
+  var at = Number(req.sendAt);
+  var now = Date.now();
+  if (!key) return { ok: false, error: "missing key" };
+  if (!isFinite(at) || at < now - 60000 || at > now + MAX_QUEUE_AHEAD_MS)
+    return { ok: false, error: "sendAt out of range" };
+
+  var props = PropertiesService.getScriptProperties();
+  var prop = queuedProp_(to, key);
+  // Re-queueing an existing key is a replace, not a new mail: don't charge twice.
+  if (!props.getProperty(prop)) {
+    var gate = withinLimits_(to, new Date(at));
+    if (!gate.ok) return gate;
+  }
+  var item = {
+    to: to,
+    key: key,
+    at: at,
+    until: isFinite(Number(req.until)) ? Number(req.until) : null,
+    subject: subject,
+    text: text.slice(0, MAX_QUEUED_BODY),
+    html: html.length <= MAX_QUEUED_BODY ? html : "",
+  };
+  props.setProperty(prop, JSON.stringify(item));
+  return { ok: true, queued: true };
+}
+
+function cancelQueued_(to, prefix) {
+  var props = PropertiesService.getScriptProperties();
+  var all = props.getProperties();
+  var n = 0;
+  Object.keys(all).forEach(function (k) {
+    if (k.indexOf("q:") !== 0) return;
+    try {
+      var it = JSON.parse(all[k]);
+      if (it.to.toLowerCase() === to.toLowerCase() && String(it.key).indexOf(prefix) === 0) {
+        props.deleteProperty(k);
+        n++;
+      }
+    } catch (e) {
+      props.deleteProperty(k); // unreadable entry: never let it jam the queue
+    }
+  });
+  return { ok: true, cancelled: n };
+}
+
+// Run by the time-driven trigger. Cheap when the queue is empty.
+function dispatchDue() {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(20000);
+  } catch (e) {
+    return; // the next tick will pick it up
+  }
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var all = props.getProperties();
+    var now = Date.now();
+    Object.keys(all).forEach(function (k) {
+      if (k.indexOf("q:") !== 0) return;
+      var it;
+      try {
+        it = JSON.parse(all[k]);
+      } catch (e) {
+        props.deleteProperty(k);
+        return;
+      }
+      if (it.at > now) return;
+      // Delete BEFORE sending: a crash mid-send then loses one mail instead of
+      // repeating it every five minutes.
+      props.deleteProperty(k);
+      if (now - it.at > STALE_AFTER_MS) return;
+      if (it.until && now > it.until) return;
+      if (MailApp.getRemainingDailyQuota() < 1) return;
+      MailApp.sendEmail({
+        to: it.to,
+        subject: it.subject,
+        body: it.text || String(it.html || "").replace(/<[^>]*>/g, " "),
+        htmlBody: it.html || undefined,
+        name: "VTOP Extension",
+      });
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function schedulerInstalled_() {
+  return ScriptApp.getProjectTriggers().some(function (t) {
+    return t.getHandlerFunction() === "dispatchDue";
+  });
+}
+
+// Run this ONCE from the editor (see SCHEDULING above).
+function setup() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "dispatchDue") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("dispatchDue").timeBased().everyMinutes(5).create();
 }

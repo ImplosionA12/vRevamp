@@ -636,10 +636,24 @@
     }
   };
 
-  const markImported = async (count) => {
+  // Cheap fingerprint of the class grid, so a later visit can tell that VTOP's
+  // timetable no longer matches what was pushed to Google Calendar. Nothing
+  // used to compare the two, so a changed slot/room/course simply left the
+  // calendar stale with no hint.
+  const fingerprint = (timetable) => {
+    const s = JSON.stringify([timetable && timetable.semester, timetable && timetable.data]);
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return String(h);
+  };
+
+  // `via` matters for auto-sync: only an "api" import can be safely replaced
+  // without asking (it tags its events and deletes them by tag). A "template"
+  // import cannot be cleaned up, so re-running it would double the calendar.
+  const markImported = async (count, timetable, via) => {
     try {
       await chrome.storage.local.set({
-        [IMPORT_MARK]: { count, at: Date.now() },
+        [IMPORT_MARK]: { count, at: Date.now(), via: via || "template", fp: timetable ? fingerprint(timetable) : null },
       });
     } catch {
       /* storage gone — worst case we warn one time too few */
@@ -683,7 +697,7 @@
     btn.disabled = false;
     const saved = res && typeof res.saved === "number" ? res.saved : 0;
     if (saved > 0) {
-      await markImported(saved);
+      await markImported(saved, timetable);
       tt_status(
         btn,
         `✓ ${saved}/${links.length} event(s) saved to Google Calendar — ` +
@@ -714,7 +728,10 @@
     return true;
   };
 
-  const onGcalClick = async (btn) => {
+  // `silent` = auto-sync: never opens a consent window, never takes the
+  // no-sign-in fallback (which would stack a second copy), and bails out
+  // quietly when there is no usable token.
+  const onGcalClick = async (btn, { silent = false } = {}) => {
     try {
       const timetable = await getSavedTimetable();
       if (!timetable || !Array.isArray(timetable.data) || !timetable.data.length) {
@@ -732,6 +749,7 @@
       }
       let token = await window.vrGoogleToken({});
       // never consented yet — one interactive consent window, right now
+      if (!token && silent) return false;
       if (!token) token = await window.vrGoogleToken({ interactive: true });
       if (!token) {
         const err = window.vrGoogleAuthError || "";
@@ -771,6 +789,7 @@
           // a cached token from when the OAuth client was still alive can get
           // this far and then die un-refreshably — same fallback as above
           btn.disabled = false;
+          if (silent) return false;
           if (
             !retryableAuthError(window.vrGoogleAuthError) &&
             (await oneTapFallback(btn, timetable, cal, titles))
@@ -784,6 +803,7 @@
         await tt_sleep(300);
       }
       btn.disabled = false;
+      if (done > 0) await markImported(done, timetable, "api");
       tt_status(
         btn,
         done > 0
@@ -796,8 +816,10 @@
           : "couldn't create the events — try again",
         done > 0
       );
+      return done > 0;
     } catch (error) {
       console.warn("VTOP Extension timetable → Google Calendar:", error);
+      if (silent) return false;
       // a chrome://extensions reload orphans this script in already-open
       // tabs: the button stays visible but every chrome.* call throws —
       // only a page refresh reattaches the new build
@@ -886,7 +908,43 @@
     gbtn.id = GCAL_BTN_ID;
     gbtn.style.cssText = "margin:8px;background:rgb(73,117,182);";
     anchor.insertBefore(gbtn, btn.nextSibling);
+    // The page re-saves the timetable shortly after it renders, so look a
+    // moment later rather than at insertion time.
+    setTimeout(() => warnIfCalendarStale(gbtn), 3000);
     return true;
+  };
+
+  const warnIfCalendarStale = async (gbtn) => {
+    try {
+      const prev = await previousImport();
+      if (!prev || !prev.fp) return; // never imported, or imported before fingerprints existed
+      const timetable = await getSavedTimetable();
+      if (!timetable || !Array.isArray(timetable.data) || !timetable.data.length) return;
+      if (fingerprint(timetable) === prev.fp) return;
+
+      // Auto-sync: only when the last import was the tagged API kind (safe to
+      // replace), and at most once an hour so a failing sync can't loop on
+      // every page visit.
+      if (prev.via === "api") {
+        const TRY_KEY = "vtopext_tt_autosync_try";
+        const last = (await chrome.storage.local.get([TRY_KEY]))[TRY_KEY] || 0;
+        if (Date.now() - last > 60 * 60 * 1000) {
+          await chrome.storage.local.set({ [TRY_KEY]: Date.now() });
+          tt_status(gbtn, "timetable changed — updating Google Calendar…", true);
+          const ok = await onGcalClick(gbtn, { silent: true });
+          if (ok) return; // onGcalClick already wrote the success line
+        }
+      }
+      tt_status(
+        gbtn,
+        "⚠ your timetable has changed since you last imported it to Google Calendar " +
+          `(${new Date(prev.at).toLocaleDateString()}). The calendar still shows the OLD classes — ` +
+          "click this button to import the new ones. If the old events don't disappear on their own, delete them in Google Calendar first.",
+        false
+      );
+    } catch {
+      /* a missing warning is not worth an error */
+    }
   };
 
   const addWithRetries = () => {

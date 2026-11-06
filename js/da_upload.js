@@ -474,6 +474,12 @@ let da_page_2026 = async () => {
     }
     const now = new Date().getTime();
     const dueMs = (d) => new Date(d.replace(/-/g, " ")).getTime();
+    // A due date is about the future. A missed one is reported for a week, then
+    // dropped: after that it is history, and nagging about it forever buries the
+    // dues that can still be acted on.
+    const GRACE_MS = 7 * 86400000;
+    const recentlyMissed = (a) =>
+      !a.uploaded && dueMs(a.due) + 86399000 < now && dueMs(a.due) + 86399000 >= now - GRACE_MS;
     const upcoming = meta.items
       .filter((a) => !a.uploaded && dueMs(a.due) + 86399000 >= now)
       .sort((a, b) => dueMs(a.due) - dueMs(b.due));
@@ -489,12 +495,12 @@ let da_page_2026 = async () => {
       title: meta.course_title,
       upcoming: upcoming.map((a) => ({ due: a.due, title: a.title })),
       overdue: meta.items
-        .filter((a) => !a.uploaded && dueMs(a.due) + 86399000 < now)
+        .filter(recentlyMissed)
         .map((a) => ({ due: a.due, title: a.title })),
     });
 
     if (upcoming.length === 0) {
-      const missed = meta.items.filter((a) => !a.uploaded).length;
+      const missed = meta.items.filter(recentlyMissed).length;
       if (meta.items.length === 0) cell.textContent = "No DAs posted";
       else if (missed > 0) {
         cell.textContent = `⚠ ${missed} past due (not uploaded)`;

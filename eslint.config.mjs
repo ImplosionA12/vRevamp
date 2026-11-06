@@ -25,6 +25,8 @@ const sharedNames = [
   "semesterLooksStale",
   "filterRepeated",
   "filterRepeatedColumns",
+  // js/utils/safe_html.js
+  "vrSafeHtml",
   // js/captcha
   "bitmaps",
   "fill_captcha",

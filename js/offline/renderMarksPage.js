@@ -4,5 +4,5 @@ getMarksPage((htmlDataAsStr) => {
     marksPageBody.innerHTML = `<p class="no-data">No Data Available</p>`;
     return;
   }
-  marksPageBody.innerHTML = htmlDataAsStr;
+  marksPageBody.innerHTML = vrSafeHtml(htmlDataAsStr);
 });

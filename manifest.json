@@ -74,6 +74,7 @@
       "js": [
         "js/login_fill.js"
       ],
+      "run_at": "document_start",
       "matches": [
         "https://vtop.vitap.ac.in/vtop/login*",
         "https://vtop.vitap.ac.in/vtop/open/page*",
@@ -102,7 +103,7 @@
       ]
     }
   ],
-  "description": "Enhancing the better way to use VTOP",
+  "description": "Unofficial VIT-AP VTOP helper: attendance/grade tools, offline pages, calendar sync, reminders, login, captcha and OTP autofill.",
   "host_permissions": [
     "*://vtop.vit.ac.in/*",
     "*://vtopcc.vit.ac.in/vtop/*",
@@ -125,11 +126,7 @@
   },
   "manifest_version": 3,
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtUqfcUainUb9QtZS8BkGTBmWd0sf4nsbtGDawiMHklU/dXPWDjEi+CIEStITNxgU7df1i9OWfjE9s7mASUZMePH0OSrQYQT7936TBYu/f6vi5zjFTCymLlg7UgdBhqymhDHii6RVvzAaYJZ/pGAHH99FD3ilLPqtVX0R6BOPsHQJ27uYkL7r5N2cAaoPwELF33VvRwn/InPQcUbdTebsvgMjcIFNPdZFgzciJo4mmKfmjdQ3mEhMCRGlZlJP7jHEFGt0FCd9aBg5fB0cnGXaEZ3/0DBneXW+IWONpXk6URHDUYDZC6fbWjuhHWsMfvcKMGk8l9i1ZUzCetmI8kR/GwIDAQAB",
-  "name": "VTOP Extension",
-  "oauth2": {
-    "client_id": "102739538495-lqud9ruvqs4a6jug1fada5h9uu9acpmk.apps.googleusercontent.com",
-    "scopes": ["https://www.googleapis.com/auth/calendar"]
-  },
+  "name": "VTOP Extension for VIT-AP (Unofficial)",
   "permissions": [
     "webRequest",
     "downloads",
@@ -142,7 +139,7 @@
     "scripting"
   ],
 
-  "version": "1",
+  "version": "1.0.0",
   "web_accessible_resources": [
     {
       "matches": ["*://*.vit.ac.in/*", "*://*.vitap.ac.in/*"],

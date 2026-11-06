@@ -177,17 +177,66 @@
   };
 
   const refreshInPlace = async () => {
-    if (!window.vrVtop || typeof window.vrVtop.post !== "function") return false;
+    if (!window.vrVtop || typeof window.vrVtop.post !== "function")
+      return { ok: false, reason: "VTOP helper not loaded — refresh the page" };
     const stored = await chrome.storage.local.get([
       "vtopext_attendance_request",
       "vtopext_attendance_summary",
     ]);
     const request = stored.vtopext_attendance_request;
-    if (!request || !request.path) return false; // never recorded — nothing to replay
+    if (!request || !request.path)
+      return { ok: false, reason: "open the Attendance page once so I can learn the request" };
 
-    const html = await window.vrVtop.post(request.path, request.params || {});
+    const params = { ...(request.params || {}) };
+    const summary = stored.vtopext_attendance_summary || {};
+    // An empty recorded body made VTOP answer with a header-only table (0 rows).
+    if (!params.semesterSubId && summary.semesterSubId) params.semesterSubId = summary.semesterSubId;
+    if (!params.semesterSubId)
+      return { ok: false, reason: "open the Attendance page once so I can learn the semester" };
+    const html = await window.vrVtop.post(request.path, params);
     const fresh = parseAttendanceHtml(html);
-    if (!fresh) return false;
+    if (!fresh) {
+      // Say what actually came back. "Session expired?" was a guess, and it hid
+      // the real cases: a login page, a semester picker, an empty semester, or a
+      // table whose headers no longer contain "attended"/"total".
+      const text = String(html || "");
+      let tables = 0;
+      let headers = "";
+      let rows = 0;
+      let firstRow = "";
+      try {
+        const doc = new DOMParser().parseFromString(text, "text/html");
+        const all = Array.from(doc.querySelectorAll("table"));
+        tables = all.length;
+        const first = all[0] && (all[0].querySelector("thead tr") || all[0].rows[0]);
+        if (first)
+          headers = Array.from(first.cells)
+            .map((c) => (c.textContent || "").trim())
+            .join("|")
+            .slice(-60); // the tail is what the parser needs; the head was already seen
+        const body = all[0] ? Array.from(all[0].querySelectorAll("tbody tr")) : [];
+        rows = body.length;
+        if (body[0])
+          firstRow = (body[0].textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      } catch {
+        /* diagnostics only */
+      }
+      const glimpse = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 70);
+      await chrome.storage.local.set({
+        vtopext_attendance_refresh_debug: { at: Date.now(), path: request.path, params, length: text.length, tables, headers, glimpse },
+      });
+      return {
+        ok: false,
+        reason:
+          `VTOP's reply had no usable attendance table (${text.length} chars, ${tables} table(s)` +
+          (headers ? `, last headers: ${headers}` : "") +
+          `, ${rows} row(s)` +
+          (firstRow ? `, first row: "${firstRow}"` : "") +
+          `, sent: ${JSON.stringify(params).slice(0, 80)}` +
+          (glimpse ? `; starts: "${glimpse}"` : "") +
+          ")",
+      };
+    }
 
     const previous = stored.vtopext_attendance_summary || {};
     await chrome.storage.local.set({
@@ -197,23 +246,47 @@
         subjects: mergeSubjects(previous.subjects, fresh),
       },
     });
-    return true;
+    return { ok: true };
   };
 
   if (typeof window.vrDelegate === "function") {
+    // Opening the Attendance page is now a deliberate second button, not what
+    // a failed "Refresh now" does behind the student's back.
+    window.vrDelegate("home-attendance-open", (button) => navigateToAttendance(button));
     window.vrDelegate("home-attendance-refresh", async (button) => {
       button.disabled = true;
       button.textContent = "refreshing…";
-      let done = false;
+      let result = { ok: false, reason: "unknown error" };
       try {
-        done = await refreshInPlace();
+        result = await refreshInPlace();
       } catch (error) {
-        // a tripped breaker or a refused request — vrVtop has already told the
-        // student why, in its own banner. Opening the page is still worth a try.
         console.warn("VTOP Extension home refresh:", error);
+        const msg = String((error && error.message) || error);
+        result = {
+          ok: false,
+          reason: /context invalidated/i.test(msg)
+            ? "the extension was reloaded - refresh this VTOP tab (F5) and try again"
+            : msg,
+        };
       }
-      if (!done) {
-        navigateToAttendance(button);
+      if (!result.ok) {
+        // Stay on the home page and say why. Used to jump straight to the
+        // Attendance page, which read as the button doing the wrong thing.
+        button.textContent = "Refresh now";
+        button.disabled = false;
+        const note = document.createElement("span");
+        note.style.cssText = "display:block;margin-top:4px;font-size:13px;color:#c62828;";
+        note.textContent = `Couldn't refresh here: ${result.reason}. `;
+        if (typeof window.vrButton === "function") {
+          const open = window.vrButton("home-attendance-open", "Open Attendance");
+          open.style.cssText =
+            "padding:0 8px;font-size:13px;line-height:22px;background:rgb(73,117,182);border:none;border-radius:3px;color:#fff;";
+          note.appendChild(open);
+        }
+        const prior = button.parentElement && button.parentElement.querySelector("[data-vtopext-refresh-note]");
+        if (prior) prior.remove();
+        note.setAttribute("data-vtopext-refresh-note", "1");
+        if (button.parentElement) button.parentElement.appendChild(note);
         return;
       }
       // rebuild the card against the snapshot just written
@@ -263,7 +336,7 @@
   const line = (text, color) => {
     const p = document.createElement("p");
     p.textContent = text;
-    p.style.cssText = `margin:2px 0;font-size:13px;${color ? `color:${color};` : "color:#333;"}`;
+    p.style.cssText = `margin:2px 0;font-size:15px;line-height:1.4;${color ? `color:${color};` : "color:#333;"}`;
     return p;
   };
 
@@ -283,16 +356,16 @@
     const title = document.createElement("p");
     title.textContent = "VTOP Extension — heads up";
     title.style.cssText =
-      "font-weight:bold;margin:0;font-size:13px;color:rgb(60,141,188);";
+      "font-weight:bold;margin:0;font-size:15px;color:rgb(60,141,188);";
     const toggle = document.createElement("span");
     toggle.textContent = collapsed ? "▸ show" : "▾ hide";
-    toggle.style.cssText = "font-size:11px;color:#888;";
+    toggle.style.cssText = "font-size:13px;color:#888;";
     head.appendChild(title);
     head.appendChild(toggle);
     card.appendChild(head);
 
     const body = document.createElement("div");
-    body.style.cssText = `max-height:96px;overflow-y:auto;margin-top:4px;${collapsed ? "display:none;" : ""}`;
+    body.style.cssText = `max-height:60vh;overflow-y:auto;margin-top:4px;${collapsed ? "display:none;" : ""}`;
     card.appendChild(body);
     head.addEventListener("click", () => {
       const wasHidden = body.style.display === "none";
@@ -519,7 +592,7 @@
         if (canRefresh && typeof window.vrButton === "function") {
           const refresh = window.vrButton("home-attendance-refresh", "Refresh now");
           refresh.style.cssText =
-            "margin-left:6px;padding:0 6px;font-size:11px;line-height:18px;" +
+            "margin-left:6px;padding:0 8px;font-size:13px;line-height:22px;" +
             "background:rgb(73,117,182);border:none;border-radius:3px;color:#fff;";
           row.appendChild(refresh);
         } else {

@@ -85,7 +85,7 @@ were supposed to be at the gate.
 ## Mail sends from the club address now (2026-08-22)
 
 `MAIL_RELAY_URL` is no longer blank. The Apps Script relay is deployed under
-**vtopextention@gmail.com**, the club account, and the `/exec` URL ships in the
+**<club-account>@gmail.com**, the club account, and the `/exec` URL ships in the
 build — so nobody pastes anything. The popup's relay field stays what it always
 was: a per-user override for someone running their own.
 
@@ -1935,7 +1935,7 @@ session, real mouse clicks, notes read straight off the page:
 |---|---|
 | 🔔 notify me before each exam | `✓ 11 Chrome notification(s) scheduled (1 day & 2 h before each exam) — no sign-in needed` |
 | ✉️ email me instead (Google) | `✓ 6 reminder(s) set — email 24 h before each exam` |
-| 📧 mail me the list now | `✓ emailed 6 exam(s) to ruthvik.24mic7198@vitapstudent.ac.in` |
+| 📧 mail me the list now | `✓ emailed 6 exam(s) to student@vitapstudent.ac.in` |
 
 Three things that were open questions until this run are now answered:
 
@@ -3708,7 +3708,7 @@ one page, as Chrome does at inject time:
 
 ## Bunk table on old semesters + insight-noise fixes (2026-07-07, live)
 - User report: bunk calculator "doesn't work properly" on old semesters.
-  Live probing (real session, 24MIC7198): Winter 2024-25 Freshers works
+  Live probing (real session, 24TEST0001): Winter 2024-25 Freshers works
   fully; **Short Summer 2024-25 showed "--" for CAT-1/CAT-2** (its calendar
   genuinely has no CATs — the display just looked broken), and EVERY
   semester load logged ~10× "subject insight failed …
@@ -4393,3 +4393,57 @@ one page, as Chrome does at inject time:
 - NOT checked live in Chrome. Reload the extension and open the VTOP home page.
 - Still on the user: the deployed Apps Script mail relay still says "vRevamp" as the sender name and
   in its GET reply. Paste tools/mail-relay.gs into script.google.com and deploy a new version.
+
+## 2026-11-05 - reminder/digest mail fixes, stale-calendar warning
+- background.js: relay send now flags `ambiguous` failures (fetch threw while online, or 200 with unreadable body). Reminder alarms no longer retry those (was up to 4 duplicate mails); they notify "may have been sent".
+- background.js: daily digest now retries transient mail failures 3x (10 min apart) and notifies on final failure / missing address. Retry does not re-raise the notification.
+- timetable_ics.js: calendar import stores a timetable fingerprint (API path too, previously only the template path marked imports). On the timetable page a button warning appears when the saved timetable differs from the last import. NOT auto-sync: Calendar is still updated only by clicking the button.
+- Not live-verified; reload the unpacked extension to test.
+
+- timetable_ics.js AUTO-SYNC: on the timetable page, if the saved timetable differs from the last import AND that import was via the tagged API path, silently re-imports (delete-by-tag + recreate). Silent = no consent window, no template fallback. Max one attempt/hour. Template-route imports only get the warning (cannot be cleaned up). Needs a prior Google consent; otherwise falls back to the warning. Not live-verified.
+
+## 2026-11-05 home card
+- home_notices.js: card text 13->15px, header 15px, body cap 96px -> 60vh (was a tiny scroll box). "Refresh now" no longer jumps to Attendance on failure: it stays on home, shows the reason, and offers a separate "Open Attendance" button. Root cause of the failure itself (no recorded request / unparsed reply / session) is not known until the reason text is seen live.
+
+## 2026-11-05 security pass
+- google_auth.js: removed dead chrome.storage.sync token fallback.
+- js/utils/safe_html.js (new) + offline.html + js/offline/render*Page.js: saved VTOP HTML is sanitized before innerHTML in extension pages. weekend_outing.js deliberately NOT changed (markup needs VTOP inline handlers; page-origin localStorage is already page-controlled).
+- background.js: onMessage ignores senders that are not this extension; cookie/OTP sender.url regexes now require a real subdomain boundary.
+- npm audit fix (dev deps): 0 vulnerabilities.
+- tests/verify.mjs: two expectations updated for the earlier import-mark and Refresh-now changes. 597 passed, 0 failed.
+- extension-review-report.md written (verdict NEEDS FIXES for Web Store: privacy policy, disclosure, description).
+
+## 2026-11-05 - Store-readiness docs
+- Added `PRIVACY.md` (draft policy: local storage incl. unencrypted saved logins, relay/Calendar/Gmail flows, webmail OTP scan, cookies). Still needs a public URL and a contact line before Web Store submission.
+- manifest.json: description rewritten to the real feature set, name now says VIT-AP/Unofficial, version `1` -> `1.0.0`.
+
+## 2026-11-06 - Refresh diagnostics, relay scheduling groundwork
+- Home card 'Refresh now' failed with 'VTOP's reply had no attendance table (session expired?)'. The reason now reports what came back (length, table count, header row, first words) and saves it to `vtopext_attendance_refresh_debug`, so the real cause can be read instead of guessed.
+- `tools/mail-relay.gs`: added scheduled send (`sendAt` + `key`, `cancelPrefix`, 5-minute `dispatchDue` trigger, `setup()`), so reminder mail can arrive while Chrome is closed. Additive: requests without `sendAt` behave as before. NOT deployed and NOT yet called by the extension.
+
+## 2026-11-06 - Missed dues are shown for a week, then dropped; attendance refresh fix
+- js/da_upload.js: an un-uploaded assignment is reported as past due for 7 days after its due date (column, summary bar, digest, mail), then ignored. Previously it nagged forever.
+- tests/verify.mjs: a fixture's 24-Jun-2026 due became 02-Jul-2026 so it stays inside the 7-day window under the test clock (06-Jul-2026). No test yet proves the drop after 7 days.
+- Refresh now: the recorded attendance request arrived with an empty body (`sent: {}`), so VTOP returned a header-only table. The snapshot now stores `semesterSubId` and the refresh uses it; without one it asks for a visit to Attendance. Error text now reports rows/params.
+- Friendly message for 'Extension context invalidated' (reloaded extension, stale tab).
+
+## 2026-11-06 - Login fill: the extension's saved ID/password keeps winning over Chrome autofill
+- js/login_fill.js: the guard window was 6 s, so Chrome's password manager (Google) won whenever it filled later (on click/focus), and any keystroke anywhere (Tab, captcha) stood the script down. Now it guards for 5 minutes and only real typing/paste inside the ID or password field hands control back (Tab/Shift/Enter etc. ignored).
+- Needs the popup pair to be saved; with nothing saved the fields are left alone by design.
+
+## 2026-11-06 - Store pre-review fixes
+- manifest.json: removed the unused `oauth2` block (upstream's dead client id + broad `calendar` scope; no code calls getAuthToken, sign-in uses launchWebAuthFlow). Description now mentions captcha and login autofill.
+- PRIVACY.md: added the captcha/login-autofill disclosure.
+
+## 2026-11-06 - Popup login save no longer lies
+- js/popup_login.js: Save said 'Saved.' unconditionally, even if the storage write failed, so a new ID could silently not replace the old pair. It now reports chrome.runtime.lastError and reads the value back before saying Saved.
+- Live probe on the login page showed the stored pair persisting and being enforced (lowercase ID), so storage was not being wiped; the cause of 'not saving' is still unconfirmed until the popup shows a message.
+
+## 2026-11-06 - Rolled back the VTOP sign-in code
+- js/login_fill.js and js/popup_login.js restored to the last committed versions (6 s guard; Save without read-back). Today's versions (5-minute guard, error-checked Save) are kept only in the session scratchpad, not in the project.
+- Reason: the user reported the saved ID no longer sticking after today's changes. Cause not found in code; rolled back to remove those files as a suspect.
+
+## 2026-11-06 - Login fill: shield the fields from Chrome's autofill
+- js/login_fill.js: restored the 5-minute guard + focus re-fill + error-checked popup Save (earlier rollback undone), and added a 400 ms read-only shield on the ID/password fields the moment the form appears (Chrome does not fill read-only fields), plus a MutationObserver so it acts before the next poll tick.
+- manifest.json: the login_fill content-script entry now runs at document_start so it is in place before Chrome's load-time fill.
+- Evidence that prompted it: a photo of the login page showed the ID in capitals (24TEST0001) with Chrome's blue autofill tint, while the extension's stored ID read back lowercase earlier. Not yet verified live against Chrome's real autofill.

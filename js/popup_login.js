@@ -39,8 +39,23 @@
         return;
       }
       chrome.storage.local.set({ [KEY]: { id, pass } }, () => {
-        show({ id, pass });
-        say("Saved. The VTOP login page will be filled with these.");
+        // "Saved." used to be said unconditionally, even when the write failed
+        // (storage full, for one) — so the old pair silently stayed in place and
+        // the new ID "didn't save". Check the error, then read it back.
+        const failure = chrome.runtime && chrome.runtime.lastError;
+        if (failure) {
+          say(`Couldn't save: ${failure.message || failure}`, true);
+          return;
+        }
+        chrome.storage.local.get(KEY, (check) => {
+          const got = check && check[KEY];
+          if (!got || got.id !== id) {
+            say("Couldn't save: the browser didn't keep it. Try again, or free some space.", true);
+            return;
+          }
+          show(got);
+          say("Saved. The VTOP login page will be filled with these.");
+        });
       });
     });
   });

@@ -4,7 +4,7 @@ getExamSchedulePage((htmlDataAsStr) => {
     marksPageBody.innerHTML = `<p class="no-data">No Data Available</p>`;
     return;
   }
-  marksPageBody.innerHTML = htmlDataAsStr;
+  marksPageBody.innerHTML = vrSafeHtml(htmlDataAsStr);
   // Snapshots taken before js/shared/click.js landed embedded our own buttons
   // (.ics export, 🔔 reminders, ✉️ email). Nothing services a click here —
   // this is an extension page with no VTOP content script — so they could only

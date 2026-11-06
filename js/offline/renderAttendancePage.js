@@ -4,5 +4,5 @@ getAttendancePage((htmlDataAsStr) => {
     attdBody.innerHTML = `<p class="no-data">No Data Available</p>`;
     return;
   }
-  attdBody.innerHTML = htmlDataAsStr;
+  attdBody.innerHTML = vrSafeHtml(htmlDataAsStr);
 });

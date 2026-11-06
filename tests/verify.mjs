@@ -796,7 +796,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // silently from getGradeViewDetails (no manual expanding)
     const html = `<body>
       <input name="_csrf" value="csrf123">
-      <input id="authorizedIDX" value="24MIC7198">
+      <input id="authorizedIDX" value="24TEST0001">
       <input id="semesterSubId" value="AP2025264">
       <div id="studentGradeView"><div class="row">
       <table><tbody>
@@ -1222,6 +1222,9 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // tab any more
     await page.evaluate(() => {
       delete window.__storage.token;
+      // the API import above now records itself; this scenario is a student who
+      // has never imported, so forget it or the duplicate warning rightly fires
+      delete window.__storage.vtopext_tt_imported;
       window.__storage.google_error =
         "OAuth2 request failed: Service responded with error: 'bad client id: 102739538495-xyz.apps.googleusercontent.com'";
       window.__opened = [];
@@ -1730,15 +1733,15 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => {
       document.body.innerHTML = `
         <input name="_csrf" value="csrf123">
-        <input id="authorizedIDX" value="24MIC7198">
+        <input id="authorizedIDX" value="24TEST0001">
         <select id="semesterSubId"><option selected>Winter Semester 2025-26</option></select>
         <div class="table-responsive"><table><tbody>
-          <tr><td>CSE1005 - Course A - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_CSE1005_00100','TH')">view</a></td></tr>
-          <tr><td>MAT2001 - Course B - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_MAT2001_00200','TH')">view</a></td></tr>
-          <tr><td>PHY1999 - Course C - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_PHY1999_00300','TH')">view</a></td></tr>
-          <tr><td>GAP1001 - Course F - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_GAP1001_00600','TH')">view</a></td></tr>
-          <tr><td>SWE2077 - Course D - Embedded Lab</td><td>AP2025264000340 - L31+L32+L43+L44 - 409</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_SWE2077_00400','LO')">view</a></td></tr>
-          <tr><td>SWE2088 - Course E - Embedded Lab</td><td>AP2025264000341 - L31+L32+L43+L44 - 409</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24MIC7198','AM_SWE2088_00500','LO')">view</a></td></tr>
+          <tr><td>CSE1005 - Course A - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24TEST0001','AM_CSE1005_00100','TH')">view</a></td></tr>
+          <tr><td>MAT2001 - Course B - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24TEST0001','AM_MAT2001_00200','TH')">view</a></td></tr>
+          <tr><td>PHY1999 - Course C - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24TEST0001','AM_PHY1999_00300','TH')">view</a></td></tr>
+          <tr><td>GAP1001 - Course F - Theory Only</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24TEST0001','AM_GAP1001_00600','TH')">view</a></td></tr>
+          <tr><td>SWE2077 - Course D - Embedded Lab</td><td>AP2025264000340 - L31+L32+L43+L44 - 409</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24TEST0001','AM_SWE2077_00400','LO')">view</a></td></tr>
+          <tr><td>SWE2088 - Course E - Embedded Lab</td><td>AP2025264000341 - L31+L32+L43+L44 - 409</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2025264','24TEST0001','AM_SWE2088_00500','LO')">view</a></td></tr>
         </tbody></table></div>`;
     });
     await inject(page, [
@@ -2060,14 +2063,14 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     await page.evaluate(() => {
       document.body.innerHTML = `
         <input name="_csrf" value="csrf123">
-        <input id="authorizedIDX" value="24MIC7198">
+        <input id="authorizedIDX" value="24TEST0001">
         <select id="semesterSubId"><option selected>Winter Semester 2024-25 Freshers</option></select>
         <div class="table-responsive"><table>
           <thead><tr><th>Course Detail</th><th>Attended Classes</th><th>Total Classes</th><th>Attendance Detail</th></tr></thead>
           <tbody>
-          <tr><td>CHY1008 - Chemistry - Theory Only</td><td>8</td><td>10</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2024999','24MIC7198','AM_CHY1008_00100','TH')">view</a></td></tr>
-          <tr><td>NEW0000 - Dropped Course - Theory Only</td><td>0</td><td>0</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2024999','24MIC7198','AM_NEW0000_00200','TH')">view</a></td></tr>
-          <tr><td>EMP1111 - Ghost Register - Theory Only</td><td>5</td><td>5</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2024999','24MIC7198','AM_EMP1111_00300','TH')">view</a></td></tr>
+          <tr><td>CHY1008 - Chemistry - Theory Only</td><td>8</td><td>10</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2024999','24TEST0001','AM_CHY1008_00100','TH')">view</a></td></tr>
+          <tr><td>NEW0000 - Dropped Course - Theory Only</td><td>0</td><td>0</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2024999','24TEST0001','AM_NEW0000_00200','TH')">view</a></td></tr>
+          <tr><td>EMP1111 - Ghost Register - Theory Only</td><td>5</td><td>5</td><td><a onclick="callStudentAttendanceDetailDisplay('AP2024999','24TEST0001','AM_EMP1111_00300','TH')">view</a></td></tr>
         </tbody></table></div>`;
     });
     await inject(page, [
@@ -3557,7 +3560,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       <table class="customTable">
         <tr><td>Sl.No.</td><td>Title</td><td>Max. Mark</td><td>Weightage %</td><td>Due Date</td><td>QP</td><td>Document Details</td></tr>
         <tr><td>Last Updated On</td><td>Upload/Edit</td><td>Download</td></tr>
-        <tr><td>1</td><td>Digital Assessment-1</td><td>15</td><td>15</td><td><span style="color:red">24-Jun-2026</span></td><td></td>
+        <tr><td>1</td><td>Digital Assessment-1</td><td>15</td><td>15</td><td><span style="color:red">02-Jul-2026</span></td><td></td>
             <td><span style="color:red">File Not Uploaded</span></td><td></td><td></td></tr>
       </table>`;
     const page = await newPage(browser);
@@ -3567,7 +3570,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       route.fulfill({
         contentType: "text/html",
         body: `<body>
-          <span class="navbar-text text-light small fw-bold">24MIC7198 (STUDENT)</span>
+          <span class="navbar-text text-light small fw-bold">24TEST0001 (STUDENT)</span>
           <input name="_csrf" value="t0k">
           <table class="customTable">
             <tr><td>Sl.No</td><td>Class Nbr</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Faculty Name</td><td>Dashboard</td></tr>
@@ -3597,7 +3600,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       !!bar && /Nothing upcoming — but 1 assignment\(s\) are past due and never uploaded/.test(bar.text),
       (bar && bar.text.slice(0, 160)) || "no bar");
     ok("the overdue item is named, with its own title and date",
-      !!bar && /Past due: MGT1029 — Digital Assessment-1 \(24-Jun-2026\)/.test(bar.text),
+      !!bar && /Past due: MGT1029 — Digital Assessment-1 \(02-Jul-2026\)/.test(bar.text),
       (bar && bar.text.slice(0, 200)) || "no bar");
     ok(
       "📧 is offered, and says what it will send",
@@ -3674,7 +3677,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       route.fulfill({
         contentType: "text/html",
         body: `<body>
-          <span class="navbar-text text-light small fw-bold">24MIC7198 (STUDENT)</span>
+          <span class="navbar-text text-light small fw-bold">24TEST0001 (STUDENT)</span>
           <input name="_csrf" value="t0k">
           <table class="customTable">
             <tr><td>Sl.No</td><td>Class Nbr</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Faculty Name</td><td>Dashboard</td></tr>
@@ -3752,7 +3755,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           <th>Download OutPass</th></tr>
       ${rows}</tr></table></body>`;
     const row = (no, place, from, status, pass) =>
-      `<tr><td>${no}</td><td>24MIC7198</td><td>${place}</td><td>Visit</td>
+      `<tr><td>${no}</td><td>24TEST0001</td><td>${place}</td><td>Visit</td>
        <td>${from} 00:00:00.0</td><td>01:00 PM</td><td>${from} 00:00:00.0</td>
        <td>08:00 PM</td><td> </td><td>${status}</td>
        <td>${pass ? '<a href="#">Download</a>' : " "}</td></tr>`;
@@ -4058,7 +4061,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       <table class="customTable">
         <tr><td>Sl.No.</td><td>Title</td><td>Max. Mark</td><td>Weightage %</td><td>Due Date</td><td>QP</td><td>Document Details</td></tr>
         <tr><td>Last Updated On</td><td>Upload/Edit</td><td>Download</td></tr>
-        <tr><td>1</td><td>Digital Assessment-1</td><td>15</td><td>15</td><td><span style="color:red">24-Jun-2026</span></td><td></td>
+        <tr><td>1</td><td>Digital Assessment-1</td><td>15</td><td>15</td><td><span style="color:red">02-Jul-2026</span></td><td></td>
             <td><span style="color:red">File Not Uploaded</span></td><td></td><td></td></tr>
         <tr><td>2</td><td>Digital Assessment-2</td><td>15</td><td>15</td><td><span style="color:green">10-Jul-2026</span></td><td></td>
             <td><span style="color:red">File Not Uploaded</span></td><td></td><td></td></tr>
@@ -4092,7 +4095,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       route.fulfill({
         contentType: "text/html",
         body: `<body>
-          <span class="navbar-text text-light small fw-bold">24MIC7198 (STUDENT)</span>
+          <span class="navbar-text text-light small fw-bold">24TEST0001 (STUDENT)</span>
           <input name="_csrf" value="t0k">
           <table class="customTable">
             <tr><td>Sl.No</td><td>Class Nbr</td><td>Course Code</td><td>Course Title</td><td>Course Type</td><td>Faculty Name</td><td>Dashboard</td></tr>
@@ -4246,7 +4249,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     );
     ok(
       "past-due items are named, not just counted",
-      !!barMixed && /Past due: MGT1029 — Digital Assessment-1 \(24-Jun-2026\); PHY1001 — Digital Assessment-1/.test(barMixed.text),
+      !!barMixed && /Past due: MGT1029 — Digital Assessment-1 \(02-Jul-2026\); PHY1001 — Digital Assessment-1/.test(barMixed.text),
       (barMixed && barMixed.text.slice(0, 240)) || "no bar"
     );
     ok(
@@ -4703,7 +4706,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
           // request made with it. The first non-empty token is the right one.
           '<input name="_csrf" value="">' +
           '<input name="_csrf" value="TOKEN-1">' +
-          '<input id="authorizedIDX" value="24MIC7198">' +
+          '<input id="authorizedIDX" value="24TEST0001">' +
           '<div class="table-responsive"><table></table></div>' +
           "</body>"
       );
@@ -4738,7 +4741,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       const ids = await page.evaluate(() => [window.vrVtop.csrf(), window.vrVtop.authorizedID()]);
       ok(
         "the first NON-EMPTY _csrf is used, not the first one on the page",
-        ids[0] === "TOKEN-1" && ids[1] === "24MIC7198",
+        ids[0] === "TOKEN-1" && ids[1] === "24TEST0001",
         JSON.stringify(ids)
       );
       await page.close();
@@ -5156,10 +5159,18 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         await delay(200);
         const clicks = await page.evaluate(() => window.__menuClicks);
         ok(
-          "with nothing recorded to replay, it falls back to opening the page",
-          clicks === 1,
+          "with nothing recorded to replay, it stays on the home page (no surprise navigation)",
+          clicks === 0,
           String(clicks)
         );
+        const open = await page.$('[data-vr-action="home-attendance-open"]');
+        ok("...says why and offers an explicit Open Attendance button", !!open, String(!!open));
+        if (open) {
+          await page.click('[data-vr-action="home-attendance-open"]');
+          await delay(200);
+          const after = await page.evaluate(() => window.__menuClicks);
+          ok("pressing Open Attendance opens it", after === 1, String(after));
+        }
       }
       await page.close();
 
@@ -5175,7 +5186,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         await p.setContent(
           "<body><a id='attmenu' data-url='academics/common/StudentAttendance'>Class Attendance</a>" +
             "<input name='_csrf' value='live-token'>" +
-            "<input id='authorizedIDX' value='24MIC7198'>" +
+            "<input id='authorizedIDX' value='24TEST0001'>" +
             "<div id='main-section'></div></body>"
         );
         await shim(p, {
@@ -5258,7 +5269,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
         );
         ok(
           "…with a LIVE token, not the stale one that was recorded",
-          /_csrf=live-token/.test(after.body) && /authorizedID=24MIC7198/.test(after.body),
+          /_csrf=live-token/.test(after.body) && /authorizedID=24TEST0001/.test(after.body),
           after.body.slice(0, 140)
         );
         const subjects = (after.cached || {}).subjects || [];
@@ -5909,7 +5920,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     // Verbatim from the 2026-08-06 report. The list renders "noreply.sdc"
     // with no address at all, and cuts the preview off before the digits.
     const inboxList =
-      "Inbox (1,147) - ruthvik.24mic7159@vitapstudent.ac.in\n" +
+      "Inbox (1,147) - student2@vitapstudent.ac.in\n" +
       "noreply.sdc 9\tVTOP Login OTP Needed - 🔐 VTOP Login Verification " +
       "One-Time Password Request Dear VITian, Use the OTP below...\t1:04 AM\n" +
       "VTAPP Convenor\tReg: Call for V-TAPP 2026, T-Shirt Design - Dear Students,\t6:46 PM\n";
@@ -8565,7 +8576,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       requestBody: {
         formData: {
           _csrf: ["stale-token"],
-          authorizedID: ["24MIC7198"],
+          authorizedID: ["24TEST0001"],
           x: ["Wed, 20 Aug 2026 00:00:00 GMT"],
           semesterSubId: ["AP2026271"],
         },
@@ -8602,7 +8613,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
       requestBody: {
         formData: {
           _csrf: ["stale-token"],
-          authorizedID: ["24MIC7198"],
+          authorizedID: ["24TEST0001"],
           x: ["Wed, 20 Aug 2026 00:00:00 GMT"],
           semesterSubId: ["AP2026272"],
         },
@@ -8767,7 +8778,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const elsewhere = async (storage, opts = {}) => {
       const p = await newPage(browser);
       await p.setContent(
-        "<body><div class='navbar-text text-light small fw-bold'>24MIC7198 (STUDENT)</div>" +
+        "<body><div class='navbar-text text-light small fw-bold'>24TEST0001 (STUDENT)</div>" +
           (opts.signedOut ? "" : "<input name='_csrf' value='live-token'>") +
           "<div id='main-section'><h4>Class Attendance</h4></div></body>"
       );
@@ -9232,7 +9243,7 @@ const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const otherPage = async (storage, reply) => {
       const p = await newPage(browser);
       await p.setContent(
-        "<body><div class='navbar-text text-light small fw-bold'>24MIC7198 (STUDENT)</div>" +
+        "<body><div class='navbar-text text-light small fw-bold'>24TEST0001 (STUDENT)</div>" +
           "<input name='_csrf' value='live-token'>" +
           "<div id='main-section'><h4>Class Attendance</h4></div></body>"
       );
